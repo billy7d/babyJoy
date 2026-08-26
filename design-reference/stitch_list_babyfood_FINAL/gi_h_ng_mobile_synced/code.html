@@ -1,0 +1,117 @@
+<html lang="vi"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/><link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@600;700&amp;family=Be+Vietnam+Pro:wght@400;500&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "surface": "#fbf9f8", "secondary-fixed-dim": "#98d1ce", "on-primary-fixed-variant": "#763300", "on-surface-variant": "#54433a", "apricot-surface": "#ffe0d1", "tertiary-fixed": "#ffdadb", "on-background": "#1b1c1b", "secondary": "#2e6765", "surface-variant": "#e4e2e1", "primary-fixed-dim": "#ffb68d", "on-tertiary-container": "#7a2e37", "primary-container": "#ff9f66", "surface-container-low": "#f5f3f2", "error-container": "#ffdad6", "on-tertiary-fixed-variant": "#792e36", "on-secondary": "#ffffff", "warm-gray": "#49454e", "outline": "#877369", "primary": "#944a18", "on-primary-container": "#773401", "surface-container-high": "#e9e8e7", "error": "#ba1a1a", "tertiary-container": "#ff9aa1", "surface-container": "#efedec", "inverse-on-surface": "#f2f0ef", "on-tertiary-fixed": "#3f020e", "surface-bright": "#fbf9f8", "tertiary": "#96454c", "surface-tint": "#944a18", "on-error": "#ffffff", "on-secondary-fixed": "#00201f", "on-secondary-fixed-variant": "#0f4f4d", "on-tertiary": "#ffffff", "surface-dim": "#dbdad9", "on-error-container": "#93000a", "on-secondary-container": "#326c69", "secondary-container": "#b0eae7", "on-primary": "#ffffff", "tertiary-fixed-dim": "#ffb2b6", "inverse-surface": "#303030", "outline-variant": "#dac2b6", "surface-container-lowest": "#ffffff", "inverse-primary": "#ffb68d", "background": "#fbf9f8", "surface-container-highest": "#e4e2e1", "seafoam-surface": "#d3ecea", "secondary-fixed": "#b3edea", "on-surface": "#1b1c1b", "on-primary-fixed": "#331200", "primary-fixed": "#ffdbc9" }, "borderRadius": { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" }, "spacing": { "lg": "24px", "margin-mobile": "16px", "gutter": "16px", "margin-desktop": "64px", "xs": "4px", "md": "16px", "xl": "40px", "sm": "8px" }, "fontFamily": { "headline-md": ["Quicksand"], "body-md": ["Be Vietnam Pro"], "label-lg": ["Be Vietnam Pro"], "headline-lg": ["Quicksand"], "label-md": ["Be Vietnam Pro"], "body-sm": ["Be Vietnam Pro"], "body-lg": ["Be Vietnam Pro"], "headline-sm": ["Quicksand"], "headline-lg-mobile": ["Quicksand"], "price-display": ["Quicksand"] } } } }</script><style>@layer base { body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: contain; } .pt-safe { padding-top: env(safe-area-inset-top, 0px); } .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); } } </style><style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head><body class="bg-surface font-body-md text-on-surface"><header class="fixed top-0 w-full z-50 bg-surface/80 backdrop-blur-xl pt-safe shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-16 px-margin-mobile flex items-center justify-between"><div class="flex items-center gap-sm"><img alt="BabyJoy Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA43JPTmM85IEBCGehed0H5p99Ze2xx4FIW3wLaMdEZg1YK-GFArs9kD_Oukpscum9FEGXpP7MyiRFFHjc8FiLtEmO0visWVUsHHZxZMMEz3gxMjh2KOLcMuQmkILba64v4WurHgvLpseszPhlqEyr4XvcHcse-ukuZZj4FglAIk_aRAYywPH8IVlK_Hhaf3vbbidDH2AsMpQqO05rxyN2akiKaSATO0dNyxNrISygYMLCaHvLWi7eLjg"/><span class="font-headline-sm text-headline-sm text-primary">BabyJoy</span></div><div class="flex items-center gap-sm"><button class="relative w-11 h-11 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors"><span class="material-symbols-outlined">shopping_cart</span><span class="absolute top-1.5 right-1.5 w-5 h-5 bg-error text-on-error text-[10px] font-bold rounded-full flex items-center justify-center">4</span></button></div></div></header><main class="relative w-full pt-16 pb-24 min-h-screen bg-surface"><div class="flex flex-col w-full relative min-h-full">
+<!-- Cart Header & Empty State Toggle (Implicitly managed by items existing, but showing a cheerful header) -->
+<div class="px-margin-mobile pt-md pb-xs">
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">Giỏ hàng của bé</h1>
+<p class="font-body-md text-body-md text-on-surface-variant mt-1">4 món ngon đang chờ được thưởng thức!</p>
+</div>
+<!-- Cart Items List -->
+<div class="flex flex-col gap-sm px-margin-mobile pb-32 mt-md">
+<!-- Item 1 -->
+<div class="bg-surface-container rounded-xl p-3 flex gap-3 relative overflow-hidden transition-all duration-300 ease-out active:scale-[0.98]">
+<div class="w-24 h-24 rounded-lg bg-surface-container-high overflow-hidden flex-shrink-0 relative shadow-sm">
+<img class="w-full h-full object-cover" data-alt="A warm, softly lit macro shot of a bowl of creamy sweet potato and carrot puree for babies. Earthy orange tones, smooth texture, set on a rustic wooden table with a soft focus background. Natural daylight." src="https://lh3.googleusercontent.com/aida/AEtjO1WbMBSrA5DTPqxvY1G4enOiTu4L88Inp3Rrph5Dx8LylA99zMtQFqR6kq9Vv7Zm3hSiW7jcl_EcJlyfDQydd4KqYg1yS-a9X80KUDeJWmT1pohzwHmuGPZ_NnGwZjlQuMB7YisbxAw3NQ_tQgytxptrLElfDoxfahnPq6M6HaOqih62_efXGk5jqMFLox87d1ZYxc28p2n1D0MSgDy06KKEotH845_7Jn3jXr40jyXArQILGgQ1kF1Aa2Dl"/>
+<div class="absolute top-1 left-1 bg-secondary-fixed/90 backdrop-blur-sm px-2 py-0.5 rounded-full">
+<span class="font-label-md text-[10px] text-on-secondary-fixed">6+ tháng</span>
+</div>
+</div>
+<div class="flex flex-col flex-1 justify-between py-1">
+<div>
+<h3 class="font-headline-sm text-body-md font-bold text-on-surface line-clamp-2 leading-tight">Bột ăn dặm Gerber Organic Yến mạch &amp; Chuối</h3>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1">227g</p>
+</div>
+<div class="flex items-center justify-between mt-2">
+<span class="font-price-display text-price-display text-primary">125.000 ₫</span>
+<!-- Quantity Control -->
+<div class="flex items-center bg-surface rounded-full shadow-sm px-1 py-1">
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[18px]">remove</span>
+</button>
+<span class="font-label-lg text-label-lg text-on-surface w-6 text-center">2</span>
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors bg-primary-container/20 rounded-full">
+<span class="material-symbols-outlined text-[18px]">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Item 2 -->
+<div class="bg-surface-container rounded-xl p-3 flex gap-3 relative overflow-hidden transition-all duration-300 ease-out active:scale-[0.98]">
+<div class="w-24 h-24 rounded-lg bg-surface-container-high overflow-hidden flex-shrink-0 relative shadow-sm">
+<img class="w-full h-full object-cover" data-alt="Softly lit photo of green pea and spinach puree in a small ceramic baby bowl. Vibrant green color, smooth and thick texture. Placed on a light cream linen cloth with natural window light." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAq2P2DTCjIfBbWyeZjipi1HeC28RKfcUfLNMmPHtXVwD1qjOZ9huuuNzDuc-aHm2MfXyDKuskqSnJx1_fvg77a70ARjb5zVnCKb0fGCEcP5F90HY7mXshWkNGGD7f4PhMWNHt2SdVCJ26NygQ-6wsJoFq4vqKj4rbGentCCn8Qx8niNLPieqyfNu-3Yk7jMwXxDVkv7LZeCVgfgrnq-4GvWsE-PIjZuMunX6qfXqBTmdiZAxO0xZrEgg"/>
+<div class="absolute top-1 left-1 bg-secondary-fixed/90 backdrop-blur-sm px-2 py-0.5 rounded-full">
+<span class="font-label-md text-[10px] text-on-secondary-fixed">8+ tháng</span>
+</div>
+</div>
+<div class="flex flex-col flex-1 justify-between py-1">
+<div>
+<h3 class="font-headline-sm text-body-md font-bold text-on-surface line-clamp-2 leading-tight">Bánh gạo ăn dặm vị Táo</h3>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1">50g</p>
+</div>
+<div class="flex items-center justify-between mt-2">
+<span class="font-price-display text-price-display text-primary">68.000 ₫</span>
+<!-- Quantity Control -->
+<div class="flex items-center bg-surface rounded-full shadow-sm px-1 py-1">
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[18px]">remove</span>
+</button>
+<span class="font-label-lg text-label-lg text-on-surface w-6 text-center">1</span>
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors bg-primary-container/20 rounded-full">
+<span class="material-symbols-outlined text-[18px]">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Item 3 -->
+<div class="bg-surface-container rounded-xl p-3 flex gap-3 relative overflow-hidden transition-all duration-300 ease-out active:scale-[0.98]">
+<div class="w-24 h-24 rounded-lg bg-surface-container-high overflow-hidden flex-shrink-0 relative shadow-sm">
+<img class="w-full h-full object-cover" data-alt="Chunky apple and oat porridge in a cute baby bowl with a silicone spoon next to it. Soft morning light, cozy and warm atmosphere. Bits of soft apple visible. Light wood background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBwUH62_VcjtyYHuoYe-lpp9ktuX0lY5R7gmfeExwHwRssoX_ULSDDhfWCV7WU0EOnyYGholoMY-XQlBxY6TJ5pLjL7LpwtNObkAZj3wUeVBjaMFnA_h2wY7Y5NdRqLL_TxUeapD8PWXksXmABa3DMEjA3r9lTVzQ9goAhLVhoavoMOaque5vQG6UKsA11QV4xMU3s8IfrhOOZIa627q33Et3mzOeNm9HZMWEuWpWEZjZDj9qoDU0GGWA"/>
+<div class="absolute top-1 left-1 bg-primary-container/90 backdrop-blur-sm px-2 py-0.5 rounded-full">
+<span class="font-label-md text-[10px] text-on-primary-container">6+ tháng</span>
+</div>
+</div>
+<div class="flex flex-col flex-1 justify-between py-1">
+<div>
+<h3 class="font-headline-sm text-body-md font-bold text-on-surface line-clamp-2 leading-tight">Rau củ quả nghiền hữu cơ</h3>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1">120g</p>
+</div>
+<div class="flex items-center justify-between mt-2">
+<span class="font-price-display text-price-display text-primary">49.000 ₫</span>
+<!-- Quantity Control -->
+<div class="flex items-center bg-surface rounded-full shadow-sm px-1 py-1">
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[18px]">remove</span>
+</button>
+<span class="font-label-lg text-label-lg text-on-surface w-6 text-center">1</span>
+<button class="w-6 h-6 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors bg-primary-container/20 rounded-full">
+<span class="material-symbols-outlined text-[18px]">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Sticky Bottom Cart Summary -->
+<div class="fixed bottom-16 left-0 w-full z-40 px-margin-mobile pb-4 pt-6 bg-gradient-to-t from-surface via-surface/95 to-transparent pointer-events-none">
+<div class="bg-white rounded-3xl p-5 shadow-[0_8px_30px_rgba(0,0,0,0.08)] pointer-events-auto flex flex-col gap-4 relative overflow-hidden">
+<!-- Decorative faint background circle -->
+<div class="absolute -top-10 -right-10 w-32 h-32 bg-primary/5 rounded-full blur-2xl"></div>
+<div class="flex justify-between items-end">
+<div class="flex flex-col">
+<span class="font-label-md text-label-md text-on-surface-variant">3 mặt hàng • Tổng số lượng: 4</span>
+<span class="font-headline-md text-headline-md text-primary leading-none mt-1">367.000 ₫</span>
+</div>
+</div>
+<button class="w-full bg-primary text-on-primary py-4 rounded-full font-headline-sm text-[18px] flex items-center justify-center gap-2 active:scale-95 transition-transform duration-200 shadow-md shadow-primary/20">
+<span>GỬI CHO NGƯỜI BÁN</span>
+<span class="material-symbols-outlined text-[20px]">send</span>
+</button>
+</div>
+</div>
+</div></main><nav class="fixed bottom-0 w-full z-50 pb-safe bg-surface/80 backdrop-blur-xl shadow-[0_-1px_8px_rgba(0,0,0,0.04)]" data-active-classes="text-primary"><div class="flex justify-between items-center h-16 px-4"><a class="flex flex-col items-center justify-center min-w-[44px] min-h-[44px] gap-xs text-on-surface-variant" data-path="trang-chu" href="#"><span class="material-symbols-outlined">home</span><span class="font-label-md text-[10px]">Trang chủ</span></a><a class="flex flex-col items-center justify-center min-w-[44px] min-h-[44px] gap-xs text-on-surface-variant" data-path="san-pham" href="#"><span class="material-symbols-outlined">grid_view</span><span class="font-label-md text-[10px]">Sản phẩm</span></a><a class="flex flex-col items-center justify-center min-w-[44px] min-h-[44px] gap-xs text-on-surface-variant" data-path="tim-kiem" href="#"><span class="material-symbols-outlined">search</span><span class="font-label-md text-[10px]">Tìm kiếm</span></a><a class="flex flex-col items-center justify-center min-w-[44px] min-h-[44px] gap-xs text-on-surface-variant" data-path="gio-hang" href="#"><span class="material-symbols-outlined">shopping_basket</span><span class="font-label-md text-[10px]">Giỏ hàng</span></a></div></nav></body></html>

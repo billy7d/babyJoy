@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+
+<html lang="vi"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Gửi thành công</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              brown: '#9C5320',
+              cream: '#FDFBF7',
+              green: '#2D5A50',
+              gray: {
+                50: '#F9FAFB',
+                100: '#F3F4F6',
+                400: '#9CA3AF',
+                500: '#6B7280',
+                800: '#1F2937',
+              }
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+<style data-purpose="custom-utilities">
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: theme('colors.brand.cream');
+    }
+    .shadow-soft {
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased text-brand-gray-800">
+<!-- BEGIN: MainContent -->
+<main class="flex-1 flex flex-col justify-center px-4 py-8 relative overflow-hidden">
+<!-- Background Gradient Effect -->
+<div class="absolute top-0 left-0 w-full h-64 bg-gradient-to-br from-green-50 to-brand-cream -z-10 opacity-70"></div>
+<div class="absolute bottom-0 right-0 w-64 h-64 bg-gradient-to-tl from-orange-50 to-transparent -z-10 rounded-full blur-3xl opacity-50"></div>
+<div class="w-full max-w-md mx-auto bg-white rounded-2xl shadow-soft p-6 pt-10 mt-8 relative z-10 text-center">
+<!-- Success Icon -->
+<div class="absolute -top-8 left-1/2 -translate-x-1/2 w-16 h-16 bg-brand-green rounded-full flex items-center justify-center shadow-lg border-4 border-white">
+<svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+</svg>
+</div>
+<!-- Header Texts -->
+<h1 class="text-2xl font-bold text-gray-900 mt-2 mb-2">Đã gửi giỏ hàng</h1>
+<p class="text-gray-500 text-sm mb-6 leading-relaxed">
+        Giỏ hàng của bạn đã được gửi thành công.
+      </p>
+<!-- Cart Code Display -->
+<div class="bg-brand-gray-50 rounded-xl p-4 mb-6 border border-brand-gray-100 text-left">
+<p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Mã giỏ hàng của bạn</p>
+<div class="flex items-center justify-between bg-white rounded-lg p-3 border border-gray-200">
+<span class="text-lg font-bold text-brand-brown tracking-widest font-mono">GH-260825-X7K2</span>
+<button aria-label="Copy code" class="text-gray-400 hover:text-brand-brown transition-colors" type="button">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- Order Details -->
+<div class="bg-brand-gray-50 rounded-xl p-4 mb-6 text-left border border-brand-gray-100">
+<div class="grid grid-cols-2 gap-4 mb-3 pb-3 border-b border-gray-200">
+<div>
+<p class="text-xs text-gray-500 mb-1">Thời gian gửi</p>
+<p class="text-sm font-medium text-gray-800">25/08/2026 • 15:12</p>
+</div>
+<div>
+<p class="text-xs text-gray-500 mb-1">Số lượng</p>
+<p class="text-sm font-medium text-gray-800">3 mặt hàng (Tổng: 4)</p>
+</div>
+</div>
+<div class="flex justify-between items-center">
+<p class="text-sm text-gray-600">Tạm tính (chưa gồm phí ship)</p>
+<p class="text-lg font-bold text-brand-brown">367.000 ₫</p>
+</div>
+</div>
+<!-- Information Message -->
+<div class="bg-orange-50 text-orange-800 rounded-xl p-4 mb-8 text-sm leading-relaxed text-left flex items-start">
+<svg class="w-5 h-5 mr-2 flex-shrink-0 mt-0.5 text-orange-500" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+<p>Người bán sẽ liên hệ với bạn để xác nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán.</p>
+</div>
+<!-- Action Buttons -->
+<div class="space-y-3">
+<button class="w-full bg-brand-brown hover:bg-opacity-90 text-white font-medium py-3.5 px-4 rounded-xl transition-colors flex items-center justify-center" type="button">
+<svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+          Tiếp tục xem sản phẩm
+        </button>
+<button class="w-full bg-brand-gray-100 hover:bg-gray-200 text-gray-800 font-medium py-3.5 px-4 rounded-xl transition-colors flex items-center justify-center" type="button">
+<svg class="w-5 h-5 mr-2 text-gray-500" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+          Xem lại giỏ hàng
+        </button>
+</div>
+</div>
+</main>
+<!-- END: MainContent -->
+</body></html>

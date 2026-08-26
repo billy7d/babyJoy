@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "babyjoy-web-app",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "ENVIRONMENT": "development" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "babyjoy-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [
+    { "binding": "PRODUCT_IMAGES", "bucket_name": "babyjoy-product-images" }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  },
+  "upload_source_maps": true,
+  "env": {
+    "production": {
+      "vars": { "ENVIRONMENT": "production" },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "babyjoy-db", "database_id": "6d19fcf2-6385-493b-a377-a31d5e42de03", "migrations_dir": "migrations" }
+      ],
+      "r2_buckets": [
+        { "binding": "PRODUCT_IMAGES", "bucket_name": "babyjoy-product-images" }
+      ]
+    }
+  }
+}
