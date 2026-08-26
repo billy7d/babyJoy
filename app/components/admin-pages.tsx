@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router";
 import {
   categories as fallbackCategories,
   formatVnd,
@@ -7,6 +7,11 @@ import {
   type ProductImageRecord,
 } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
+import {
+  getProductEditPath,
+  ProductEditorSaveController,
+  type ProductEditorSavePayload,
+} from "../lib/product-editor-save";
 import { AdminShell, Icon, Price, StatusBadge, Tag } from "./ui";
 import { ProductImage } from "./product-image";
 
@@ -119,6 +124,7 @@ function TableFooter({ text }: { text: string }) {
 export function ProductEditorPage() {
   const segments = useLocation().pathname.split("/").filter(Boolean);
   const id = segments.at(-1) === "edit" ? segments.at(-2) : undefined;
+  const navigate = useNavigate();
   const { categories, refresh } = useCatalog();
   const [editing, setEditing] = useState<
     (Product & { categoryIds?: string[]; tagIds?: string[]; sortOrder?: number; status?: string }) | null
@@ -128,7 +134,16 @@ export function ProductEditorPage() {
   const [featured, setFeatured] = useState(false);
   const [visible, setVisible] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const saveControllerRef = useRef<ProductEditorSaveController | null>(null);
+  const saveController =
+    saveControllerRef.current ?? new ProductEditorSaveController(id);
+  saveControllerRef.current = saveController;
+
+  useEffect(() => {
+    saveController.setProductId(id);
+  }, [id, saveController]);
 
   useEffect(() => {
     let cancelled = false;
@@ -231,7 +246,7 @@ export function ProductEditorPage() {
     event.preventDefault();
     setMessage("Đang lưu...");
     const form = new FormData(event.currentTarget);
-    const payload = {
+    const payload: ProductEditorSavePayload = {
       name: form.get("name"),
       slug: form.get("slug"),
       brand: form.get("brand"),
@@ -258,25 +273,23 @@ export function ProductEditorPage() {
         },
       ],
     };
-    const response = await fetch(
-      editing ? `/api/admin/products/${editing.id}` : "/api/admin/products",
-      {
-        method: editing ? "PUT" : "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      },
-    );
-    const responseBody = (await response.json()) as {
-      error?: { message?: string };
-    };
-    if (response.ok) {
-      setMessage("Đã lưu sản phẩm và liên kết ảnh R2.");
-      await refresh();
-    } else {
-      setMessage(
-        responseBody.error?.message ??
-          "Chưa thể lưu sản phẩm. Vui lòng kiểm tra slug và SKU.",
-      );
+    const task = saveController.save(payload);
+    if (!task) return;
+    setSaving(true);
+    try {
+      const result = await task;
+      if (result.ok) {
+        setMessage("Đã lưu sản phẩm và liên kết ảnh R2.");
+        await refresh();
+        if (result.created)
+          navigate(getProductEditPath(result.id), { replace: true });
+      } else {
+        setMessage(result.message);
+      }
+    } catch {
+      setMessage("Chưa thể lưu sản phẩm. Vui lòng thử lại.");
+    } finally {
+      setSaving(false);
     }
   };
   return (
@@ -293,7 +306,11 @@ export function ProductEditorPage() {
           </div>
           <div>
             <Link to="/admin/products">HỦY</Link>
-            <button className="btn primary">
+            <button
+              className="btn primary"
+              type="submit"
+              disabled={saving || uploading || Boolean(id && !editing)}
+            >
               <Icon>save</Icon> LƯU SẢN PHẨM
             </button>
           </div>

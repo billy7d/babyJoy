@@ -16,6 +16,10 @@ import {
   validateAssociatedImages,
 } from "./image-service";
 import { getPublicImageUrl } from "../shared/images";
+import {
+  findProductConflict,
+  productConflictError,
+} from "./product-conflicts";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -768,6 +772,19 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       .first())
   )
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  const findConflict = () =>
+    findProductConflict(env.DB, {
+      productId,
+      slug: body.slug,
+      skus: body.variants
+        .map((variant) => variant.sku ?? "")
+        .filter(Boolean),
+    });
+  const existingConflict = await findConflict();
+  if (existingConflict) {
+    const conflict = productConflictError(existingConflict);
+    return error(conflict.code, conflict.message, 409, conflict.details);
+  }
   if (body.images) {
     try {
       await validateAssociatedImages(body.images, env.PRODUCT_IMAGES);
@@ -916,11 +933,16 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     await env.DB.batch(statements);
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
+    if (message.includes("UNIQUE")) {
+      const conflict = await findConflict();
+      if (conflict) {
+        const response = productConflictError(conflict);
+        return error(response.code, response.message, 409, response.details);
+      }
+    }
     return error(
       "VALIDATION_ERROR",
-      message.includes("UNIQUE")
-        ? "Slug hoặc SKU đã tồn tại."
-        : "Chưa thể lưu sản phẩm.",
+      "Chưa thể lưu sản phẩm.",
       409,
     );
   }
