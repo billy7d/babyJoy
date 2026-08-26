@@ -126,7 +126,7 @@ export function HomePage() {
   );
 }
 
-function applyFilters(
+export function applyFilters(
   source: Product[],
   params: URLSearchParams,
   forcedCategory?: string,
@@ -177,7 +177,7 @@ export function ProductListPage({
   const [mobileFilters, setMobileFilters] = useState(false);
   const filtered = useMemo(
     () => applyFilters(products, params, categorySlug),
-    [params, categorySlug],
+    [products, params, categorySlug],
   );
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
