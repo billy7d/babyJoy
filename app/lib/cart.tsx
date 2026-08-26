@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { canonicalVariantIds, findVariant } from "./catalog";
+import { canonicalVariantIds, findVariantInProducts } from "./catalog";
+import { useCatalog } from "./catalog-context";
 
 export type CartLine = { variantId: string; quantity: number };
 type CartContextValue = {
@@ -14,7 +15,10 @@ type CartContextValue = {
 };
 
 const storageKey = "babyjoy.cart.v1";
-const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({ variantId, quantity: index === 0 ? 2 : 1 }));
+const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({
+  variantId,
+  quantity: index === 0 ? 2 : 1,
+}));
 const CartContext = createContext<CartContextValue | null>(null);
 
 function readCart(): CartLine[] {
@@ -31,18 +35,20 @@ function readCart(): CartLine[] {
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<CartLine[]>(demoCart);
+  const { products } = useCatalog();
 
   useEffect(() => setItems(readCart()), []);
 
   const persist = (next: CartLine[]) => {
-    if (typeof window !== "undefined") window.localStorage.setItem(storageKey, JSON.stringify({ items: next }));
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(storageKey, JSON.stringify({ items: next }));
     return next;
   };
 
   const value = useMemo<CartContextValue>(() => {
     const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
     const subtotalVnd = items.reduce((sum, item) => {
-      const match = findVariant(item.variantId);
+      const match = findVariantInProducts(products, item.variantId);
       return sum + (match?.variant.priceVnd ?? 0) * item.quantity;
     }, 0);
     return {
@@ -52,27 +58,59 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       addItem(variantId, quantity = 1) {
         setItems((current) => {
           const existing = current.find((item) => item.variantId === variantId);
-          if (existing) return persist(current.map((item) => item.variantId === variantId ? { ...item, quantity: Math.min(99, item.quantity + quantity) } : item));
-          return persist([...current, { variantId, quantity: Math.min(99, quantity) }]);
+          if (existing)
+            return persist(
+              current.map((item) =>
+                item.variantId === variantId
+                  ? {
+                      ...item,
+                      quantity: Math.min(99, item.quantity + quantity),
+                    }
+                  : item,
+              ),
+            );
+          return persist([
+            ...current,
+            { variantId, quantity: Math.min(99, quantity) },
+          ]);
         });
       },
       setQuantity(variantId, quantity) {
-        if (quantity <= 0) setItems((current) => persist(current.filter((item) => item.variantId !== variantId)));
-        else setItems((current) => persist(current.map((item) => item.variantId === variantId ? { ...item, quantity: Math.min(99, quantity) } : item)));
+        if (quantity <= 0)
+          setItems((current) =>
+            persist(current.filter((item) => item.variantId !== variantId)),
+          );
+        else
+          setItems((current) =>
+            persist(
+              current.map((item) =>
+                item.variantId === variantId
+                  ? { ...item, quantity: Math.min(99, quantity) }
+                  : item,
+              ),
+            ),
+          );
       },
       removeItem(variantId) {
-        setItems((current) => persist(current.filter((item) => item.variantId !== variantId)));
+        setItems((current) =>
+          persist(current.filter((item) => item.variantId !== variantId)),
+        );
       },
-      clear() { setItems(persist([])); },
-      resetDemoCart() { setItems(persist(demoCart)); },
+      clear() {
+        setItems(persist([]));
+      },
+      resetDemoCart() {
+        setItems(persist(demoCart));
+      },
     };
-  }, [items]);
+  }, [items, products]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
 
 export function useCart() {
   const context = useContext(CartContext);
-  if (!context) throw new Error("useCart phải được dùng bên trong CartProvider");
+  if (!context)
+    throw new Error("useCart phải được dùng bên trong CartProvider");
   return context;
 }

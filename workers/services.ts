@@ -1,3 +1,5 @@
+import { getPublicImageUrl } from "../shared/images";
+
 export type CartInputItem = { variantId: string; quantity: number; displayedPrice?: number };
 export type CartSubmission = {
   submissionToken: string;
@@ -20,6 +22,28 @@ export type PricedItem = {
   quantity: number;
   lineTotalVnd: number;
 };
+
+export type CartItemSnapshotRow = {
+  id: string;
+  productId: string | null;
+  variantId: string | null;
+  productName: string;
+  variantName: string;
+  sku: string | null;
+  imageKey: string | null;
+  priceVnd: number;
+  quantity: number;
+  lineTotalVnd: number;
+  createdAt: string;
+};
+
+export function mapCartItemSnapshot(row: CartItemSnapshotRow) {
+  return {
+    ...row,
+    // URL luôn được dựng từ khóa snapshot, không đọc ảnh hiện tại của sản phẩm.
+    imageUrl: getPublicImageUrl(row.imageKey),
+  };
+}
 
 export function calculateCart(items: Array<{ priceVnd: number; quantity: number }>) {
   return {

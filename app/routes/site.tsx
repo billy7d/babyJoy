@@ -1,6 +1,7 @@
 import { Navigate, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/site";
 import { CartProvider } from "../lib/cart";
+import { CatalogProvider } from "../lib/catalog-context";
 import { CartPage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, SubmitCartPage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 
@@ -39,5 +40,5 @@ function PublicNotFound() {
 }
 
 export default function SiteRoute() {
-  return <CartProvider><RoutedContent /></CartProvider>;
+  return <CatalogProvider><CartProvider><RoutedContent /></CartProvider></CatalogProvider>;
 }

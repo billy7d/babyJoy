@@ -9,6 +9,14 @@ export type Variant = {
   availability: Availability;
 };
 
+export type ProductImageRecord = {
+  id?: string;
+  r2Key: string;
+  altText: string;
+  sortOrder: number;
+  url: string;
+};
+
 export type Product = {
   id: string;
   slug: string;
@@ -17,6 +25,8 @@ export type Product = {
   shortDescription: string;
   description: string;
   image: string;
+  imageKey?: string | null;
+  images?: ProductImageRecord[];
   category: string;
   age: string;
   tags: string[];
@@ -158,7 +168,11 @@ export function formatVnd(value: number): string {
 }
 
 export function findVariant(variantId: string) {
-  for (const product of products) {
+  return findVariantInProducts(products, variantId);
+}
+
+export function findVariantInProducts(source: Product[], variantId: string) {
+  for (const product of source) {
     const variant = product.variants.find((item) => item.id === variantId);
     if (variant) return { product, variant };
   }

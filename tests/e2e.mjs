@@ -13,6 +13,8 @@ async function openPage(path, viewport, fileName) {
   const page = await context.newPage();
   const response = await page.goto(`${baseUrl}${path}`, { waitUntil: "domcontentloaded" });
   await page.evaluate(() => document.fonts.ready).catch(() => undefined);
+  // Chờ catalog/admin API hoàn tất trước khi chụp ảnh nghiệm thu.
+  await page.waitForTimeout(600);
   await page.screenshot({ path: fileURLToPath(new URL(fileName, outputDir)), fullPage: true });
   const body = await page.locator("body").innerText();
   if (!response || response.status() >= 500 || body.trim().length < 20 || /Oops|unexpected error|Đã có lỗi máy chủ/.test(body)) throw new Error(`Trang ${path} hiển thị lỗi hoặc trống`);

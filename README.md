@@ -38,7 +38,7 @@ npm run db:migrate:remote
 npm run deploy -- --env production
 ```
 
-Admin production yêu cầu header xác thực của Cloudflare Access. Cần tạo Access Application cho `/admin/*` và `/api/admin/*`; API sẽ trả 401 nếu thiếu `cf-access-authenticated-user-email` trong production.
+Admin production yêu cầu Cloudflare Access Application bảo vệ `/admin/*` và `/api/admin/*`. `ACCESS_TEAM_DOMAIN` nhận hostname dạng `<team>.cloudflareaccess.com` (hoặc URL HTTPS tương đương) và được chuẩn hóa thành issuer HTTPS trước khi tạo JWKS URL; `ACCESS_AUD` phải khớp Access Application. Worker chỉ đọc email từ payload sau khi đã xác minh chữ ký JWT, issuer, audience và thời hạn; cấu hình trống hoặc môi trường không phải `development` sẽ fail-closed.
 
 ## Quy tắc nghiệp vụ quan trọng
 
@@ -46,6 +46,8 @@ Admin production yêu cầu header xác thực của Cloudflare Access. Cần t�
 - `submissionToken` là idempotency key, tránh tạo bản ghi trùng khi người dùng gửi lại.
 - Bản ghi yêu cầu và snapshot mặt hàng được commit trước khi gửi Telegram. Telegram thất bại không làm mất yêu cầu và admin có thể thử lại.
 - Giỏ hàng local dùng key `babyjoy.cart.v1` và tồn tại qua refresh.
-- Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 5 MB, lưu trong R2 và phân phối qua `/media/*`.
+- Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 5 MB, tạo key immutable mới trong R2 và lưu duy nhất `r2_key` vào D1.
+- Ảnh production được phân phối trực tiếp qua `https://images.metraphuong.com/<r2_key>`. Route `/media/*` chỉ còn tương thích legacy và đã được đánh dấu deprecated.
+- Gỡ ảnh khỏi sản phẩm chỉ xóa association D1; không tự động xóa object R2 để bảo toàn snapshot giỏ hàng lịch sử.
 
 Tài liệu Stitch đã giải nén trong `design-reference/` chỉ dùng làm tham chiếu, không được import vào production source.

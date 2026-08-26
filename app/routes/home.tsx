@@ -1,5 +1,6 @@
 import { HomePage } from "../components/public-pages";
 import { CartProvider } from "../lib/cart";
+import { CatalogProvider } from "../lib/catalog-context";
 
 export function meta() {
   return [
@@ -9,5 +10,5 @@ export function meta() {
 }
 
 export default function HomeRoute() {
-  return <CartProvider><HomePage /></CartProvider>;
+  return <CatalogProvider><CartProvider><HomePage /></CartProvider></CatalogProvider>;
 }
