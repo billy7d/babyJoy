@@ -20,6 +20,13 @@ import {
   findProductConflict,
   productConflictError,
 } from "./product-conflicts";
+import {
+  getMessengerStatus,
+  handleMessengerWebhook,
+  messengerCheckoutConfigResponse,
+  retryMessengerDelivery,
+  startMessengerCheckout,
+} from "./messenger";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -274,10 +281,7 @@ async function findSubmission(token: string, env: Env) {
 }
 
 async function sendTelegram(env: Env, text: string) {
-  // Wrangler không sinh type cho secret chưa được khai báo bằng `wrangler secret put`.
-  // @ts-expect-error Secret được inject vào Env ở runtime production.
   const token: string | undefined = env.TELEGRAM_BOT_TOKEN;
-  // @ts-expect-error Secret được inject vào Env ở runtime production.
   const chatId: string | undefined = env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) throw new Error("Telegram chưa được cấu hình.");
   let messageId: string | null = null;
@@ -487,16 +491,49 @@ async function submitCart(request: Request, env: Env) {
   );
 }
 
-async function getAdminRequests(env: Env) {
+async function getAdminRequests(request: Request, env: Env) {
+  const scope = new URL(request.url).searchParams.get("scope") ?? "queue";
+  const where =
+    scope === "messenger"
+      ? "WHERE contact_channel = 'MESSENGER'"
+      : scope === "all"
+        ? ""
+        : "WHERE contact_channel = 'LEGACY' OR messenger_delivery_status = 'SENT'";
   const result = await env.DB.prepare(
-    "SELECT id, public_code AS publicCode, customer_name AS customerName, customer_phone AS customerPhone, item_line_count AS itemLineCount, total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status, telegram_status AS telegramStatus, created_at AS createdAt FROM cart_requests ORDER BY created_at DESC LIMIT 100",
+    `SELECT id, public_code AS publicCode, customer_name AS customerName,
+      customer_phone AS customerPhone, item_line_count AS itemLineCount,
+      total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status,
+      telegram_status AS telegramStatus, contact_channel AS contactChannel,
+      messenger_delivery_status AS messengerDeliveryStatus,
+      (SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerSessionStatus,
+      created_at AS createdAt
+     FROM cart_requests ${where}
+     ORDER BY CASE WHEN contact_channel = 'MESSENGER' AND messenger_delivery_status != 'SENT' THEN 1 ELSE 0 END,
+       created_at DESC LIMIT 100`,
   ).all();
   return json({ data: result.results });
 }
 
 async function getAdminRequest(id: string, env: Env) {
   const cartRequest = await env.DB.prepare(
-    "SELECT id, public_code AS publicCode, customer_name AS customerName, customer_phone AS customerPhone, customer_contact AS customerContact, customer_note AS customerNote, item_line_count AS itemLineCount, total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status, telegram_status AS telegramStatus, telegram_last_error AS telegramLastError, created_at AS createdAt, updated_at AS updatedAt FROM cart_requests WHERE id = ?",
+    `SELECT id, public_code AS publicCode, customer_name AS customerName,
+      customer_phone AS customerPhone, customer_contact AS customerContact,
+      customer_note AS customerNote, item_line_count AS itemLineCount,
+      total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status,
+      telegram_status AS telegramStatus, telegram_last_error AS telegramLastError,
+      contact_channel AS contactChannel,
+      messenger_delivery_status AS messengerDeliveryStatus,
+      messenger_confirmed_at AS messengerConfirmedAt,
+      messenger_sent_at AS messengerSentAt,
+      messenger_attempt_count AS messengerAttemptCount,
+      messenger_last_error_code AS messengerLastErrorCode,
+      messenger_last_error AS messengerLastError,
+      messenger_last_user_interaction_at AS messengerLastUserInteractionAt,
+      CASE WHEN messenger_psid IS NULL THEN 0 ELSE 1 END AS messengerLinked,
+      (SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerSessionStatus,
+      (SELECT expires_at FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerExpiresAt,
+      created_at AS createdAt, updated_at AS updatedAt
+     FROM cart_requests WHERE id = ?`,
   )
     .bind(id)
     .first<Record<string, unknown>>();
@@ -1098,7 +1135,7 @@ async function deleteImage(id: string, env: Env) {
   return json({ success: true });
 }
 
-async function handleApi(request: Request, env: Env) {
+async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
   const path = url.pathname;
   if (request.method === "GET" && path === "/api/categories")
@@ -1112,6 +1149,21 @@ async function handleApi(request: Request, env: Env) {
     return getProduct(decodeURIComponent(path.slice(14)), env);
   if (request.method === "POST" && path === "/api/cart-requests")
     return submitCart(request, env);
+  if (request.method === "GET" && path === "/api/checkout-config")
+    return messengerCheckoutConfigResponse(env);
+  if (request.method === "POST" && path === "/api/cart/messenger/start")
+    return startMessengerCheckout(request, env);
+  const messengerStatusMatch = path.match(
+    /^\/api\/cart\/messenger\/status\/([^/]+)$/,
+  );
+  if (request.method === "GET" && messengerStatusMatch)
+    return getMessengerStatus(
+      request,
+      decodeURIComponent(messengerStatusMatch[1]),
+      env,
+    );
+  if (path === "/api/meta/messenger/webhook")
+    return handleMessengerWebhook(request, env, ctx);
   if (path.startsWith("/api/admin/")) {
     const authorization = await authorizeAdminRequest(request, env);
     if (!authorization.authorized) {
@@ -1161,7 +1213,7 @@ async function handleApi(request: Request, env: Env) {
   if (request.method === "PUT" && tagMatch)
     return saveTaxonomy(request, env, "tags", tagMatch[1]);
   if (request.method === "GET" && path === "/api/admin/cart-requests")
-    return getAdminRequests(env);
+    return getAdminRequests(request, env);
   const requestMatch = path.match(/^\/api\/admin\/cart-requests\/([^/]+)$/);
   if (request.method === "GET" && requestMatch)
     return getAdminRequest(requestMatch[1], env);
@@ -1175,6 +1227,11 @@ async function handleApi(request: Request, env: Env) {
   );
   if (request.method === "POST" && retryMatch)
     return retryTelegram(retryMatch[1], env);
+  const retryMessengerMatch = path.match(
+    /^\/api\/admin\/cart-requests\/([^/]+)\/retry-messenger$/,
+  );
+  if (request.method === "POST" && retryMessengerMatch)
+    return retryMessengerDelivery(retryMessengerMatch[1], env);
   if (request.method === "POST" && path === "/api/admin/images")
     return uploadImage(request, env);
   const imageMatch = path.match(/^\/api\/admin\/images\/([^/]+)$/);
@@ -1205,7 +1262,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith("/api/"))
-        return await handleApi(request, env);
+        return await handleApi(request, env, ctx);
       if (url.pathname.startsWith("/media/"))
         return await handleMedia(url.pathname, env);
       return await requestHandler(request);

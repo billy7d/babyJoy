@@ -3,6 +3,14 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { formatVnd, type Product } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
+import {
+  cartFingerprint,
+  clearPendingMessengerCart,
+  getMessengerSubmissionToken,
+  readPendingMessengerCart,
+  writePendingMessengerCart,
+  type PendingMessengerCart,
+} from "../lib/messenger-checkout";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -638,6 +646,9 @@ export function CartPage() {
 
 function CartSummary() {
   const cart = useCart();
+  const { products } = useCatalog();
+  const lines = cartDetails(cart.items, products);
+  const messengerEnabled = useMessengerCheckoutEnabled();
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
@@ -649,17 +660,246 @@ function CartSummary() {
         <span>Tạm tính</span>
         <Price value={cart.subtotalVnd} />
       </div>
-      <p className="info-box">
-        <Icon>info</Icon>Giỏ hàng sẽ được gửi đến người bán để kiểm tra và liên
-        hệ xác nhận.
-      </p>
-      <Link className="btn primary" to="/cart/submit">
-        GỬI CHO NGƯỜI BÁN <Icon>send</Icon>
-      </Link>
+      {messengerEnabled === true ? (
+        <MessengerCheckoutControls lines={lines} />
+      ) : messengerEnabled === false ? (
+        <>
+          <p className="info-box">
+            <Icon>info</Icon>Giỏ hàng sẽ được gửi đến người bán để kiểm tra và
+            liên hệ xác nhận.
+          </p>
+          <Link className="btn primary" to="/cart/submit">
+            GỬI CHO NGƯỜI BÁN <Icon>send</Icon>
+          </Link>
+        </>
+      ) : (
+        <button className="btn primary" disabled>
+          ĐANG TẢI KÊNH XÁC NHẬN...
+        </button>
+      )}
       <small>
         <Icon>lock</Icon> Thông tin của bạn được bảo mật an toàn
       </small>
     </aside>
+  );
+}
+
+function useMessengerCheckoutEnabled() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/checkout-config")
+      .then(async (response) => {
+        if (!response.ok) return { messengerCheckoutEnabled: false };
+        return response.json() as Promise<{ messengerCheckoutEnabled?: boolean }>;
+      })
+      .then((body) => {
+        if (!cancelled) setEnabled(body.messengerCheckoutEnabled === true);
+      })
+      .catch(() => {
+        if (!cancelled) setEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return enabled;
+}
+
+type MessengerStartResult = {
+  success: true;
+  code: string;
+  messengerUrl: string;
+  statusToken: string;
+  expiresAt: string;
+  messengerStatus: string;
+  cartRequest: PendingMessengerCart["cartRequest"];
+};
+
+function MessengerCheckoutControls({
+  lines,
+}: {
+  lines: ReturnType<typeof cartDetails>;
+}) {
+  const cart = useCart();
+  const navigate = useNavigate();
+  const fingerprint = cartFingerprint(cart.items);
+  const [pending, setPending] = useState<PendingMessengerCart | null>(() =>
+    readPendingMessengerCart(),
+  );
+  const [status, setStatus] = useState(
+    pending ? "AWAITING_USER" : "",
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const completeSentCart = (value: PendingMessengerCart) => {
+    // Chỉ xóa đúng snapshot đã submit; thay đổi mới của khách luôn được giữ lại.
+    if (cartFingerprint(cart.items) === value.fingerprint) cart.clear();
+    window.sessionStorage.setItem(
+      "babyjoy.lastSubmittedCart.v1",
+      JSON.stringify({ ...value.cartRequest, contactChannel: "MESSENGER" }),
+    );
+    clearPendingMessengerCart();
+    setPending(null);
+    navigate(`/cart/success/${encodeURIComponent(value.code)}`);
+  };
+
+  const checkStatus = async (quiet = false) => {
+    const value = pending ?? readPendingMessengerCart();
+    if (!value) return;
+    if (!quiet) setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(
+        `/api/cart/messenger/status/${encodeURIComponent(value.code)}`,
+        { headers: { authorization: `Bearer ${value.statusToken}` } },
+      );
+      const body = (await response.json()) as {
+        status?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.status)
+        throw new Error(body.error?.message || "Chưa thể kiểm tra trạng thái.");
+      setStatus(body.status);
+      if (body.status === "SENT") completeSentCart(value);
+      else if (body.status === "FAILED")
+        setMessage("BabyJoy chưa gửi được giỏ hàng qua Messenger. Giỏ hàng của bạn vẫn được giữ lại.");
+    } catch (caught) {
+      if (!quiet)
+        setMessage(
+          caught instanceof Error
+            ? caught.message
+            : "Chưa thể kiểm tra trạng thái Messenger.",
+        );
+    } finally {
+      if (!quiet) setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!pending) return;
+    const refresh = () => void checkStatus(true);
+    const visible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [pending, fingerprint]);
+
+  const openMessenger = (url: string) => {
+    // Điều hướng same-tab ổn định trên cả mobile và desktop, không phụ thuộc popup.
+    window.location.assign(url);
+  };
+
+  const start = async (forceNew = false) => {
+    setBusy(true);
+    setMessage("");
+    try {
+      if (!lines.length) throw new Error("Giỏ hàng đang trống.");
+      if (forceNew) {
+        clearPendingMessengerCart();
+        setPending(null);
+      }
+      const submissionToken = getMessengerSubmissionToken(
+        fingerprint,
+        forceNew,
+      );
+      const response = await fetch("/api/cart/messenger/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          submissionToken,
+          items: lines.map(({ variant, quantity }) => ({
+            variantId: variant.id,
+            quantity,
+          })),
+        }),
+      });
+      const body = (await response.json()) as
+        | MessengerStartResult
+        | { error?: { message?: string } };
+      if (!response.ok || !("success" in body)) {
+        const failure = "error" in body ? body.error : undefined;
+        throw new Error(failure?.message || "Chưa thể tạo phiên Messenger.");
+      }
+      const value: PendingMessengerCart = {
+        code: body.code,
+        messengerUrl: body.messengerUrl,
+        statusToken: body.statusToken,
+        expiresAt: body.expiresAt,
+        fingerprint,
+        cartRequest: body.cartRequest,
+      };
+      writePendingMessengerCart(value);
+      setPending(value);
+      setStatus(body.messengerStatus);
+      openMessenger(body.messengerUrl);
+    } catch (caught) {
+      setMessage(
+        caught instanceof Error
+          ? caught.message
+          : "Chưa thể mở Messenger. Giỏ hàng của bạn vẫn được giữ lại.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (pending) {
+    const expired = status === "EXPIRED";
+    return (
+      <div className="messenger-pending" role="status">
+        <Icon>{expired ? "schedule" : "forum"}</Icon>
+        <b>
+          {expired
+            ? "Phiên xác nhận Messenger đã hết hạn."
+            : status === "IDENTIFIED"
+              ? "Messenger đã được nhận diện"
+              : status === "CONFIRMED" || status === "SENDING"
+                ? "BabyJoy đang gửi giỏ hàng"
+                : "Đang chờ xác nhận trên Messenger"}
+        </b>
+        {!expired && (
+          <p>
+            Mở Messenger, xác nhận giỏ hàng và quay lại BabyJoy. Shop sẽ nhận
+            giỏ hàng ngay trong cuộc trò chuyện của bạn.
+          </p>
+        )}
+        {message && <p className="form-error">{message}</p>}
+        {expired ? (
+          <button className="btn primary" disabled={busy} onClick={() => void start(true)}>
+            XÁC NHẬN LẠI
+          </button>
+        ) : (
+          <div className="messenger-actions">
+            <button className="btn primary" onClick={() => openMessenger(pending.messengerUrl)}>
+              MỞ MESSENGER
+            </button>
+            <button className="btn secondary-btn" disabled={busy} onClick={() => void checkStatus()}>
+              {busy ? "ĐANG KIỂM TRA..." : "KIỂM TRA TRẠNG THÁI"}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="messenger-checkout">
+      <p className="info-box">
+        <Icon>forum</Icon>Shop sẽ nhận giỏ hàng và tư vấn trực tiếp với bạn trên
+        Messenger.
+      </p>
+      {message && <p className="form-error">{message}</p>}
+      <button className="btn primary" disabled={busy} onClick={() => void start()}>
+        {busy ? "ĐANG TẠO PHIÊN..." : "XÁC NHẬN QUA MESSENGER"} <Icon>send</Icon>
+      </button>
+    </div>
   );
 }
 
@@ -680,11 +920,15 @@ export function SubmitCartPage() {
   const { products } = useCatalog();
   const lines = cartDetails(cart.items, products);
   const navigate = useNavigate();
+  const messengerEnabled = useMessengerCheckoutEnabled();
   const tokenRef = useRef(
     typeof crypto !== "undefined" ? crypto.randomUUID() : `local-${Date.now()}`,
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (messengerEnabled) navigate("/cart", { replace: true });
+  }, [messengerEnabled, navigate]);
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
@@ -718,7 +962,11 @@ export function SubmitCartPage() {
         );
       window.sessionStorage.setItem(
         "babyjoy.lastSubmittedCart.v1",
-        JSON.stringify({ ...body.cartRequest, items: lines }),
+        JSON.stringify({
+          ...body.cartRequest,
+          items: lines,
+          contactChannel: "LEGACY",
+        }),
       );
       cart.clear();
       navigate(`/cart/success/${body.cartRequest.code}`);
@@ -732,6 +980,17 @@ export function SubmitCartPage() {
       setBusy(false);
     }
   };
+  if (messengerEnabled !== false)
+    return (
+      <PublicShell hideMobileNav>
+        <section className="submit-page">
+          <div className="empty-state">
+            <Icon>progress_activity</Icon>
+            <p>Đang mở xác nhận Messenger...</p>
+          </div>
+        </section>
+      </PublicShell>
+    );
   return (
     <PublicShell hideMobileNav>
       <section className="submit-page">
@@ -881,6 +1140,7 @@ export function SuccessPage() {
     totalQuantity: 4,
     subtotalVnd: 367000,
     createdAt: "2026-08-25T15:12:00+07:00",
+    contactChannel: "LEGACY",
   });
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -904,10 +1164,15 @@ export function SuccessPage() {
           <div className="success-icon">
             <Icon>check</Icon>
           </div>
-          <h1>Đã gửi giỏ hàng</h1>
+          <h1>
+            {data.contactChannel === "MESSENGER"
+              ? "Giỏ hàng đã được gửi qua Messenger"
+              : "Đã gửi giỏ hàng"}
+          </h1>
           <p>
-            Người bán sẽ liên hệ với bạn để xác nhận tình trạng sản phẩm, phí
-            giao hàng và phương thức thanh toán.
+            {data.contactChannel === "MESSENGER"
+              ? "BabyJoy đã gửi chi tiết giỏ hàng vào cuộc trò chuyện Messenger của bạn. Shop sẽ tư vấn và xác nhận hàng ngay tại đó."
+              : "Người bán sẽ liên hệ với bạn để xác nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán."}
           </p>
           <div className="success-data">
             <div className="cart-code">

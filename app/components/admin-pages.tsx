@@ -609,6 +609,7 @@ function Toggle({
 }
 
 export function AdminCartRequestsPage() {
+  const [scope, setScope] = useState<"queue" | "messenger">("queue");
   const [requests, setRequests] = useState<
     Array<{
       id: string;
@@ -620,26 +621,29 @@ export function AdminCartRequestsPage() {
       subtotalVnd: number;
       status: string;
       telegramStatus: string;
+      contactChannel: "LEGACY" | "MESSENGER";
+      messengerDeliveryStatus: string;
+      messengerSessionStatus: string | null;
       createdAt: string;
     }>
   >([]);
   useEffect(() => {
-    void fetch("/api/admin/cart-requests")
+    void fetch(`/api/admin/cart-requests?scope=${scope}`)
       .then(async (response) => {
         if (!response.ok) throw new Error("REQUESTS_LOAD_FAILED");
         return response.json() as Promise<{ data?: typeof requests }>;
       })
       .then((body) => setRequests(body.data ?? []))
       .catch(() => setRequests([]));
-  }, []);
+  }, [scope]);
   return (
     <AdminShell title="Giỏ Hàng Gửi Đến">
       <div className="requests-heading">
         <div>
           <h1>Giỏ hàng gửi đến</h1>
           <p>
-            Quản lý các yêu cầu đặt hàng gửi từ khách hàng. Trạng thái Telegram
-            giúp theo dõi tiến độ gửi thông báo cho nhóm vận hành.
+            Quản lý yêu cầu giỏ hàng và trạng thái gửi đến kênh liên hệ của
+            khách hàng.
           </p>
         </div>
         <label className="admin-search">
@@ -651,18 +655,18 @@ export function AdminCartRequestsPage() {
         </button>
       </div>
       <div className="request-tabs">
-        {[
-          "Tất cả 124",
-          "Mới 5",
-          "Đã liên hệ",
-          "Đã xác nhận",
-          "Hoàn thành",
-          "Đã hủy",
-        ].map((label, index) => (
-          <button className={index === 0 ? "active" : ""} key={label}>
-            {label}
-          </button>
-        ))}
+        <button
+          className={scope === "queue" ? "active" : ""}
+          onClick={() => setScope("queue")}
+        >
+          Hàng chờ xử lý
+        </button>
+        <button
+          className={scope === "messenger" ? "active" : ""}
+          onClick={() => setScope("messenger")}
+        >
+          Theo dõi Messenger
+        </button>
       </div>
       <section className="admin-table-card request-table">
         <div className="table-scroll">
@@ -675,7 +679,8 @@ export function AdminCartRequestsPage() {
                 <th>Số mặt hàng</th>
                 <th>Tạm tính</th>
                 <th>Trạng thái</th>
-                <th>Trạng thái Telegram</th>
+                <th>Kênh</th>
+                <th>Trạng thái gửi</th>
               </tr>
             </thead>
             <tbody>
@@ -690,11 +695,15 @@ export function AdminCartRequestsPage() {
                     </Link>
                   </td>
                   <td>
-                    <b>{request.customerName}</b>
-                    <small>
-                      <Icon>call</Icon>
-                      {request.customerPhone}
-                    </small>
+                    <b>{request.customerName || "Khách Messenger"}</b>
+                    {request.customerPhone ? (
+                      <small>
+                        <Icon>call</Icon>
+                        {request.customerPhone}
+                      </small>
+                    ) : (
+                      <small>Trao đổi trực tiếp trên Messenger</small>
+                    )}
                   </td>
                   <td>
                     {new Date(request.createdAt).toLocaleTimeString("vi-VN", {
@@ -715,7 +724,18 @@ export function AdminCartRequestsPage() {
                     <StatusBadge status={request.status} />
                   </td>
                   <td>
-                    <StatusBadge status={request.telegramStatus} />
+                    <StatusBadge status={request.contactChannel} />
+                  </td>
+                  <td>
+                    <StatusBadge
+                      status={
+                        request.contactChannel === "MESSENGER"
+                          ? request.messengerDeliveryStatus === "PENDING"
+                            ? request.messengerSessionStatus || "CREATED"
+                            : request.messengerDeliveryStatus
+                          : request.telegramStatus
+                      }
+                    />
                   </td>
                 </tr>
               ))}
@@ -734,16 +754,27 @@ export function AdminCartRequestDetailPage() {
     "request-canonical";
   const [status, setStatus] = useState("SUBMITTED");
   const [telegram, setTelegram] = useState("FAILED");
+  const [messengerDelivery, setMessengerDelivery] = useState("PENDING");
   const [detail, setDetail] = useState<{
     publicCode: string;
-    customerName: string;
-    customerPhone: string;
+    customerName: string | null;
+    customerPhone: string | null;
     customerNote?: string | null;
     itemLineCount: number;
     totalQuantity: number;
     subtotalVnd: number;
     status: string;
     telegramStatus: string;
+    contactChannel: "LEGACY" | "MESSENGER";
+    messengerDeliveryStatus: string;
+    messengerSessionStatus: string | null;
+    messengerConfirmedAt: string | null;
+    messengerSentAt: string | null;
+    messengerAttemptCount: number;
+    messengerLastErrorCode: string | null;
+    messengerLastError: string | null;
+    messengerLastUserInteractionAt: string | null;
+    messengerLinked: number;
     createdAt: string;
     items: Array<{
       id: string;
@@ -769,6 +800,7 @@ export function AdminCartRequestDetailPage() {
         setDetail(body.data);
         setStatus(body.data.status);
         setTelegram(body.data.telegramStatus);
+        setMessengerDelivery(body.data.messengerDeliveryStatus);
       })
       .catch(() => {
         if (!cancelled) setLoadError("Không tải được giỏ hàng từ D1.");
@@ -795,6 +827,18 @@ export function AdminCartRequestDetailPage() {
     );
     if (response.ok) setTelegram("SENT");
     else window.alert("Chưa thể gửi Telegram. Kiểm tra secret và thử lại.");
+  };
+  const retryMessenger = async () => {
+    const response = await fetch(
+      `/api/admin/cart-requests/${requestId}/retry-messenger`,
+      { method: "POST" },
+    );
+    const body = (await response.json()) as {
+      messengerDeliveryStatus?: string;
+      error?: { message?: string };
+    };
+    if (response.ok) setMessengerDelivery("SENT");
+    else window.alert(body.error?.message || "Chưa thể gửi lại Messenger.");
   };
   if (!detail)
     return (
@@ -833,12 +877,13 @@ export function AdminCartRequestDetailPage() {
             <div className="customer-fields">
               <div>
                 <span>Tên khách hàng</span>
-                <b>{detail.customerName}</b>
+                <b>{detail.customerName || "Khách Messenger"}</b>
               </div>
               <div>
                 <span>Số điện thoại</span>
                 <b>
-                  {detail.customerPhone} <Icon>content_copy</Icon>
+                  {detail.customerPhone || "Không yêu cầu trước khi xác nhận"}
+                  {detail.customerPhone && <Icon>content_copy</Icon>}
                 </b>
               </div>
             </div>
@@ -897,25 +942,58 @@ export function AdminCartRequestDetailPage() {
               <Icon>update</Icon> CẬP NHẬT TRẠNG THÁI
             </button>
           </section>
-          <section className="telegram-card">
-            <h2>
-              <span className="telegram-icon">➤</span> Thông báo Telegram
-            </h2>
-            <StatusBadge status={telegram} />
-            <span className="telegram-time">
-              {new Date(detail.createdAt).toLocaleString("vi-VN")}
-            </span>
-            <p>
-              {telegram === "FAILED"
-                ? "Đã có lỗi xảy ra khi gửi thông báo yêu cầu này đến người bán trên Telegram. Mã lỗi: 400 Bad Request."
-                : "Thông báo đã được gửi thành công đến người bán."}
-            </p>
-            {telegram === "FAILED" && (
-              <button className="btn secondary-btn" onClick={retryTelegram}>
-                <Icon>send</Icon> THỬ GỬI LẠI
-              </button>
-            )}
-          </section>
+          {detail.contactChannel === "MESSENGER" ? (
+            <section className="telegram-card messenger-admin-card">
+              <h2>
+                <span className="telegram-icon messenger-icon">M</span> Messenger
+              </h2>
+              <StatusBadge status={messengerDelivery} />
+              <span className="telegram-time">
+                {detail.messengerSentAt
+                  ? new Date(detail.messengerSentAt).toLocaleString("vi-VN")
+                  : "Chưa gửi"}
+              </span>
+              <p>
+                Messenger: {detail.messengerLinked ? "Đã liên kết" : "Chưa liên kết"}
+              </p>
+              <p>
+                Xác nhận: {detail.messengerConfirmedAt
+                  ? new Date(detail.messengerConfirmedAt).toLocaleString("vi-VN")
+                  : "Chưa xác nhận"}
+                <br />Số lần gửi: {detail.messengerAttemptCount}
+              </p>
+              {detail.messengerLastError && (
+                <p className="form-error">
+                  {detail.messengerLastErrorCode || "MESSENGER_SEND_FAILED"}: {detail.messengerLastError}
+                </p>
+              )}
+              {messengerDelivery === "FAILED" && (
+                <button className="btn secondary-btn" onClick={retryMessenger}>
+                  <Icon>send</Icon> THỬ GỬI LẠI MESSENGER
+                </button>
+              )}
+            </section>
+          ) : (
+            <section className="telegram-card">
+              <h2>
+                <span className="telegram-icon">➤</span> Thông báo Telegram
+              </h2>
+              <StatusBadge status={telegram} />
+              <span className="telegram-time">
+                {new Date(detail.createdAt).toLocaleString("vi-VN")}
+              </span>
+              <p>
+                {telegram === "FAILED"
+                  ? "Đã có lỗi xảy ra khi gửi thông báo yêu cầu này đến người bán trên Telegram."
+                  : "Thông báo đã được gửi thành công đến người bán."}
+              </p>
+              {telegram === "FAILED" && (
+                <button className="btn secondary-btn" onClick={retryTelegram}>
+                  <Icon>send</Icon> THỬ GỬI LẠI
+                </button>
+              )}
+            </section>
+          )}
         </aside>
       </div>
     </AdminShell>
@@ -1025,8 +1103,8 @@ export function AdminSettingsPage() {
           <input defaultValue="1900 123 456" />
         </label>
         <p>
-          Telegram Bot Token được quản lý bằng Cloudflare Secret và không hiển
-          thị tại đây.
+          Credential Telegram legacy và Meta Messenger được quản lý bằng
+          Cloudflare Secret, không hiển thị tại đây.
         </p>
         <button className="btn primary">
           <Icon>save</Icon> LƯU CÀI ĐẶT

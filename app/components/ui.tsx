@@ -294,7 +294,15 @@ export function StatusBadge({ status }: { status: string }) {
     COMPLETED: "Hoàn thành",
     CANCELLED: "Đã hủy",
     SENT: "Đã gửi",
-    FAILED: "Gửi Telegram thất bại",
+    FAILED: "Gửi lỗi",
+    NOT_APPLICABLE: "Không áp dụng",
+    PENDING: "Chờ xác nhận",
+    SENDING: "Đang gửi",
+    CREATED: "Chờ xác nhận",
+    IDENTIFIED: "Đã nhận diện",
+    EXPIRED: "Hết hạn",
+    MESSENGER: "Messenger",
+    LEGACY: "Legacy",
   };
   return (
     <span className={`status status-${status.toLowerCase()}`}>

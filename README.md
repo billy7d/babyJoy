@@ -29,14 +29,37 @@ npm run test:e2e
 
 1. Tạo D1 database `babyjoy-db` và R2 bucket `babyjoy-product-images`.
 2. Thay `REPLACE_WITH_PRODUCTION_D1_ID` trong `wrangler.jsonc` bằng D1 ID thật.
-3. Khai báo Telegram bằng secret, tuyệt đối không đưa token vào source:
+3. Trong giai đoạn rollout Messenger, giữ Telegram legacy cho đến khi smoke
+   test theo role Meta thành công. Secret tuyệt đối không đưa vào source:
 
 ```powershell
 npx wrangler secret put TELEGRAM_BOT_TOKEN --env production
 npx wrangler secret put TELEGRAM_CHAT_ID --env production
+npx wrangler secret put META_PAGE_ACCESS_TOKEN --env production
+npx wrangler secret put META_APP_SECRET --env production
+npx wrangler secret put META_WEBHOOK_VERIFY_TOKEN --env production
 npm run db:migrate:remote
 npm run deploy -- --env production
 ```
+
+Các biến không phải secret trong `wrangler.jsonc`:
+
+- `META_PAGE_ID`: ID Facebook Page gửi message.
+- `MESSENGER_PAGE_USERNAME`: username dùng cho URL `m.me`.
+- `META_GRAPH_API_VERSION`: phiên bản Graph API đã kiểm thử.
+- `MESSENGER_CHECKOUT_ENABLED`: để `false` khi deploy hạ tầng và role smoke
+  test; chỉ đổi `true` sau khi có phê duyệt cutover.
+
+Webhook public là `/api/meta/messenger/webhook`. Trên Meta App cần subscribe
+Page vào `messages`, `messaging_postbacks`, `messaging_referrals`; cấu hình Get
+Started payload `BABYJOY_GET_STARTED`; cấp `pages_messaging` và
+`pages_manage_metadata` khi cần subscribe Page. Standard Access chỉ dùng cho
+Admin/Developer/Tester. Trước public cutover phải có Advanced Access và smoke
+test một tài khoản thật không có App role.
+
+Không đưa PSID, raw referral/status token hoặc Meta credential vào log. Referral
+và status token chỉ được lưu dạng SHA-256 trong D1; PSID chỉ tồn tại trong D1
+private và không được trả về public API/Admin UI.
 
 Admin production yêu cầu Cloudflare Access Application bảo vệ `/admin/*` và `/api/admin/*`. `ACCESS_TEAM_DOMAIN` nhận hostname dạng `<team>.cloudflareaccess.com` (hoặc URL HTTPS tương đương) và được chuẩn hóa thành issuer HTTPS trước khi tạo JWKS URL; `ACCESS_AUD` phải khớp Access Application. Worker chỉ đọc email từ payload sau khi đã xác minh chữ ký JWT, issuer, audience và thời hạn; cấu hình trống hoặc môi trường không phải `development` sẽ fail-closed.
 
@@ -45,6 +68,12 @@ Admin production yêu cầu Cloudflare Access Application bảo vệ `/admin/*` 
 - D1 là nguồn giá có thẩm quyền khi gửi giỏ hàng; giá từ trình duyệt chỉ dùng để phát hiện thay đổi.
 - `submissionToken` là idempotency key, tránh tạo bản ghi trùng khi người dùng gửi lại.
 - Bản ghi yêu cầu và snapshot mặt hàng được commit trước khi gửi Telegram. Telegram thất bại không làm mất yêu cầu và admin có thể thử lại.
+- Messenger checkout chỉ hoàn tất khi `messenger_delivery_status = SENT`; browser
+  không xóa cart trước trạng thái này và không xóa nếu cart hiện tại đã khác
+  snapshot được gửi.
+- Telegram runtime là fallback production trong rollout v1. Chỉ gỡ client,
+  route retry, UI, test và secret Telegram sau role smoke test thành công và có
+  phê duyệt cutover rõ ràng; các cột D1 lịch sử vẫn được giữ lại.
 - Giỏ hàng local dùng key `babyjoy.cart.v1` và tồn tại qua refresh.
 - Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 5 MB, tạo key immutable mới trong R2 và lưu duy nhất `r2_key` vào D1.
 - Ảnh production được phân phối trực tiếp qua `https://images.metraphuong.com/<r2_key>`. Route `/media/*` chỉ còn tương thích legacy và đã được đánh dấu deprecated.

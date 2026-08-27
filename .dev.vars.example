@@ -1,2 +1,5 @@
 TELEGRAM_BOT_TOKEN=replace-with-local-token
 TELEGRAM_CHAT_ID=replace-with-local-chat-id
+META_PAGE_ACCESS_TOKEN=replace-with-local-page-token
+META_APP_SECRET=replace-with-local-app-secret
+META_WEBHOOK_VERIFY_TOKEN=replace-with-local-verify-token
