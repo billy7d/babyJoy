@@ -609,7 +609,7 @@ function Toggle({
 }
 
 export function AdminCartRequestsPage() {
-  const [scope, setScope] = useState<"queue" | "messenger">("queue");
+  const [scope, setScope] = useState<"queue" | "share" | "messenger">("queue");
   const [requests, setRequests] = useState<
     Array<{
       id: string;
@@ -621,7 +621,7 @@ export function AdminCartRequestsPage() {
       subtotalVnd: number;
       status: string;
       telegramStatus: string;
-      contactChannel: "LEGACY" | "MESSENGER";
+      contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
       messengerDeliveryStatus: string;
       messengerSessionStatus: string | null;
       createdAt: string;
@@ -662,6 +662,12 @@ export function AdminCartRequestsPage() {
           Hàng chờ xử lý
         </button>
         <button
+          className={scope === "share" ? "active" : ""}
+          onClick={() => setScope("share")}
+        >
+          Chia sẻ thủ công
+        </button>
+        <button
           className={scope === "messenger" ? "active" : ""}
           onClick={() => setScope("messenger")}
         >
@@ -695,14 +701,18 @@ export function AdminCartRequestsPage() {
                     </Link>
                   </td>
                   <td>
-                    <b>{request.customerName || "Khách Messenger"}</b>
+                    <b>{request.customerName || (request.contactChannel === "SHARE" ? "Khách chia sẻ" : "Khách Messenger")}</b>
                     {request.customerPhone ? (
                       <small>
                         <Icon>call</Icon>
                         {request.customerPhone}
                       </small>
                     ) : (
-                      <small>Trao đổi trực tiếp trên Messenger</small>
+                      <small>
+                        {request.contactChannel === "SHARE"
+                          ? "Khách tự gửi thông tin tới người bán"
+                          : "Trao đổi trực tiếp trên Messenger"}
+                      </small>
                     )}
                   </td>
                   <td>
@@ -729,7 +739,9 @@ export function AdminCartRequestsPage() {
                   <td>
                     <StatusBadge
                       status={
-                        request.contactChannel === "MESSENGER"
+                        request.contactChannel === "SHARE"
+                          ? "SHARE_READY"
+                          : request.contactChannel === "MESSENGER"
                           ? request.messengerDeliveryStatus === "PENDING"
                             ? request.messengerSessionStatus || "CREATED"
                             : request.messengerDeliveryStatus
@@ -765,7 +777,7 @@ export function AdminCartRequestDetailPage() {
     subtotalVnd: number;
     status: string;
     telegramStatus: string;
-    contactChannel: "LEGACY" | "MESSENGER";
+    contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
     messengerDeliveryStatus: string;
     messengerSessionStatus: string | null;
     messengerConfirmedAt: string | null;
@@ -862,7 +874,9 @@ export function AdminCartRequestDetailPage() {
         </div>
         <div>
           <button className="btn secondary-btn">In Phiếu</button>
-          <button className="btn primary">Liên Hệ Khách Hàng</button>
+          {detail.contactChannel !== "SHARE" && (
+            <button className="btn primary">Liên Hệ Khách Hàng</button>
+          )}
         </div>
       </div>
       <div className="request-detail-grid">
@@ -877,12 +891,12 @@ export function AdminCartRequestDetailPage() {
             <div className="customer-fields">
               <div>
                 <span>Tên khách hàng</span>
-                <b>{detail.customerName || "Khách Messenger"}</b>
+                <b>{detail.customerName || (detail.contactChannel === "SHARE" ? "Khách chia sẻ" : "Khách Messenger")}</b>
               </div>
               <div>
                 <span>Số điện thoại</span>
                 <b>
-                  {detail.customerPhone || "Không yêu cầu trước khi xác nhận"}
+                  {detail.customerPhone || (detail.contactChannel === "SHARE" ? "Không thu thập" : "Không yêu cầu trước khi xác nhận")}
                   {detail.customerPhone && <Icon>content_copy</Icon>}
                 </b>
               </div>
@@ -942,7 +956,20 @@ export function AdminCartRequestDetailPage() {
               <Icon>update</Icon> CẬP NHẬT TRẠNG THÁI
             </button>
           </section>
-          {detail.contactChannel === "MESSENGER" ? (
+          {detail.contactChannel === "SHARE" ? (
+            <section className="telegram-card share-admin-card">
+              <h2>
+                <span className="telegram-icon share-icon"><Icon>share</Icon></span>
+                Chia sẻ thủ công
+              </h2>
+              <StatusBadge status="SHARE_READY" />
+              <p>Khách tự mở Messenger của người bán.</p>
+              <p>
+                BabyJoy không xác minh người bán đã nhận. Giỏ hàng và snapshot
+                vẫn được giữ nguyên để đối chiếu.
+              </p>
+            </section>
+          ) : detail.contactChannel === "MESSENGER" ? (
             <section className="telegram-card messenger-admin-card">
               <h2>
                 <span className="telegram-icon messenger-icon">M</span> Messenger
@@ -1075,6 +1102,109 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
 }
 
 export function AdminSettingsPage() {
+  const [seller, setSeller] = useState({
+    displayName: "",
+    label: "Người bán BabyJoy",
+    messengerUrl: "",
+    avatarKey: "",
+    avatarUrl: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const avatarInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/admin/settings/seller")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("SETTINGS_LOAD_FAILED");
+        return response.json() as Promise<{
+          data: {
+            displayName: string;
+            label: string;
+            messengerUrl: string;
+            avatarKey: string | null;
+            avatarUrl: string | null;
+          };
+        }>;
+      })
+      .then((body) => {
+        if (!cancelled)
+          setSeller({
+            ...body.data,
+            avatarKey: body.data.avatarKey ?? "",
+            avatarUrl: body.data.avatarUrl ?? "",
+          });
+      })
+      .catch(() => {
+        if (!cancelled) setError("Không tải được cấu hình người bán từ D1.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const uploadAvatar = async (file: File) => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/images", {
+        method: "POST",
+        headers: { "content-type": file.type },
+        body: file,
+      });
+      const body = (await response.json()) as {
+        key?: string;
+        url?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.key)
+        throw new Error(body.error?.message || "Chưa thể tải ảnh đại diện.");
+      setSeller((current) => ({
+        ...current,
+        avatarKey: body.key ?? "",
+        avatarUrl: body.url ?? "",
+      }));
+      setMessage("Ảnh đã tải lên. Hãy lưu cài đặt để áp dụng.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Chưa thể tải ảnh.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const save = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/admin/settings/seller", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          displayName: seller.displayName,
+          label: seller.label,
+          messengerUrl: seller.messengerUrl,
+          avatarKey: seller.avatarKey || null,
+        }),
+      });
+      const body = (await response.json()) as {
+        data?: typeof seller;
+        error?: { message?: string };
+      };
+      if (!response.ok)
+        throw new Error(body.error?.message || "Chưa thể lưu cài đặt.");
+      if (body.data)
+        setSeller({
+          ...body.data,
+          avatarKey: body.data.avatarKey ?? "",
+          avatarUrl: body.data.avatarUrl ?? "",
+        });
+      setMessage("Đã lưu liên hệ người bán.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Chưa thể lưu cài đặt.");
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <AdminShell title="Cài Đặt">
       <div className="admin-page-heading">
@@ -1109,6 +1239,85 @@ export function AdminSettingsPage() {
         <button className="btn primary">
           <Icon>save</Icon> LƯU CÀI ĐẶT
         </button>
+      </section>
+      <section className="editor-card settings-card seller-settings-card">
+        <div className="editor-card-title">
+          <span>
+            <Icon>support_agent</Icon>
+            <h2>Liên hệ người bán</h2>
+          </span>
+        </div>
+        <p>Một liên hệ mặc định được hiển thị cho mọi giỏ hàng BabyJoy.</p>
+        <div className="seller-settings-avatar">
+          {seller.avatarUrl ? (
+            <img src={seller.avatarUrl} alt="Ảnh đại diện người bán" />
+          ) : (
+            <span><Icon>person</Icon></span>
+          )}
+          <div>
+            <button
+              className="btn secondary-btn"
+              disabled={busy}
+              onClick={() => avatarInput.current?.click()}
+            >
+              TẢI ẢNH TỪ MÁY
+            </button>
+            <input
+              ref={avatarInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void uploadAvatar(file);
+              }}
+            />
+          </div>
+        </div>
+        <label>
+          Tên hiển thị
+          <input
+            value={seller.displayName}
+            onChange={(event) => setSeller({ ...seller, displayName: event.target.value })}
+            placeholder="Nguyễn A"
+          />
+        </label>
+        <label>
+          Nhãn
+          <input
+            value={seller.label}
+            onChange={(event) => setSeller({ ...seller, label: event.target.value })}
+            placeholder="Người bán BabyJoy"
+          />
+        </label>
+        <label>
+          Messenger URL
+          <input
+            value={seller.messengerUrl}
+            onChange={(event) => setSeller({ ...seller, messengerUrl: event.target.value })}
+            placeholder="https://m.me/nguyena"
+            inputMode="url"
+          />
+        </label>
+        <label>
+          Khóa ảnh R2 hiện có (không bắt buộc)
+          <input
+            value={seller.avatarKey}
+            onChange={(event) => setSeller({ ...seller, avatarKey: event.target.value })}
+            placeholder="products/2026-08-28/...webp"
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        {message && <p className="form-success">{message}</p>}
+        <div className="seller-settings-actions">
+          <button className="btn primary" disabled={busy} onClick={() => void save()}>
+            <Icon>save</Icon> {busy ? "ĐANG LƯU..." : "LƯU LIÊN HỆ NGƯỜI BÁN"}
+          </button>
+          {seller.messengerUrl.startsWith("https://m.me/") && (
+            <a className="btn secondary-btn" href={seller.messengerUrl} target="_blank" rel="noreferrer">
+              <Icon>open_in_new</Icon> MỞ THỬ MESSENGER
+            </a>
+          )}
+        </div>
       </section>
     </AdminShell>
   );

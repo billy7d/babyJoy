@@ -2,13 +2,14 @@ import { Navigate, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/site";
 import { CartProvider } from "../lib/cart";
 import { CatalogProvider } from "../lib/catalog-context";
-import { CartPage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, SubmitCartPage, SuccessPage } from "../components/public-pages";
+import { CartPage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SubmitCartPage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 
 export function meta({ location }: Route.MetaArgs) {
   const path = location.pathname;
   if (path.startsWith("/product/")) return [{ title: "Sản phẩm ăn dặm hữu cơ | BabyJoy" }, { name: "description", content: "Khám phá sản phẩm ăn dặm hữu cơ an toàn cho bé." }];
   if (path.startsWith("/admin")) return [{ title: "Quản trị BabyJoy" }, { name: "robots", content: "noindex,nofollow" }];
+  if (path.startsWith("/c/")) return [{ title: "Giỏ hàng BabyJoy" }, { name: "robots", content: "noindex,nofollow,noarchive" }, { name: "referrer", content: "no-referrer" }];
   return [{ title: "BabyJoy - Dinh dưỡng trọn vẹn cho bé yêu" }, { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." }];
 }
 
@@ -22,6 +23,7 @@ function RoutedContent() {
   if (pathname.startsWith("/category/")) return <ProductListPage categorySlug={params["*"]?.split("/")[1]} />;
   if (pathname.startsWith("/product/")) return <ProductDetailPage />;
   if (pathname === "/cart") return <CartPage />;
+  if (/^\/c\/[^/]+$/.test(pathname)) return <PublicCartSharePage />;
   if (pathname === "/cart/submit") return <SubmitCartPage />;
   if (pathname.startsWith("/cart/success/")) return <SuccessPage />;
   if (pathname === "/admin") return <Navigate to="/admin/products" replace />;

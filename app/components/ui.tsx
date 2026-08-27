@@ -303,6 +303,8 @@ export function StatusBadge({ status }: { status: string }) {
     EXPIRED: "Hết hạn",
     MESSENGER: "Messenger",
     LEGACY: "Legacy",
+    SHARE: "Chia sẻ thủ công",
+    SHARE_READY: "Đã tạo giỏ chia sẻ",
   };
   return (
     <span className={`status status-${status.toLowerCase()}`}>

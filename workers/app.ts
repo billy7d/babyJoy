@@ -23,10 +23,17 @@ import {
 import {
   getMessengerStatus,
   handleMessengerWebhook,
-  messengerCheckoutConfigResponse,
   retryMessengerDelivery,
   startMessengerCheckout,
 } from "./messenger";
+import {
+  checkoutConfigResponse,
+  getAdminSellerSettings,
+  getPublicCartShare,
+  isDirectSellerShareEnabled,
+  prepareCartShare,
+  saveAdminSellerSettings,
+} from "./cart-share";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -496,9 +503,11 @@ async function getAdminRequests(request: Request, env: Env) {
   const where =
     scope === "messenger"
       ? "WHERE contact_channel = 'MESSENGER'"
+      : scope === "share"
+        ? "WHERE contact_channel = 'SHARE'"
       : scope === "all"
         ? ""
-        : "WHERE contact_channel = 'LEGACY' OR messenger_delivery_status = 'SENT'";
+        : "WHERE contact_channel IN ('LEGACY', 'SHARE') OR messenger_delivery_status = 'SENT'";
   const result = await env.DB.prepare(
     `SELECT id, public_code AS publicCode, customer_name AS customerName,
       customer_phone AS customerPhone, item_line_count AS itemLineCount,
@@ -1150,7 +1159,12 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   if (request.method === "POST" && path === "/api/cart-requests")
     return submitCart(request, env);
   if (request.method === "GET" && path === "/api/checkout-config")
-    return messengerCheckoutConfigResponse(env);
+    return checkoutConfigResponse(env);
+  if (request.method === "POST" && path === "/api/cart/share/prepare")
+    return prepareCartShare(request, env);
+  const publicShareMatch = path.match(/^\/api\/cart\/share\/([^/]+)$/);
+  if (request.method === "GET" && publicShareMatch)
+    return getPublicCartShare(decodeURIComponent(publicShareMatch[1]), env);
   if (request.method === "POST" && path === "/api/cart/messenger/start")
     return startMessengerCheckout(request, env);
   const messengerStatusMatch = path.match(
@@ -1214,6 +1228,10 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
     return saveTaxonomy(request, env, "tags", tagMatch[1]);
   if (request.method === "GET" && path === "/api/admin/cart-requests")
     return getAdminRequests(request, env);
+  if (request.method === "GET" && path === "/api/admin/settings/seller")
+    return getAdminSellerSettings(env);
+  if (request.method === "PUT" && path === "/api/admin/settings/seller")
+    return saveAdminSellerSettings(request, env);
   const requestMatch = path.match(/^\/api\/admin\/cart-requests\/([^/]+)$/);
   if (request.method === "GET" && requestMatch)
     return getAdminRequest(requestMatch[1], env);
@@ -1265,7 +1283,21 @@ export default {
         return await handleApi(request, env, ctx);
       if (url.pathname.startsWith("/media/"))
         return await handleMedia(url.pathname, env);
-      return await requestHandler(request);
+      if (url.pathname === "/cart/submit" && isDirectSellerShareEnabled(env))
+        return Response.redirect(new URL("/cart", request.url), 302);
+      const response = await requestHandler(request);
+      if (/^\/c\/[^/]+$/.test(url.pathname)) {
+        const headers = new Headers(response.headers);
+        headers.set("x-robots-tag", "noindex, nofollow, noarchive");
+        headers.set("referrer-policy", "no-referrer");
+        headers.set("cache-control", "private, no-store");
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
+      return response;
     } catch (caught) {
       console.error(
         JSON.stringify({

@@ -11,6 +11,18 @@ import {
   writePendingMessengerCart,
   type PendingMessengerCart,
 } from "../lib/messenger-checkout";
+import {
+  cartShareFingerprint,
+  clearPreparedCartShare,
+  copyAndOpenSeller,
+  getCartShareSubmissionToken,
+  recordSellerMessengerOpened,
+  readPreparedCartShare,
+  runNativeCartShare,
+  writePreparedCartShare,
+  type PreparedCartShare,
+  type SellerContact,
+} from "../lib/cart-share";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -648,7 +660,7 @@ function CartSummary() {
   const cart = useCart();
   const { products } = useCatalog();
   const lines = cartDetails(cart.items, products);
-  const messengerEnabled = useMessengerCheckoutEnabled();
+  const checkoutConfig = useCheckoutConfig();
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
@@ -660,9 +672,11 @@ function CartSummary() {
         <span>Tạm tính</span>
         <Price value={cart.subtotalVnd} />
       </div>
-      {messengerEnabled === true ? (
+      {checkoutConfig?.enabled === true ? (
+        <DirectSellerShareControls lines={lines} seller={checkoutConfig.seller} />
+      ) : checkoutConfig?.messengerCheckoutEnabled === true ? (
         <MessengerCheckoutControls lines={lines} />
-      ) : messengerEnabled === false ? (
+      ) : checkoutConfig ? (
         <>
           <p className="info-box">
             <Icon>info</Icon>Giỏ hàng sẽ được gửi đến người bán để kiểm tra và
@@ -684,26 +698,335 @@ function CartSummary() {
   );
 }
 
-function useMessengerCheckoutEnabled() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
+type CheckoutConfig = {
+  mode: "DIRECT_SELLER_SHARE";
+  enabled: boolean;
+  seller: SellerContact | null;
+  messengerCheckoutEnabled?: boolean;
+};
+
+function useCheckoutConfig() {
+  const [config, setConfig] = useState<CheckoutConfig | null>(null);
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/checkout-config")
       .then(async (response) => {
-        if (!response.ok) return { messengerCheckoutEnabled: false };
-        return response.json() as Promise<{ messengerCheckoutEnabled?: boolean }>;
+        if (!response.ok) throw new Error("CHECKOUT_CONFIG_FAILED");
+        return response.json() as Promise<CheckoutConfig>;
       })
       .then((body) => {
-        if (!cancelled) setEnabled(body.messengerCheckoutEnabled === true);
+        if (!cancelled) setConfig(body);
       })
       .catch(() => {
-        if (!cancelled) setEnabled(false);
+        if (!cancelled)
+          setConfig({
+            mode: "DIRECT_SELLER_SHARE",
+            enabled: false,
+            seller: null,
+            messengerCheckoutEnabled: false,
+          });
       });
     return () => {
       cancelled = true;
     };
   }, []);
-  return enabled;
+  return config;
+}
+
+type PriceChange = {
+  variantId: string;
+  displayedPrice: number;
+  currentPrice: number;
+};
+
+function DirectSellerShareControls({
+  lines,
+  seller,
+}: {
+  lines: ReturnType<typeof cartDetails>;
+  seller: SellerContact | null;
+}) {
+  const cart = useCart();
+  const fingerprint = cartShareFingerprint(cart.items);
+  const [prepared, setPrepared] = useState<PreparedCartShare | null>(() =>
+    readPreparedCartShare(),
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [priceChanges, setPriceChanges] = useState<PriceChange[]>([]);
+  const [manualCopy, setManualCopy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [returned, setReturned] = useState(false);
+  const manualTextRef = useRef<HTMLTextAreaElement>(null);
+  const stale = Boolean(prepared && prepared.fingerprint !== fingerprint);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && prepared) setReturned(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [prepared]);
+
+  const prepare = async (acceptCurrentPrices = false, forceNew = false) => {
+    setBusy(true);
+    setMessage("");
+    setPriceChanges([]);
+    try {
+      if (!lines.length) throw new Error("Giỏ hàng đang trống.");
+      if (!seller) throw new Error("Người bán chưa được cấu hình.");
+      if (forceNew) clearPreparedCartShare();
+      const submissionToken = getCartShareSubmissionToken(fingerprint, forceNew);
+      const response = await fetch("/api/cart/share/prepare", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          submissionToken,
+          acceptCurrentPrices,
+          items: lines.map(({ variant, quantity }) => ({
+            variantId: variant.id,
+            quantity,
+            displayedPrice: variant.priceVnd,
+          })),
+        }),
+      });
+      const body = (await response.json()) as
+        | Omit<PreparedCartShare, "fingerprint"> & { success: true }
+        | {
+            error?: {
+              code?: string;
+              message?: string;
+              items?: PriceChange[];
+            };
+          };
+      if (!response.ok || !("success" in body)) {
+        const issue = "error" in body ? body.error : undefined;
+        if (issue?.code === "PRICE_CHANGED" && issue.items?.length) {
+          setPriceChanges(issue.items);
+          setMessage("Giá của một số sản phẩm vừa thay đổi.");
+          return;
+        }
+        throw new Error(issue?.message || "Chưa thể chốt giỏ hàng.");
+      }
+      const value: PreparedCartShare = {
+        fingerprint,
+        cartRequest: body.cartRequest,
+        share: body.share,
+        seller: body.seller,
+      };
+      writePreparedCartShare(value);
+      setPrepared(value);
+      setReturned(false);
+    } catch (caught) {
+      setMessage(
+        caught instanceof Error ? caught.message : "Chưa thể chốt giỏ hàng.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openSeller = async () => {
+    if (!prepared || stale) return;
+    setCopied(false);
+    setMessage("");
+    try {
+      await copyAndOpenSeller({
+        copyText: prepared.share.copyText,
+        messengerUrl: prepared.seller.messengerUrl,
+        code: prepared.cartRequest.code,
+        onCopied: () => {
+          setCopied(true);
+          setReturned(true);
+          console.info(
+            JSON.stringify({
+              event: "seller_copy_success",
+              publicCode: prepared.cartRequest.code,
+            }),
+          );
+        },
+      });
+    } catch {
+      console.warn(
+        JSON.stringify({
+          event: "seller_copy_failed",
+          publicCode: prepared.cartRequest.code,
+        }),
+      );
+      setManualCopy(true);
+    }
+  };
+
+  const copyManually = async () => {
+    if (!prepared) return;
+    try {
+      await navigator.clipboard.writeText(prepared.share.copyText);
+      setCopied(true);
+    } catch {
+      // Giữ vùng văn bản được chọn để người dùng long-press hoặc Copy thủ công.
+      manualTextRef.current?.focus();
+      manualTextRef.current?.select();
+    }
+  };
+
+  const secondaryShare = async () => {
+    if (!prepared || stale) return;
+    const result = await runNativeCartShare(prepared.share);
+    if (result === "CANCELLED") {
+      console.info(
+        JSON.stringify({
+          event: "native_share_cancelled",
+          publicCode: prepared.cartRequest.code,
+        }),
+      );
+      return;
+    }
+    console.info(
+      JSON.stringify({
+        event: result === "SHARED" ? "native_share_opened" : "native_share_failed",
+        publicCode: prepared.cartRequest.code,
+      }),
+    );
+    if (result === "UNAVAILABLE" || result === "FAILED") {
+      try {
+        await navigator.clipboard.writeText(prepared.share.copyText);
+        setCopied(true);
+        setMessage("Đã sao chép thông tin giỏ hàng.");
+      } catch {
+        setManualCopy(true);
+      }
+    }
+  };
+
+  if (!prepared || stale) {
+    return (
+      <div className="direct-share-checkout">
+        {stale && (
+          <p className="share-warning" role="alert">
+            Giỏ hàng đã thay đổi. Vui lòng chốt lại trước khi gửi.
+          </p>
+        )}
+        <p className="direct-share-help">
+          BabyJoy sẽ kiểm tra lại giá và tình trạng sản phẩm trước khi tạo thông
+          tin gửi cho shop.
+        </p>
+        {message && <p className="form-error">{message}</p>}
+        {priceChanges.length > 0 && (
+          <div className="price-change-list">
+            {priceChanges.map((change) => {
+              const line = lines.find(
+                ({ variant }) => variant.id === change.variantId,
+              );
+              return (
+                <p key={change.variantId}>
+                  <b>{line?.product.name ?? change.variantId}</b>
+                  <span>
+                    {formatVnd(change.displayedPrice)} → {formatVnd(change.currentPrice)}
+                  </span>
+                </p>
+              );
+            })}
+            <button
+              className="btn secondary-btn"
+              disabled={busy}
+              onClick={() => void prepare(true)}
+            >
+              XÁC NHẬN GIÁ MỚI
+            </button>
+          </div>
+        )}
+        <button
+          className="btn primary direct-prepare"
+          disabled={busy}
+          onClick={() => void prepare(false, stale)}
+        >
+          {busy ? "ĐANG KIỂM TRA..." : "CHỐT GIỎ HÀNG"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="prepared-share" role="status">
+      <div className="prepared-heading">
+        <Icon>check_circle</Icon>
+        <div>
+          <b>GIỎ HÀNG ĐÃ SẴN SÀNG</b>
+          <span>Mã {prepared.cartRequest.code}</span>
+        </div>
+      </div>
+      <p>
+        {prepared.cartRequest.itemLineCount} mặt hàng • {prepared.cartRequest.totalQuantity} sản phẩm
+      </p>
+      <Price value={prepared.cartRequest.subtotalVnd} />
+      <span className="seller-caption">GỬI GIỎ HÀNG TỚI</span>
+      <div className="seller-card">
+        {prepared.seller.avatarUrl ? (
+          <img src={prepared.seller.avatarUrl} alt="" />
+        ) : (
+          <span className="seller-avatar"><Icon>person</Icon></span>
+        )}
+        <p>
+          <b>{prepared.seller.displayName}</b>
+          <span>{prepared.seller.label}</span>
+          <small>Liên hệ BabyJoy</small>
+        </p>
+      </div>
+      {copied && <p className="copy-success">Đã sao chép giỏ hàng</p>}
+      {returned && (
+        <p className="return-note">
+          Giỏ hàng vẫn được giữ lại để bạn có thể gửi lại nếu cần.
+        </p>
+      )}
+      <button className="btn primary messenger-primary" onClick={() => void openSeller()}>
+        <Icon>forum</Icon> NHẮN SHOP QUA MESSENGER
+      </button>
+      <small className="copy-explanation">
+        Chúng tôi sẽ sao chép nội dung giỏ hàng trước khi mở Messenger.
+      </small>
+      <div className="share-divider"><span>hoặc</span></div>
+      <button className="btn secondary-btn web-share-secondary" onClick={() => void secondaryShare()}>
+        <Icon>{typeof navigator !== "undefined" && typeof navigator.share === "function" ? "ios_share" : "content_copy"}</Icon>
+        {typeof navigator !== "undefined" && typeof navigator.share === "function"
+          ? "CHIA SẺ BẰNG ỨNG DỤNG KHÁC"
+          : "SAO CHÉP THÔNG TIN"}
+      </button>
+      {message && <p className="form-error">{message}</p>}
+      {manualCopy && (
+        <div className="manual-copy-sheet" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title">
+          <div className="manual-copy-panel">
+            <h2 id="manual-copy-title">SAO CHÉP GIỎ HÀNG</h2>
+            <p>Trước khi mở Messenger, hãy sao chép nội dung bên dưới.</p>
+            <textarea
+              ref={manualTextRef}
+              readOnly
+              value={prepared.share.copyText}
+              aria-label="Nội dung giỏ hàng để sao chép"
+            />
+            <button className="btn primary" onClick={() => void copyManually()}>
+              <Icon>content_copy</Icon> SAO CHÉP
+            </button>
+            <button
+              className="btn secondary-btn"
+              onClick={() => {
+                recordSellerMessengerOpened(prepared.cartRequest.code);
+                window.location.assign(prepared.seller.messengerUrl);
+              }}
+            >
+              MỞ MESSENGER CỦA {prepared.seller.displayName.toLocaleUpperCase("vi-VN")}
+            </button>
+            <button className="manual-close" onClick={() => setManualCopy(false)}>
+              Đóng
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 type MessengerStartResult = {
@@ -920,15 +1243,16 @@ export function SubmitCartPage() {
   const { products } = useCatalog();
   const lines = cartDetails(cart.items, products);
   const navigate = useNavigate();
-  const messengerEnabled = useMessengerCheckoutEnabled();
+  const checkoutConfig = useCheckoutConfig();
   const tokenRef = useRef(
     typeof crypto !== "undefined" ? crypto.randomUUID() : `local-${Date.now()}`,
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (messengerEnabled) navigate("/cart", { replace: true });
-  }, [messengerEnabled, navigate]);
+    if (checkoutConfig?.enabled || checkoutConfig?.messengerCheckoutEnabled)
+      navigate("/cart", { replace: true });
+  }, [checkoutConfig, navigate]);
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
@@ -980,7 +1304,7 @@ export function SubmitCartPage() {
       setBusy(false);
     }
   };
-  if (messengerEnabled !== false)
+  if (!checkoutConfig || checkoutConfig.enabled || checkoutConfig.messengerCheckoutEnabled)
     return (
       <PublicShell hideMobileNav>
         <section className="submit-page">
@@ -1069,6 +1393,91 @@ export function SubmitCartPage() {
         />
       </section>
     </PublicShell>
+  );
+}
+
+type PublicCartShareDto = {
+  code: string;
+  createdAt: string;
+  itemLineCount: number;
+  totalQuantity: number;
+  subtotalVnd: number;
+  items: Array<{
+    productName: string;
+    variantName: string;
+    imageUrl: string;
+    unitPriceVnd: number;
+    quantity: number;
+    lineTotalVnd: number;
+  }>;
+};
+
+export function PublicCartSharePage() {
+  const { pathname } = useLocation();
+  const token = pathname.split("/").filter(Boolean).at(-1) ?? "";
+  const [data, setData] = useState<PublicCartShareDto | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/cart/share/${encodeURIComponent(token)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("CART_SHARE_UNAVAILABLE");
+        return response.json() as Promise<PublicCartShareDto>;
+      })
+      .then((body) => {
+        if (!cancelled) setData(body);
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+  return (
+    <main className="public-share-page">
+      <Link to="/" className="share-brand" aria-label="BabyJoy - Trang chủ">
+        <img src="/images/logo.png" alt="" />
+        <span>BABYJOY</span>
+      </Link>
+      {unavailable ? (
+        <section className="share-unavailable">
+          <Icon>link_off</Icon>
+          <h1>Liên kết giỏ hàng không còn khả dụng.</h1>
+          <Link className="btn primary" to="/shop">XEM SẢN PHẨM</Link>
+        </section>
+      ) : !data ? (
+        <section className="share-unavailable">
+          <Icon>progress_activity</Icon>
+          <p>Đang tải giỏ hàng...</p>
+        </section>
+      ) : (
+        <article className="public-share-card">
+          <header>
+            <span>GIỎ HÀNG</span>
+            <h1>{data.code}</h1>
+            <small>{new Date(data.createdAt).toLocaleString("vi-VN")}</small>
+          </header>
+          <div className="public-share-items">
+            {data.items.map((item, index) => (
+              <section key={`${item.productName}-${item.variantName}-${index}`}>
+                <img src={item.imageUrl} alt="" />
+                <p>
+                  <b>{item.productName}</b>
+                  <span>{item.variantName}</span>
+                  <small>{formatVnd(item.unitPriceVnd)} × {item.quantity}</small>
+                </p>
+                <Price value={item.lineTotalVnd} />
+              </section>
+            ))}
+          </div>
+          <footer>
+            <p><span>Tổng số lượng</span><b>{data.totalQuantity}</b></p>
+            <p><span>Tạm tính</span><Price value={data.subtotalVnd} /></p>
+          </footer>
+        </article>
+      )}
+    </main>
   );
 }
 
