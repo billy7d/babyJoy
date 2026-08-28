@@ -15,6 +15,7 @@ import {
   copyAndOpenSeller,
   runNativeCartShare,
 } from "../app/lib/cart-share";
+import { consumeRateLimit } from "../workers/rate-limit";
 
 function migration(name: string) {
   return readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8");
@@ -90,10 +91,13 @@ function createTestEnv() {
   return { database, env };
 }
 
-function prepareRequest(overrides: Record<string, unknown> = {}) {
+function prepareRequest(
+  overrides: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+) {
   return new Request("https://metraphuong.com/api/cart/share/prepare", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({
       submissionToken: "submission-share-1",
       items: [
@@ -250,6 +254,69 @@ describe("Direct Seller Cart Share domain", () => {
     expect(text.length).toBeLessThanOrEqual(1500);
     expect(text).toContain("sản phẩm khác");
     expect(text).toContain("https://metraphuong.com/c/opaque");
+  });
+
+  it("giới hạn Direct Share theo IP hash trước khi tạo snapshot", async () => {
+    const { database, env } = createTestEnv();
+    for (let index = 0; index < 10; index += 1) {
+      const response = await prepareCartShare(
+        prepareRequest(
+          { submissionToken: `rate-${index}`, acceptCurrentPrices: true },
+          { "cf-connecting-ip": "203.0.113.10" },
+        ),
+        env,
+      );
+      expect(response.status).toBe(201);
+    }
+    const denied = await prepareCartShare(
+      prepareRequest(
+        { submissionToken: "rate-denied", acceptCurrentPrices: true },
+        { "cf-connecting-ip": "203.0.113.10" },
+      ),
+      env,
+    );
+    expect(denied.status).toBe(429);
+    expect(await denied.json()).toMatchObject({
+      success: false,
+      error: { code: "RATE_LIMITED" },
+    });
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM cart_requests WHERE submission_token = 'rate-denied'")
+        .get(),
+    ).toEqual({ count: 0 });
+    const rateRow = database
+      .prepare("SELECT scope_key, request_count FROM messenger_rate_limits")
+      .get() as { scope_key: string; request_count: number };
+    expect(rateRow.request_count).toBe(11);
+    expect(rateRow.scope_key).not.toContain("203.0.113.10");
+    database.close();
+  });
+
+  it("tách cửa sổ rate limit theo IP và scope, không lưu IP thô", async () => {
+    const { database, env } = createTestEnv();
+    const requestFor = (ip: string) =>
+      new Request("https://metraphuong.com/api/test", {
+        headers: { "cf-connecting-ip": ip },
+      });
+    for (let index = 0; index < 10; index += 1)
+      await consumeRateLimit(env, requestFor("203.0.113.20"), "scope-a", 10);
+    await expect(
+      consumeRateLimit(env, requestFor("203.0.113.20"), "scope-a", 10),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    await expect(
+      consumeRateLimit(env, requestFor("203.0.113.21"), "scope-a", 10),
+    ).resolves.toBeUndefined();
+    await expect(
+      consumeRateLimit(env, requestFor("203.0.113.20"), "scope-b", 10),
+    ).resolves.toBeUndefined();
+    const rows = database
+      .prepare("SELECT scope_key, request_count FROM messenger_rate_limits")
+      .all() as Array<{ scope_key: string; request_count: number }>;
+    expect(rows).toHaveLength(3);
+    expect(JSON.stringify(rows)).not.toContain("203.0.113.20");
+    expect(JSON.stringify(rows)).not.toContain("203.0.113.21");
+    database.close();
   });
 });
 

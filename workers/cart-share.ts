@@ -1,5 +1,6 @@
 import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
 import { generatePublicCode, type PricedItem } from "./services";
+import { consumeRateLimit, RateLimitError } from "./rate-limit";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -393,6 +394,13 @@ export async function prepareCartShare(request: Request, env: Env) {
   console.info(JSON.stringify({ event: "cart_share_prepare_started" }));
   if (!isDirectSellerShareEnabled(env))
     return failure("FEATURE_DISABLED", "Tính năng chốt giỏ hàng chưa được bật.", 404);
+  try {
+    await consumeRateLimit(env, request, "cart-share-prepare", 10);
+  } catch (caught) {
+    if (caught instanceof RateLimitError)
+      return failure(caught.code, caught.message, caught.status);
+    throw caught;
+  }
   const seller = await readSellerContact(env);
   if (!seller)
     return failure("SELLER_NOT_CONFIGURED", "Người bán chưa được cấu hình.", 503);

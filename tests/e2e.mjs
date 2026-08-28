@@ -1,12 +1,17 @@
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { chromium } from "file:///C:/Users/billy/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
-const baseUrl = "http://127.0.0.1:5173";
+const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
 await mkdir(outputDir, { recursive: true });
 
-const browser = await chromium.launch({ headless: true, executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe" });
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.CHROME_EXECUTABLE_PATH
+    ? { executablePath: process.env.CHROME_EXECUTABLE_PATH }
+    : {}),
+});
 
 async function openPage(path, viewport, fileName) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, locale: "vi-VN" });
@@ -23,7 +28,7 @@ async function openPage(path, viewport, fileName) {
 
 const visualRoutes = [
   ["/", "home"], ["/shop", "shop"], ["/product/little-sprouts-ca-rot-tao-huu-co", "product"],
-  ["/cart", "cart"], ["/cart/submit", "submit"], ["/cart/success/GH-260825-X7K2", "success"],
+  ["/cart", "cart"], ["/cart/success/GH-260825-X7K2", "success"],
 ];
 
 for (const [path, name] of visualRoutes) {
@@ -41,12 +46,13 @@ await openPage("/admin/cart-requests/request-canonical", { width: 1440, height: 
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "vi-VN" });
 const page = await context.newPage();
 await page.goto(`${baseUrl}/product/little-sprouts-ca-rot-tao-huu-co`, { waitUntil: "domcontentloaded" });
-await page.waitForLoadState("networkidle");
+await page.waitForTimeout(600);
 await page.getByRole("button", { name: /THÊM VÀO GIỎ/ }).last().click();
 await page.waitForFunction(() => localStorage.getItem("babyjoy.cart.v1")?.includes("variant-little-120"));
 await page.goto(`${baseUrl}/cart`, { waitUntil: "domcontentloaded" });
+await page.waitForFunction(() => document.body.innerText.includes("89.000"));
 const cartText = await page.locator("body").innerText();
-if (!cartText.includes("367.000") && !cartText.includes("456.000")) throw new Error("Cart không hiển thị tạm tính sau add");
+if (!cartText.includes("89.000")) throw new Error("Cart không hiển thị tạm tính sau add");
 await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForTimeout(100);
 if (!(await page.locator("body").innerText()).includes("Little Sprouts")) throw new Error("Cart không tồn tại sau refresh");

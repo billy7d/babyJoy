@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { applyFilters } from "../app/components/public-pages";
 import { isInlineCartIncrementDisabled } from "../app/components/ui";
 import { categories, products } from "../app/lib/catalog";
-import { changeCartItemQuantity } from "../app/lib/cart";
+import { changeCartItemQuantity, parseStoredCart } from "../app/lib/cart";
 import {
   cartShareFingerprint,
   copyCartText,
@@ -79,6 +79,45 @@ describe("inline cart quantity", () => {
     const decrementStart = ui.indexOf('aria-label={`Giảm số lượng');
     const incrementStart = ui.indexOf('aria-label={`Tăng số lượng');
     expect(ui.slice(decrementStart, incrementStart)).not.toContain("disabled=");
+  });
+});
+
+describe("cart storage và hydrate", () => {
+  it("cart mới không có storage bắt đầu rỗng", () => {
+    expect(parseStoredCart(null)).toEqual([]);
+  });
+
+  it("storage hỏng hoặc có dòng không hợp lệ trở thành cart rỗng", () => {
+    expect(parseStoredCart("không phải JSON")).toEqual([]);
+    expect(
+      parseStoredCart(JSON.stringify({ items: [{ variantId: "A", quantity: 0 }] })),
+    ).toEqual([]);
+  });
+
+  it("khôi phục đúng persisted cart hợp lệ", () => {
+    const items = [
+      { variantId: "B", quantity: 2 },
+      { variantId: "A", quantity: 1 },
+    ];
+    expect(parseStoredCart(JSON.stringify({ items }))).toEqual(items);
+  });
+
+  it("guide chờ hydrate nên cart persisted khớp fingerprint không bị stale giả", () => {
+    const source = readFileSync("app/components/public-pages.tsx", "utf8");
+    const cartSource = readFileSync("app/lib/cart.tsx", "utf8");
+    const persisted = parseStoredCart(
+      JSON.stringify({ items: [{ variantId: "A", quantity: 2 }] }),
+    );
+    expect(cartShareFingerprint(persisted)).toBe("A:2");
+    expect(cartSource).toContain("const [items, setItems] = useState<CartLine[]>([])");
+    expect(cartSource).not.toContain("useState<CartLine[]>(demoCart)");
+    expect(cartSource).toContain("setHydrated(true)");
+    expect(source).toContain("!cart.hydrated");
+  });
+
+  it("header chỉ hiển thị badge khi cart có món", () => {
+    const ui = readFileSync("app/components/ui.tsx", "utf8");
+    expect(ui).toContain("totalQuantity > 0 &&");
   });
 });
 
@@ -168,13 +207,21 @@ describe("prepared cart freshness", () => {
   it("blocks Messenger again when cart changes at click time", () => {
     const prepared = preparedCart([{ variantId: "A", quantity: 1 }]);
     const assign = vi.fn();
+    const record = vi.fn();
+    const analytics = vi.fn();
     expect(
       runWithCurrentPreparedCartShare(
         prepared,
         [{ variantId: "A", quantity: 2 }],
-        () => assign(prepared.seller.messengerUrl),
+        () => {
+          record();
+          analytics();
+          assign(prepared.seller.messengerUrl);
+        },
       ),
     ).toBe(false);
+    expect(record).not.toHaveBeenCalled();
+    expect(analytics).not.toHaveBeenCalled();
     expect(assign).not.toHaveBeenCalled();
   });
 });

@@ -677,15 +677,10 @@ function CartSummary() {
       ) : checkoutConfig?.messengerCheckoutEnabled === true ? (
         <MessengerCheckoutControls lines={lines} />
       ) : checkoutConfig ? (
-        <>
-          <p className="info-box">
-            <Icon>info</Icon>Giỏ hàng sẽ được gửi đến người bán để kiểm tra và
-            liên hệ xác nhận.
-          </p>
-          <Link className="btn primary" to="/cart/submit">
-            GỬI CHO NGƯỜI BÁN <Icon>send</Icon>
-          </Link>
-        </>
+        <p className="info-box">
+          <Icon>info</Icon>Kênh xác nhận giỏ hàng hiện chưa sẵn sàng. Vui lòng
+          quay lại sau.
+        </p>
       ) : (
         <button className="btn primary" disabled>
           ĐANG TẢI KÊNH XÁC NHẬN...
@@ -1076,176 +1071,6 @@ function MessengerCheckoutControls({
   );
 }
 
-type SubmitResult = {
-  success: true;
-  cartRequest: {
-    code: string;
-    itemLineCount: number;
-    totalQuantity: number;
-    subtotalVnd: number;
-    createdAt: string;
-  };
-  telegramStatus: string;
-};
-
-export function SubmitCartPage() {
-  const cart = useCart();
-  const { products } = useCatalog();
-  const lines = cartDetails(cart.items, products);
-  const navigate = useNavigate();
-  const checkoutConfig = useCheckoutConfig();
-  const tokenRef = useRef(
-    typeof crypto !== "undefined" ? crypto.randomUUID() : `local-${Date.now()}`,
-  );
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (checkoutConfig?.enabled || checkoutConfig?.messengerCheckoutEnabled)
-      navigate("/cart", { replace: true });
-  }, [checkoutConfig, navigate]);
-  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    const form = new FormData(event.currentTarget);
-    const payload = {
-      submissionToken: tokenRef.current,
-      customerName: form.get("name"),
-      customerPhone: form.get("phone"),
-      customerContact: form.get("contact"),
-      customerNote: form.get("note"),
-      items: lines.map(({ variant, quantity }) => ({
-        variantId: variant.id,
-        quantity,
-        displayedPrice: variant.priceVnd,
-      })),
-    };
-    try {
-      const response = await fetch("/api/cart-requests", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = (await response.json()) as
-        SubmitResult | { error?: { code?: string; message?: string } };
-      if (!response.ok || !("success" in body))
-        throw new Error(
-          "error" in body && body.error?.message
-            ? body.error.message
-            : "Chưa thể gửi giỏ hàng.",
-        );
-      window.sessionStorage.setItem(
-        "babyjoy.lastSubmittedCart.v1",
-        JSON.stringify({
-          ...body.cartRequest,
-          items: lines,
-          contactChannel: "LEGACY",
-        }),
-      );
-      cart.clear();
-      navigate(`/cart/success/${body.cartRequest.code}`);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Chưa thể gửi giỏ hàng. Thông tin của bạn vẫn được giữ lại.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!checkoutConfig || checkoutConfig.enabled || checkoutConfig.messengerCheckoutEnabled)
-    return (
-      <PublicShell hideMobileNav>
-        <section className="submit-page">
-          <div className="empty-state">
-            <Icon>progress_activity</Icon>
-            <p>Đang mở xác nhận Messenger...</p>
-          </div>
-        </section>
-      </PublicShell>
-    );
-  return (
-    <PublicShell hideMobileNav>
-      <section className="submit-page">
-        <div className="submit-intro">
-          <Link className="submit-back" to="/cart">
-            <Icon>arrow_back_ios_new</Icon>
-          </Link>
-          <h1>Gửi giỏ hàng</h1>
-          <p>
-            Để hoàn tất việc gửi giỏ hàng, vui lòng cung cấp thông tin liên hệ
-            bên dưới. Người bán sẽ kiểm tra giỏ hàng và liên hệ với bạn để xác
-            nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán.
-          </p>
-        </div>
-        <form className="contact-form" onSubmit={submit}>
-          <div className="form-grid">
-            <label>
-              Họ và Tên
-              <input
-                name="name"
-                required
-                maxLength={120}
-                autoComplete="name"
-                placeholder="Nguyễn Văn A"
-              />
-            </label>
-            <label>
-              Số điện thoại *
-              <input
-                name="phone"
-                required
-                maxLength={30}
-                inputMode="tel"
-                autoComplete="tel"
-                placeholder="0912 345 678"
-              />
-            </label>
-          </div>
-          <label>
-            Telegram / Facebook Link <small>(Tuỳ chọn)</small>
-            <input
-              name="contact"
-              maxLength={255}
-              placeholder="https://t.me/username hoặc https://facebook.com/username"
-            />
-          </label>
-          <label>
-            Ghi chú thêm
-            <textarea
-              name="note"
-              maxLength={1000}
-              placeholder="Ví dụ: Bé nhà mình hay bị dị ứng đậu phộng..."
-            />
-          </label>
-          <p className="privacy">
-            <Icon>lock</Icon>Thông tin của bạn sẽ được bảo mật và chỉ sử dụng
-            mục đích liên hệ xử lý giỏ hàng ăn dặm cho bé. Tham khảo{" "}
-            <a href="#privacy">Chính sách bảo mật</a> của chúng tôi.
-          </p>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-          <button
-            className="btn primary submit-button"
-            disabled={busy || lines.length === 0}
-          >
-            {busy ? "ĐANG GỬI..." : "XÁC NHẬN GỬI GIỎ HÀNG"} <Icon>send</Icon>
-          </button>
-        </form>
-        <SubmitSummary
-          lines={lines}
-          subtotal={cart.subtotalVnd}
-          quantity={cart.totalQuantity}
-        />
-      </section>
-    </PublicShell>
-  );
-}
-
 type PublicCartShareDto = {
   code: string;
   createdAt: string;
@@ -1331,63 +1156,6 @@ export function PublicCartSharePage() {
   );
 }
 
-function SubmitSummary({
-  lines,
-  subtotal,
-  quantity,
-}: {
-  lines: ReturnType<typeof cartDetails>;
-  subtotal: number;
-  quantity: number;
-}) {
-  return (
-    <aside className="submit-summary">
-      <h2>
-        Tóm tắt giỏ hàng <Tag>{lines.length} sản phẩm</Tag>
-      </h2>
-      <div className="summary-lines">
-        {lines.map(
-          ({ product, variant, quantity: lineQuantity, lineTotal }) => (
-            <div key={variant.id}>
-              <ProductImage product={product} alt="" />
-              <p>
-                <b>{product.name}</b>
-                <span>Số lượng: {lineQuantity}</span>
-              </p>
-              <Price value={lineTotal} />
-            </div>
-          ),
-        )}
-      </div>
-      <dl>
-        <div>
-          <dt>Số lượng mặt hàng</dt>
-          <dd>{lines.length}</dd>
-        </div>
-        <div>
-          <dt>Tổng số lượng sản phẩm</dt>
-          <dd>{quantity}</dd>
-        </div>
-        <div>
-          <dt>Tạm tính</dt>
-          <dd>{formatVnd(subtotal)}</dd>
-        </div>
-        <div>
-          <dt>Phí giao hàng</dt>
-          <dd>Chờ xác nhận</dd>
-        </div>
-      </dl>
-      <div className="expected">
-        <span>TỔNG DỰ KIẾN</span>
-        <Price value={subtotal} />
-      </div>
-      <p className="shipping-note">
-        <Icon>info</Icon>Phí giao hàng sẽ được người bán xác nhận.
-      </p>
-    </aside>
-  );
-}
-
 export function CartShareGuidePage() {
   const navigate = useNavigate();
   const cart = useCart();
@@ -1430,7 +1198,9 @@ export function CartShareGuidePage() {
     );
   };
 
-  if (!loaded) return <main className="cart-guide-loading">Đang mở hướng dẫn…</main>;
+  // Chờ CartProvider đọc localStorage trước khi kết luận snapshot đã cũ.
+  if (!loaded || !cart.hydrated)
+    return <main className="cart-guide-loading">Đang mở hướng dẫn…</main>;
   if (!prepared) {
     return (
       <main className="cart-guide-unavailable">

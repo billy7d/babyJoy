@@ -1,12 +1,7 @@
 import { createRequestHandler } from "react-router";
 import {
-  composeTelegramMessage,
-  generatePublicCode,
   mapCartItemSnapshot,
-  splitTelegramMessage,
-  validateSubmission,
   type CartItemSnapshotRow,
-  type PricedItem,
 } from "./services";
 import { authorizeAdminRequest } from "./access";
 import {
@@ -30,7 +25,6 @@ import {
   checkoutConfigResponse,
   getAdminSellerSettings,
   getPublicCartShare,
-  isDirectSellerShareEnabled,
   prepareCartShare,
   saveAdminSellerSettings,
 } from "./cart-share";
@@ -219,289 +213,6 @@ async function getProduct(slug: string, env: Env) {
   return json({ data: hydrated });
 }
 
-type VariantRow = {
-  variantId: string;
-  variantName: string;
-  sku: string | null;
-  priceVnd: number;
-  availability: string;
-  productId: string;
-  productName: string;
-  productStatus: string;
-  imageKey: string | null;
-};
-
-async function loadPricedItems(
-  body: ReturnType<typeof validateSubmission>,
-  env: Env,
-) {
-  const placeholders = body.items.map(() => "?").join(",");
-  const rows = await env.DB.prepare(
-    `SELECT v.id AS variantId, v.name AS variantName, v.sku, v.price_vnd AS priceVnd, v.availability, p.id AS productId, p.name AS productName, p.status AS productStatus, (SELECT r2_key FROM product_images WHERE product_id = p.id ORDER BY sort_order LIMIT 1) AS imageKey FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id IN (${placeholders})`,
-  )
-    .bind(...body.items.map((item) => item.variantId))
-    .all<VariantRow>();
-  const byId = new Map(rows.results.map((row) => [row.variantId, row]));
-  const unavailable: string[] = [];
-  const changed: Array<{ variantId: string; currentPrice: number }> = [];
-  const pricedItems: PricedItem[] = body.items.map((item) => {
-    const row = byId.get(item.variantId);
-    if (!row) throw new Error("VARIANT_NOT_FOUND");
-    if (row.availability !== "AVAILABLE" || row.productStatus !== "AVAILABLE")
-      unavailable.push(item.variantId);
-    if (
-      item.displayedPrice !== undefined &&
-      item.displayedPrice !== row.priceVnd
-    )
-      changed.push({ variantId: item.variantId, currentPrice: row.priceVnd });
-    return {
-      productId: row.productId,
-      variantId: row.variantId,
-      productName: row.productName,
-      variantName: row.variantName,
-      sku: row.sku,
-      imageKey: row.imageKey,
-      priceVnd: row.priceVnd,
-      quantity: item.quantity,
-      lineTotalVnd: row.priceVnd * item.quantity,
-    };
-  });
-  return { pricedItems, unavailable, changed };
-}
-
-type RequestRow = {
-  id: string;
-  publicCode: string;
-  itemLineCount: number;
-  totalQuantity: number;
-  subtotalVnd: number;
-  createdAt: string;
-  telegramStatus: string;
-};
-
-async function findSubmission(token: string, env: Env) {
-  return env.DB.prepare(
-    "SELECT id, public_code AS publicCode, item_line_count AS itemLineCount, total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, created_at AS createdAt, telegram_status AS telegramStatus FROM cart_requests WHERE submission_token = ?",
-  )
-    .bind(token)
-    .first<RequestRow>();
-}
-
-async function sendTelegram(env: Env, text: string) {
-  const telegramEnv = env as Env & {
-    TELEGRAM_BOT_TOKEN?: string;
-    TELEGRAM_CHAT_ID?: string;
-  };
-  const token = telegramEnv.TELEGRAM_BOT_TOKEN;
-  const chatId = telegramEnv.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) throw new Error("Telegram chưa được cấu hình.");
-  let messageId: string | null = null;
-  for (const chunk of splitTelegramMessage(text)) {
-    const response = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: chunk }),
-      },
-    );
-    const result = await response.json<{
-      ok?: boolean;
-      result?: { message_id?: number };
-      description?: string;
-    }>();
-    if (!response.ok || !result.ok)
-      throw new Error(result.description ?? `Telegram HTTP ${response.status}`);
-    if (result.result?.message_id) messageId = String(result.result.message_id);
-  }
-  return messageId;
-}
-
-async function submitCart(request: Request, env: Env) {
-  let body: ReturnType<typeof validateSubmission>;
-  try {
-    body = validateSubmission(await readBoundedJson(request));
-  } catch (caught) {
-    const code =
-      caught instanceof Error && caught.message === "PAYLOAD_TOO_LARGE"
-        ? "VALIDATION_ERROR"
-        : caught instanceof Error
-          ? caught.message
-          : "VALIDATION_ERROR";
-    return error(
-      code,
-      "Thông tin gửi chưa hợp lệ.",
-      code === "VALIDATION_ERROR" ? 422 : 400,
-    );
-  }
-  const existing = await findSubmission(body.submissionToken, env);
-  if (existing)
-    return json({
-      success: true,
-      cartRequest: {
-        code: existing.publicCode,
-        itemLineCount: existing.itemLineCount,
-        totalQuantity: existing.totalQuantity,
-        subtotalVnd: existing.subtotalVnd,
-        createdAt: existing.createdAt,
-      },
-      telegramStatus: existing.telegramStatus,
-    });
-  let loaded: Awaited<ReturnType<typeof loadPricedItems>>;
-  try {
-    loaded = await loadPricedItems(body, env);
-  } catch {
-    return error(
-      "VARIANT_NOT_FOUND",
-      "Một phân loại sản phẩm không còn tồn tại.",
-      404,
-    );
-  }
-  if (loaded.unavailable.length)
-    return error(
-      "ITEM_UNAVAILABLE",
-      "Một số sản phẩm hiện không còn sẵn sàng.",
-      409,
-      { variantIds: loaded.unavailable },
-    );
-  const subtotalVnd = loaded.pricedItems.reduce(
-    (sum, item) => sum + item.lineTotalVnd,
-    0,
-  );
-  const totalQuantity = loaded.pricedItems.reduce(
-    (sum, item) => sum + item.quantity,
-    0,
-  );
-  if (loaded.changed.length && !body.acceptCurrentPrices)
-    return error(
-      "PRICE_CHANGED",
-      "Giá sản phẩm đã thay đổi. Vui lòng xác nhận giá mới.",
-      409,
-      { items: loaded.changed, subtotalVnd },
-    );
-  const id = crypto.randomUUID();
-  const publicCode = generatePublicCode();
-  const createdAt = new Date().toISOString();
-  const statements = [
-    env.DB.prepare(
-      "INSERT INTO cart_requests (id, public_code, submission_token, customer_name, customer_phone, customer_contact, customer_note, item_line_count, total_quantity, subtotal_vnd, status, telegram_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', 'PENDING', ?, ?)",
-    ).bind(
-      id,
-      publicCode,
-      body.submissionToken,
-      body.customerName,
-      body.customerPhone,
-      body.customerContact || null,
-      body.customerNote || null,
-      loaded.pricedItems.length,
-      totalQuantity,
-      subtotalVnd,
-      createdAt,
-      createdAt,
-    ),
-  ];
-  loaded.pricedItems.forEach((item) =>
-    statements.push(
-      env.DB.prepare(
-        "INSERT INTO cart_request_items (id, cart_request_id, product_id, variant_id, product_name_snapshot, variant_name_snapshot, sku_snapshot, image_key_snapshot, unit_price_vnd, quantity, line_total_vnd, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).bind(
-        crypto.randomUUID(),
-        id,
-        item.productId,
-        item.variantId,
-        item.productName,
-        item.variantName,
-        item.sku,
-        item.imageKey,
-        item.priceVnd,
-        item.quantity,
-        item.lineTotalVnd,
-        createdAt,
-      ),
-    ),
-  );
-  try {
-    await env.DB.batch(statements);
-  } catch (caught) {
-    const duplicate = await findSubmission(body.submissionToken, env);
-    if (duplicate)
-      return json({
-        success: true,
-        cartRequest: {
-          code: duplicate.publicCode,
-          itemLineCount: duplicate.itemLineCount,
-          totalQuantity: duplicate.totalQuantity,
-          subtotalVnd: duplicate.subtotalVnd,
-          createdAt: duplicate.createdAt,
-        },
-        telegramStatus: duplicate.telegramStatus,
-      });
-    console.error(
-      JSON.stringify({
-        message: "cart request database failure",
-        error: caught instanceof Error ? caught.message : String(caught),
-      }),
-    );
-    return error(
-      "SUBMISSION_FAILED",
-      "Chưa thể lưu giỏ hàng. Vui lòng thử lại.",
-      500,
-    );
-  }
-  let telegramStatus = "SENT";
-  try {
-    const messageId = await sendTelegram(
-      env,
-      composeTelegramMessage({
-        code: publicCode,
-        createdAt,
-        customerName: body.customerName,
-        customerPhone: body.customerPhone,
-        customerContact: body.customerContact,
-        customerNote: body.customerNote,
-        items: loaded.pricedItems,
-        totalQuantity,
-        subtotalVnd,
-      }),
-    );
-    await env.DB.prepare(
-      "UPDATE cart_requests SET telegram_status = 'SENT', telegram_message_id = ?, telegram_last_error = NULL, updated_at = ? WHERE id = ?",
-    )
-      .bind(messageId, new Date().toISOString(), id)
-      .run();
-  } catch (caught) {
-    telegramStatus = "FAILED";
-    const message =
-      caught instanceof Error ? caught.message.slice(0, 500) : "Telegram error";
-    await env.DB.prepare(
-      "UPDATE cart_requests SET telegram_status = 'FAILED', telegram_last_error = ?, updated_at = ? WHERE id = ?",
-    )
-      .bind(message, new Date().toISOString(), id)
-      .run();
-    console.error(
-      JSON.stringify({
-        message: "telegram notification failed",
-        cartRequestId: id,
-        error: message,
-      }),
-    );
-  }
-  return json(
-    {
-      success: true,
-      cartRequest: {
-        code: publicCode,
-        itemLineCount: loaded.pricedItems.length,
-        totalQuantity,
-        subtotalVnd,
-        createdAt,
-      },
-      telegramStatus,
-    },
-    201,
-  );
-}
-
 async function getAdminRequests(request: Request, env: Env) {
   const scope = new URL(request.url).searchParams.get("scope") ?? "queue";
   const where =
@@ -579,53 +290,6 @@ async function updateRequestStatus(request: Request, id: string, env: Env) {
     .bind(body.status, new Date().toISOString(), id)
     .run();
   return json({ success: true, status: body.status });
-}
-
-async function retryTelegram(id: string, env: Env) {
-  const row = await env.DB.prepare(
-    "SELECT public_code AS code, customer_name AS customerName, customer_phone AS customerPhone, customer_contact AS customerContact, customer_note AS customerNote, total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, created_at AS createdAt FROM cart_requests WHERE id = ?",
-  )
-    .bind(id)
-    .first<Record<string, unknown>>();
-  if (!row) return error("PRODUCT_NOT_FOUND", "Không tìm thấy giỏ hàng.", 404);
-  const result = await env.DB.prepare(
-    "SELECT product_id AS productId, variant_id AS variantId, product_name_snapshot AS productName, variant_name_snapshot AS variantName, sku_snapshot AS sku, image_key_snapshot AS imageKey, unit_price_vnd AS priceVnd, quantity, line_total_vnd AS lineTotalVnd FROM cart_request_items WHERE cart_request_id = ?",
-  )
-    .bind(id)
-    .all<PricedItem>();
-  try {
-    const messageId = await sendTelegram(
-      env,
-      composeTelegramMessage({
-        code: String(row.code),
-        createdAt: String(row.createdAt),
-        customerName: String(row.customerName),
-        customerPhone: String(row.customerPhone),
-        customerContact: row.customerContact
-          ? String(row.customerContact)
-          : undefined,
-        customerNote: row.customerNote ? String(row.customerNote) : undefined,
-        items: result.results,
-        totalQuantity: Number(row.totalQuantity),
-        subtotalVnd: Number(row.subtotalVnd),
-      }),
-    );
-    await env.DB.prepare(
-      "UPDATE cart_requests SET telegram_status = 'SENT', telegram_message_id = ?, telegram_last_error = NULL, telegram_retry_count = telegram_retry_count + 1, updated_at = ? WHERE id = ?",
-    )
-      .bind(messageId, new Date().toISOString(), id)
-      .run();
-    return json({ success: true, telegramStatus: "SENT" });
-  } catch (caught) {
-    const message =
-      caught instanceof Error ? caught.message.slice(0, 500) : "Telegram error";
-    await env.DB.prepare(
-      "UPDATE cart_requests SET telegram_status = 'FAILED', telegram_last_error = ?, telegram_retry_count = telegram_retry_count + 1, updated_at = ? WHERE id = ?",
-    )
-      .bind(message, new Date().toISOString(), id)
-      .run();
-    return error("TELEGRAM_FAILED", "Chưa thể gửi lại Telegram.", 502);
-  }
 }
 
 async function uploadImage(request: Request, env: Env) {
@@ -1160,8 +824,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
     return listProducts(request, env);
   if (request.method === "GET" && path.startsWith("/api/products/"))
     return getProduct(decodeURIComponent(path.slice(14)), env);
-  if (request.method === "POST" && path === "/api/cart-requests")
-    return submitCart(request, env);
   if (request.method === "GET" && path === "/api/checkout-config")
     return checkoutConfigResponse(env);
   if (request.method === "POST" && path === "/api/cart/share/prepare")
@@ -1244,11 +906,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   );
   if (request.method === "PATCH" && statusMatch)
     return updateRequestStatus(request, statusMatch[1], env);
-  const retryMatch = path.match(
-    /^\/api\/admin\/cart-requests\/([^/]+)\/retry-telegram$/,
-  );
-  if (request.method === "POST" && retryMatch)
-    return retryTelegram(retryMatch[1], env);
   const retryMessengerMatch = path.match(
     /^\/api\/admin\/cart-requests\/([^/]+)\/retry-messenger$/,
   );
@@ -1287,8 +944,6 @@ export default {
         return await handleApi(request, env, ctx);
       if (url.pathname.startsWith("/media/"))
         return await handleMedia(url.pathname, env);
-      if (url.pathname === "/cart/submit" && isDirectSellerShareEnabled(env))
-        return Response.redirect(new URL("/cart", request.url), 302);
       const response = await requestHandler(request);
       if (/^\/c\/[^/]+$/.test(url.pathname)) {
         const headers = new Headers(response.headers);

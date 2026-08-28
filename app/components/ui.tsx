@@ -498,7 +498,7 @@ export function StatusBadge({ status }: { status: string }) {
     IDENTIFIED: "Đã nhận diện",
     EXPIRED: "Hết hạn",
     MESSENGER: "Messenger",
-    LEGACY: "Legacy",
+    LEGACY: "Kênh cũ",
     SHARE: "Chia sẻ thủ công",
     SHARE_READY: "Đã tạo giỏ chia sẻ",
   };

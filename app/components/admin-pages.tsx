@@ -6,7 +6,7 @@ import {
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
-import { useCatalog } from "../lib/catalog-context";
+import { mapApiProduct, useCatalog } from "../lib/catalog-context";
 import {
   getProductEditPath,
   ProductEditorSaveController,
@@ -15,8 +15,84 @@ import {
 import { AdminShell, Icon, Price, StatusBadge, Tag } from "./ui";
 import { ProductImage } from "./product-image";
 
+type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
+type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
+type AdminProduct = Product & { adminStatus: string };
+
+export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
+  const product = mapApiProduct(row);
+  const adminStatus =
+    row.status ??
+    (product.variants.some((variant) => variant.availability === "AVAILABLE")
+      ? "AVAILABLE"
+      : "OUT_OF_STOCK");
+  return { ...product, adminStatus };
+}
+
+export function buildAdminProductsUrl(page: number, query: string) {
+  const params = new URLSearchParams({ limit: "24", page: String(Math.max(1, page)) });
+  if (query.trim()) params.set("q", query.trim());
+  return `/api/admin/products?${params.toString()}`;
+}
+
+export function adminProductMatchesStatus(
+  product: AdminProduct,
+  filter: AdminProductStatus,
+) {
+  return filter === "ALL" || product.adminStatus === filter;
+}
+
 export function AdminProductsPage() {
-  const { products, categories } = useCatalog();
+  const { categories } = useCatalog();
+  const [products, setProducts] = useState<AdminProduct[]>([]);
+  const [statusFilter, setStatusFilter] = useState<AdminProductStatus>("ALL");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [hasNext, setHasNext] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError("");
+    void fetch(buildAdminProductsUrl(page, query), {
+      headers: { accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("ADMIN_PRODUCTS_LOAD_FAILED");
+        return response.json() as Promise<{ data?: AdminProductRow[] }>;
+      })
+      .then((body) => {
+        if (cancelled) return;
+        const rows = Array.isArray(body.data) ? body.data : [];
+        setProducts(rows.map(mapAdminProductRow));
+        setHasNext(rows.length === 24);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProducts([]);
+          setHasNext(false);
+          setLoadError("Không tải được danh sách sản phẩm từ D1.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [page, query]);
+
+  const filteredProducts = products.filter((product) =>
+    adminProductMatchesStatus(product, statusFilter),
+  );
+  const statusTabs: Array<[AdminProductStatus, string]> = [
+    ["ALL", "Tất cả"],
+    ["AVAILABLE", "Đang bán"],
+    ["OUT_OF_STOCK", "Hết hàng"],
+    ["HIDDEN", "Đã ẩn"],
+  ];
   return (
     <AdminShell title="Sản Phẩm">
       <div className="admin-page-heading">
@@ -31,14 +107,26 @@ export function AdminProductsPage() {
       <section className="admin-table-card">
         <div className="admin-table-tools">
           <div className="admin-tabs">
-            <button className="active">Tất cả (24)</button>
-            <button>Đang bán (18)</button>
-            <button>Hết hàng (4)</button>
-            <button>Đã ẩn (2)</button>
+            {statusTabs.map(([value, label]) => (
+              <button
+                key={value}
+                className={statusFilter === value ? "active" : ""}
+                onClick={() => setStatusFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <label className="admin-search">
             <Icon>search</Icon>
-            <input placeholder="Tìm kiếm sản phẩm..." />
+            <input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
+              placeholder="Tìm kiếm sản phẩm..."
+            />
           </label>
         </div>
         <div className="table-scroll">
@@ -55,68 +143,103 @@ export function AdminProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {products.slice(0, 4).map((product) => (
-                <tr key={product.id}>
-                  <td>
-                    <img className="table-thumb" src={product.image} alt="" />
-                  </td>
-                  <td>
-                    <b>{product.name}</b>
-                    <small>
-                      {product.variants[0].name}, {product.shortDescription}
-                    </small>
-                  </td>
-                  <td>
-                    <Tag tone="neutral">
-                      {categories.find((item) => item.slug === product.category)
-                        ?.name ?? "Gia vị"}
-                    </Tag>
-                  </td>
-                  <td>{product.variants.length} vị</td>
-                  <td>
-                    <Price value={product.variants[0].priceVnd} />
-                  </td>
-                  <td>
-                    <StatusBadge status={product.variants[0].availability} />
-                  </td>
-                  <td>
-                    <div className="row-actions">
-                      <Link
-                        to={`/admin/products/${product.id}/edit`}
-                        aria-label="Sửa"
-                      >
-                        <Icon>edit</Icon>
-                      </Link>
-                      <button aria-label="Nhân bản">
-                        <Icon>content_copy</Icon>
-                      </button>
-                      <button aria-label="Ẩn">
-                        <Icon>visibility_off</Icon>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredProducts.map((product) => {
+                const variant = product.variants[0];
+                return (
+                  <tr key={product.id}>
+                    <td>
+                      <img className="table-thumb" src={product.image} alt="" />
+                    </td>
+                    <td>
+                      <b>{product.name}</b>
+                      <small>
+                        {variant?.name ?? "Chưa có phân loại"}, {product.shortDescription}
+                      </small>
+                    </td>
+                    <td>
+                      <Tag tone="neutral">
+                        {categories.find((item) => item.slug === product.category)
+                          ?.name ?? "Chưa phân loại"}
+                      </Tag>
+                    </td>
+                    <td>{product.variants.length} vị</td>
+                    <td>
+                      <Price value={variant?.priceVnd ?? 0} />
+                    </td>
+                    <td>
+                      <StatusBadge status={product.adminStatus} />
+                    </td>
+                    <td>
+                      <div className="row-actions">
+                        <Link
+                          to={`/admin/products/${product.id}/edit`}
+                          aria-label="Sửa"
+                        >
+                          <Icon>edit</Icon>
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <TableFooter text="Hiển thị 1-4 trên 24 sản phẩm" />
+        {loading ? (
+          <p className="table-footer">Đang tải danh sách sản phẩm…</p>
+        ) : loadError ? (
+          <p className="table-footer">{loadError}</p>
+        ) : (
+          <TableFooter
+            text={`Trang ${page}: hiển thị ${filteredProducts.length} sản phẩm`}
+            page={page}
+            hasNext={hasNext}
+            onPageChange={setPage}
+          />
+        )}
       </section>
     </AdminShell>
   );
 }
 
-function TableFooter({ text }: { text: string }) {
+function TableFooter({
+  text,
+  page,
+  hasNext,
+  onPageChange,
+}: {
+  text: string;
+  page?: number;
+  hasNext?: boolean;
+  onPageChange?: (page: number) => void;
+}) {
+  const paginated = page !== undefined && onPageChange;
   return (
     <div className="table-footer">
       <span>{text}</span>
-      <div>
-        <button>‹</button>
-        <button className="active">1</button>
-        <button>2</button>
-        <button>3</button>
-        <button>›</button>
-      </div>
+      {paginated && (
+        <div>
+          <button
+            type="button"
+            disabled={page <= 1}
+            onClick={() => onPageChange(page - 1)}
+            aria-label="Trang trước"
+          >
+            ‹
+          </button>
+          <button type="button" className="active" aria-current="page">
+            {page}
+          </button>
+          <button
+            type="button"
+            disabled={!hasNext}
+            onClick={() => onPageChange(page + 1)}
+            aria-label="Trang sau"
+          >
+            ›
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -620,7 +743,6 @@ export function AdminCartRequestsPage() {
       totalQuantity: number;
       subtotalVnd: number;
       status: string;
-      telegramStatus: string;
       contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
       messengerDeliveryStatus: string;
       messengerSessionStatus: string | null;
@@ -745,7 +867,7 @@ export function AdminCartRequestsPage() {
                           ? request.messengerDeliveryStatus === "PENDING"
                             ? request.messengerSessionStatus || "CREATED"
                             : request.messengerDeliveryStatus
-                          : request.telegramStatus
+                          : "LEGACY"
                       }
                     />
                   </td>
@@ -765,7 +887,6 @@ export function AdminCartRequestDetailPage() {
     useLocation().pathname.split("/").filter(Boolean).at(-1) ??
     "request-canonical";
   const [status, setStatus] = useState("SUBMITTED");
-  const [telegram, setTelegram] = useState("FAILED");
   const [messengerDelivery, setMessengerDelivery] = useState("PENDING");
   const [detail, setDetail] = useState<{
     publicCode: string;
@@ -776,7 +897,6 @@ export function AdminCartRequestDetailPage() {
     totalQuantity: number;
     subtotalVnd: number;
     status: string;
-    telegramStatus: string;
     contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
     messengerDeliveryStatus: string;
     messengerSessionStatus: string | null;
@@ -811,7 +931,6 @@ export function AdminCartRequestDetailPage() {
         if (cancelled) return;
         setDetail(body.data);
         setStatus(body.data.status);
-        setTelegram(body.data.telegramStatus);
         setMessengerDelivery(body.data.messengerDeliveryStatus);
       })
       .catch(() => {
@@ -831,14 +950,6 @@ export function AdminCartRequestDetailPage() {
       },
     );
     if (!response.ok) window.alert("Chưa thể cập nhật trạng thái.");
-  };
-  const retryTelegram = async () => {
-    const response = await fetch(
-      `/api/admin/cart-requests/${requestId}/retry-telegram`,
-      { method: "POST" },
-    );
-    if (response.ok) setTelegram("SENT");
-    else window.alert("Chưa thể gửi Telegram. Kiểm tra secret và thử lại.");
   };
   const retryMessenger = async () => {
     const response = await fetch(
@@ -957,9 +1068,9 @@ export function AdminCartRequestDetailPage() {
             </button>
           </section>
           {detail.contactChannel === "SHARE" ? (
-            <section className="telegram-card share-admin-card">
+            <section className="channel-card share-admin-card">
               <h2>
-                <span className="telegram-icon share-icon"><Icon>share</Icon></span>
+                <span className="channel-icon share-icon"><Icon>share</Icon></span>
                 Chia sẻ thủ công
               </h2>
               <StatusBadge status="SHARE_READY" />
@@ -970,12 +1081,12 @@ export function AdminCartRequestDetailPage() {
               </p>
             </section>
           ) : detail.contactChannel === "MESSENGER" ? (
-            <section className="telegram-card messenger-admin-card">
+            <section className="channel-card messenger-admin-card">
               <h2>
-                <span className="telegram-icon messenger-icon">M</span> Messenger
+                <span className="channel-icon messenger-icon">M</span> Messenger
               </h2>
               <StatusBadge status={messengerDelivery} />
-              <span className="telegram-time">
+              <span className="channel-time">
                 {detail.messengerSentAt
                   ? new Date(detail.messengerSentAt).toLocaleString("vi-VN")
                   : "Chưa gửi"}
@@ -1001,24 +1112,15 @@ export function AdminCartRequestDetailPage() {
               )}
             </section>
           ) : (
-            <section className="telegram-card">
+            <section className="channel-card legacy-channel-card">
               <h2>
-                <span className="telegram-icon">➤</span> Thông báo Telegram
+                <span className="channel-icon">history</span> Kênh cũ
               </h2>
-              <StatusBadge status={telegram} />
-              <span className="telegram-time">
+              <StatusBadge status="LEGACY" />
+              <span className="channel-time">
                 {new Date(detail.createdAt).toLocaleString("vi-VN")}
               </span>
-              <p>
-                {telegram === "FAILED"
-                  ? "Đã có lỗi xảy ra khi gửi thông báo yêu cầu này đến người bán trên Telegram."
-                  : "Thông báo đã được gửi thành công đến người bán."}
-              </p>
-              {telegram === "FAILED" && (
-                <button className="btn secondary-btn" onClick={retryTelegram}>
-                  <Icon>send</Icon> THỬ GỬI LẠI
-                </button>
-              )}
+              <p>Bản ghi này đến từ kênh cũ và chỉ được giữ để đối chiếu lịch sử.</p>
             </section>
           )}
         </aside>
@@ -1233,8 +1335,8 @@ export function AdminSettingsPage() {
           <input defaultValue="1900 123 456" />
         </label>
         <p>
-          Credential Telegram legacy và Meta Messenger được quản lý bằng
-          Cloudflare Secret, không hiển thị tại đây.
+          Credential kết nối Messenger được quản lý bằng Cloudflare Secret,
+          không hiển thị tại đây.
         </p>
         <button className="btn primary">
           <Icon>save</Icon> LƯU CÀI ĐẶT

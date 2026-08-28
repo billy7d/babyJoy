@@ -5,6 +5,7 @@ import { useCatalog } from "./catalog-context";
 export type CartLine = { variantId: string; quantity: number };
 type CartContextValue = {
   items: CartLine[];
+  hydrated: boolean;
   totalQuantity: number;
   subtotalVnd: number;
   addItem: (variantId: string, quantity?: number) => void;
@@ -16,7 +17,7 @@ type CartContextValue = {
   resetDemoCart: () => void;
 };
 
-const storageKey = "babyjoy.cart.v1";
+export const cartStorageKey = "babyjoy.cart.v1";
 const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({
   variantId,
   quantity: index === 0 ? 2 : 1,
@@ -38,27 +39,46 @@ export function changeCartItemQuantity(
   );
 }
 
-function readCart(): CartLine[] {
-  if (typeof window === "undefined") return demoCart;
-  const raw = window.localStorage.getItem(storageKey);
-  if (!raw) return demoCart;
+export function parseStoredCart(raw: string | null): CartLine[] {
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as { items?: CartLine[] };
-    return Array.isArray(parsed.items) ? parsed.items : demoCart;
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    if (!Array.isArray(parsed.items)) return [];
+    const items = parsed.items.filter((item): item is CartLine => {
+      if (!item || typeof item !== "object") return false;
+      const line = item as Record<string, unknown>;
+      return (
+        typeof line.variantId === "string" &&
+        line.variantId.trim().length > 0 &&
+        Number.isInteger(line.quantity) &&
+        Number(line.quantity) >= 1 &&
+        Number(line.quantity) <= 99
+      );
+    });
+    return items.length === parsed.items.length ? items : [];
   } catch {
-    return demoCart;
+    return [];
   }
 }
 
+function readCart(): CartLine[] {
+  if (typeof window === "undefined") return [];
+  return parseStoredCart(window.localStorage.getItem(cartStorageKey));
+}
+
 export function CartProvider({ children }: { children: React.ReactNode }) {
-  const [items, setItems] = useState<CartLine[]>(demoCart);
+  const [items, setItems] = useState<CartLine[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const { products } = useCatalog();
 
-  useEffect(() => setItems(readCart()), []);
+  useEffect(() => {
+    setItems(readCart());
+    setHydrated(true);
+  }, []);
 
   const persist = (next: CartLine[]) => {
     if (typeof window !== "undefined")
-      window.localStorage.setItem(storageKey, JSON.stringify({ items: next }));
+      window.localStorage.setItem(cartStorageKey, JSON.stringify({ items: next }));
     return next;
   };
 
@@ -70,6 +90,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }, 0);
     return {
       items,
+      hydrated,
       totalQuantity,
       subtotalVnd,
       addItem(variantId, quantity = 1) {
@@ -126,7 +147,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         setItems(persist(demoCart));
       },
     };
-  }, [items, products]);
+  }, [hydrated, items, products]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }

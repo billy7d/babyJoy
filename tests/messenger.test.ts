@@ -7,6 +7,7 @@ import {
   parseMessengerWebhook,
   publicMessengerStatus,
   sendMessengerMessage,
+  startMessengerCheckout,
   validateMessengerStart,
   verifyMetaSignature,
 } from "../workers/messenger";
@@ -53,6 +54,35 @@ describe("Messenger checkout input", () => {
     expect(() => generateOpaqueToken(new Uint8Array(15))).toThrow(
       "TOKEN_ENTROPY_TOO_LOW",
     );
+  });
+
+  it("feature flag tắt chặn start trước mọi thao tác D1", async () => {
+    let prepareCalls = 0;
+    const env = {
+      MESSENGER_CHECKOUT_ENABLED: "false",
+      DB: {
+        prepare() {
+          prepareCalls += 1;
+          throw new Error("không được chạm D1 khi flag tắt");
+        },
+      },
+    } as unknown as Env;
+    const response = await startMessengerCheckout(
+      new Request("https://example.com/api/cart/messenger/start", {
+        method: "POST",
+        body: JSON.stringify({
+          submissionToken: "disabled",
+          items: [{ variantId: "variant-gerber-227", quantity: 1 }],
+        }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      success: false,
+      error: { code: "FEATURE_DISABLED" },
+    });
+    expect(prepareCalls).toBe(0);
   });
 });
 

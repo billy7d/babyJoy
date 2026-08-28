@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyFilters } from "../app/components/public-pages";
+import {
+  adminProductMatchesStatus,
+  buildAdminProductsUrl,
+  mapAdminProductRow,
+} from "../app/components/admin-pages";
 import { categories } from "../app/lib/catalog";
 import { mapApiProduct } from "../app/lib/catalog-context";
 
@@ -65,5 +70,24 @@ describe("D1 catalog flow", () => {
   it("recomputes ProductGrid when CatalogProvider replaces fallback state", () => {
     const source = readFileSync("app/components/public-pages.tsx", "utf8");
     expect(source).toContain("[products, categories, params, categorySlug]");
+  });
+});
+
+describe("admin product listing", () => {
+  it("dùng URL admin có pagination và không cắt còn bốn dòng", () => {
+    expect(buildAdminProductsUrl(2, "  Gerber ")).toBe(
+      "/api/admin/products?limit=24&page=2&q=Gerber",
+    );
+    const source = readFileSync("app/components/admin-pages.tsx", "utf8");
+    expect(source).toContain("/api/admin/products");
+    expect(source).not.toContain("products.slice(0, 4)");
+    expect(source).not.toContain("Tất cả (24)");
+  });
+
+  it("giữ sản phẩm hidden từ admin API và lọc trạng thái ở UI", () => {
+    const hidden = mapAdminProductRow({ ...smokeApiRow, status: "HIDDEN" });
+    expect(hidden.adminStatus).toBe("HIDDEN");
+    expect(adminProductMatchesStatus(hidden, "HIDDEN")).toBe(true);
+    expect(adminProductMatchesStatus(hidden, "AVAILABLE")).toBe(false);
   });
 });

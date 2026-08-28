@@ -23,18 +23,15 @@ npm run build
 npm run test:e2e
 ```
 
-`test:e2e` cần Google Chrome tại đường dẫn Windows mặc định và tạo ảnh nghiệm thu trong `screenshots/actual/`.
+`test:e2e` dùng Chromium do package Playwright quản lý và tạo ảnh nghiệm thu trong `screenshots/actual/`.
 
 ## Cấu hình Cloudflare
 
 1. Tạo D1 database `babyjoy-db` và R2 bucket `babyjoy-product-images`.
 2. Thay `REPLACE_WITH_PRODUCTION_D1_ID` trong `wrangler.jsonc` bằng D1 ID thật.
-3. Trong giai đoạn rollout Messenger, giữ Telegram legacy cho đến khi smoke
-   test theo role Meta thành công. Secret tuyệt đối không đưa vào source:
+3. Secret tuyệt đối không đưa vào source:
 
 ```powershell
-npx wrangler secret put TELEGRAM_BOT_TOKEN --env production
-npx wrangler secret put TELEGRAM_CHAT_ID --env production
 npx wrangler secret put META_PAGE_ACCESS_TOKEN --env production
 npx wrangler secret put META_APP_SECRET --env production
 npx wrangler secret put META_WEBHOOK_VERIFY_TOKEN --env production
@@ -67,13 +64,13 @@ Admin production yêu cầu Cloudflare Access Application bảo vệ `/admin/*` 
 
 - D1 là nguồn giá có thẩm quyền khi gửi giỏ hàng; giá từ trình duyệt chỉ dùng để phát hiện thay đổi.
 - `submissionToken` là idempotency key, tránh tạo bản ghi trùng khi người dùng gửi lại.
-- Bản ghi yêu cầu và snapshot mặt hàng được commit trước khi gửi Telegram. Telegram thất bại không làm mất yêu cầu và admin có thể thử lại.
+- Bản ghi yêu cầu và snapshot mặt hàng được commit trước khi trao đổi với người bán; snapshot là dữ liệu lịch sử bất biến.
 - Messenger checkout chỉ hoàn tất khi `messenger_delivery_status = SENT`; browser
   không xóa cart trước trạng thái này và không xóa nếu cart hiện tại đã khác
   snapshot được gửi.
-- Telegram runtime là fallback production trong rollout v1. Chỉ gỡ client,
-  route retry, UI, test và secret Telegram sau role smoke test thành công và có
-  phê duyệt cutover rõ ràng; các cột D1 lịch sử vẫn được giữ lại.
+- Kênh gửi hiện tại là Direct Seller Share (clipboard-first, Web Share phụ trợ) và
+  Messenger checkout có feature flag riêng. Các cột kênh cũ trong D1 chỉ giữ để
+  đọc lịch sử, không còn đường gửi lại.
 - Giỏ hàng local dùng key `babyjoy.cart.v1` và tồn tại qua refresh.
 - Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 5 MB, tạo key immutable mới trong R2 và lưu duy nhất `r2_key` vào D1.
 - Ảnh production được phân phối trực tiếp qua `https://images.metraphuong.com/<r2_key>`. Route `/media/*` chỉ còn tương thích legacy và đã được đánh dấu deprecated.

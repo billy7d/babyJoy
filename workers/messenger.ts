@@ -1,4 +1,7 @@
 import { generatePublicCode, type PricedItem } from "./services";
+import { consumeRateLimit, RateLimitError, sha256 } from "./rate-limit";
+
+export { sha256 } from "./rate-limit";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -157,24 +160,10 @@ function bytesToBase64Url(bytes: Uint8Array) {
     .replace(/=+$/g, "");
 }
 
-function bytesToHex(bytes: ArrayBuffer) {
-  return Array.from(new Uint8Array(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
 export function generateOpaqueToken(bytes?: Uint8Array) {
   const source = bytes ?? crypto.getRandomValues(new Uint8Array(24));
   if (source.byteLength < 16) throw new Error("TOKEN_ENTROPY_TOO_LOW");
   return bytesToBase64Url(source);
-}
-
-export async function sha256(value: string) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return bytesToHex(digest);
 }
 
 async function hmacSha256(secret: string, value: string) {
@@ -258,34 +247,6 @@ export function isMessengerCheckoutEnabled(env: Env) {
 
 export function messengerCheckoutConfigResponse(env: Env) {
   return json({ messengerCheckoutEnabled: isMessengerCheckoutEnabled(env) });
-}
-
-async function consumeRateLimit(
-  env: Env,
-  request: Request,
-  scope: string,
-  limit: number,
-) {
-  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-  const scopeKey = await sha256(`${scope}:${ip}`);
-  const now = new Date();
-  const cutoff = new Date(now.getTime() - 60_000).toISOString();
-  const row = await env.DB.prepare(
-    `INSERT INTO messenger_rate_limits (scope_key, window_started_at, request_count)
-     VALUES (?, ?, 1)
-     ON CONFLICT(scope_key) DO UPDATE SET
-       request_count = CASE WHEN window_started_at <= ? THEN 1 ELSE request_count + 1 END,
-       window_started_at = CASE WHEN window_started_at <= ? THEN excluded.window_started_at ELSE window_started_at END
-     RETURNING request_count AS requestCount`,
-  )
-    .bind(scopeKey, now.toISOString(), cutoff, cutoff)
-    .first<{ requestCount: number }>();
-  if ((row?.requestCount ?? limit + 1) > limit)
-    throw new MessengerDomainError(
-      "RATE_LIMITED",
-      "Bạn thao tác quá nhanh. Vui lòng thử lại sau.",
-      429,
-    );
 }
 
 async function readBoundedJson(request: Request, maxBytes = 64 * 1024) {
@@ -411,6 +372,12 @@ async function startResponse(
 }
 
 export async function startMessengerCheckout(request: Request, env: Env) {
+  if (!isMessengerCheckoutEnabled(env))
+    return error(
+      "FEATURE_DISABLED",
+      "Tính năng Messenger chưa được bật.",
+      404,
+    );
   try {
     await consumeRateLimit(env, request, "messenger-start", 10);
     const config = messengerStartConfig(env);
@@ -524,6 +491,8 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       201,
     );
   } catch (caught) {
+    if (caught instanceof RateLimitError)
+      return error(caught.code, caught.message, caught.status);
     if (caught instanceof MessengerDomainError)
       return error(caught.code, caught.message, caught.status);
     console.error(
@@ -610,6 +579,8 @@ export async function getMessengerStatus(
         .run();
     return json({ code, status });
   } catch (caught) {
+    if (caught instanceof RateLimitError)
+      return error(caught.code, caught.message, caught.status);
     if (caught instanceof MessengerDomainError)
       return error(caught.code, caught.message, caught.status);
     return error(
