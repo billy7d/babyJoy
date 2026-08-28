@@ -21,17 +21,37 @@
     min-width: 0;
     grid-column: 2;
     grid-row: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title title"
+      "variant remove"
+      "price price";
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 2px;
   }
 
   .cart-item-info h2 {
+    grid-area: title;
+    margin-bottom: 2px;
     overflow-wrap: anywhere;
   }
 
+  .cart-item-info .tag {
+    grid-area: variant;
+    align-self: center;
+    justify-self: start;
+  }
+
   .cart-item .remove-line {
+    grid-area: remove;
+    align-self: center;
+    justify-self: end;
     min-width: 44px;
     min-height: 44px;
-    margin-top: 8px;
-    padding: 0 12px;
+    margin: 0;
+    padding: 0 11px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -51,6 +71,11 @@
 
   .cart-item .remove-line:active {
     background: var(--error-container);
+  }
+
+  .cart-item-info .unit-price {
+    grid-area: price;
+    margin-top: 2px;
   }
 
   .cart-item .quantity-stepper {
