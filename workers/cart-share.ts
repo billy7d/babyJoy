@@ -128,7 +128,6 @@ export function isDirectSellerShareEnabled(env: Env) {
 }
 
 function getCartShareSecret(env: Env) {
-  // @ts-expect-error Secret chỉ được Wrangler inject ở runtime, không khai báo trong vars.
   return String(env.CART_SHARE_SECRET ?? "");
 }
 

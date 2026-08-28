@@ -288,8 +288,12 @@ async function findSubmission(token: string, env: Env) {
 }
 
 async function sendTelegram(env: Env, text: string) {
-  const token: string | undefined = env.TELEGRAM_BOT_TOKEN;
-  const chatId: string | undefined = env.TELEGRAM_CHAT_ID;
+  const telegramEnv = env as Env & {
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_CHAT_ID?: string;
+  };
+  const token = telegramEnv.TELEGRAM_BOT_TOKEN;
+  const chatId = telegramEnv.TELEGRAM_CHAT_ID;
   if (!token || !chatId) throw new Error("Telegram chưa được cấu hình.");
   let messageId: string | null = null;
   for (const chunk of splitTelegramMessage(text)) {
