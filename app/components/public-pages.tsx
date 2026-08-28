@@ -14,15 +14,15 @@ import {
 import {
   cartShareFingerprint,
   clearPreparedCartShare,
-  copyAndOpenSeller,
+  copyCartText,
   getCartShareSubmissionToken,
   recordSellerMessengerOpened,
   readPreparedCartShare,
-  runNativeCartShare,
   writePreparedCartShare,
   type PreparedCartShare,
   type SellerContact,
 } from "../lib/cart-share";
+import { searchCatalog } from "../lib/search";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -151,20 +151,18 @@ export function applyFilters(
   params: URLSearchParams,
   forcedCategory?: string,
 ) {
-  const q = (params.get("q") ?? "").trim().toLocaleLowerCase("vi");
+  const q = params.get("q") ?? "";
   const category = forcedCategory ?? params.get("category");
   const brand = params.get("brand");
   const age = params.get("age");
   const tag = params.get("tag");
   const available = params.get("available");
   const sort = params.get("sort") ?? "default";
-  const filtered = source.filter((product) => {
-    const searchText =
-      `${product.name} ${product.brand} ${product.tags.join(" ")}`.toLocaleLowerCase(
-        "vi",
-      );
+  const searchSource = q
+    ? searchCatalog(source, [], q).products
+    : source;
+  const filtered = searchSource.filter((product) => {
     return (
-      (!q || searchText.includes(q)) &&
       (!category || product.category === category) &&
       (!brand || product.brand === brand) &&
       (!age || product.age.startsWith(age)) &&
@@ -747,30 +745,26 @@ function DirectSellerShareControls({
   seller: SellerContact | null;
 }) {
   const cart = useCart();
+  const navigate = useNavigate();
   const fingerprint = cartShareFingerprint(cart.items);
-  const [prepared, setPrepared] = useState<PreparedCartShare | null>(() =>
-    readPreparedCartShare(),
-  );
+  const prepared = readPreparedCartShare();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [priceChanges, setPriceChanges] = useState<PriceChange[]>([]);
-  const [manualCopy, setManualCopy] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [returned, setReturned] = useState(false);
-  const manualTextRef = useRef<HTMLTextAreaElement>(null);
   const stale = Boolean(prepared && prepared.fingerprint !== fingerprint);
 
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && prepared) setReturned(true);
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-    };
-  }, [prepared]);
+  const showGuide = async (value: PreparedCartShare) => {
+    const copied = await copyCartText(value.share.copyText);
+    const next = { ...value, clipboardStatus: copied ? "COPIED" : "FAILED" } as const;
+    writePreparedCartShare(next);
+    console[copied ? "info" : "warn"](
+      JSON.stringify({
+        event: copied ? "checkout_cart_copied" : "checkout_cart_copy_failed",
+        publicCode: value.cartRequest.code,
+      }),
+    );
+    navigate(`/cart/guide/${encodeURIComponent(value.cartRequest.code)}`);
+  };
 
   const prepare = async (acceptCurrentPrices = false, forceNew = false) => {
     setBusy(true);
@@ -819,86 +813,13 @@ function DirectSellerShareControls({
         seller: body.seller,
       };
       writePreparedCartShare(value);
-      setPrepared(value);
-      setReturned(false);
+      await showGuide(value);
     } catch (caught) {
       setMessage(
         caught instanceof Error ? caught.message : "Chưa thể chốt giỏ hàng.",
       );
     } finally {
       setBusy(false);
-    }
-  };
-
-  const openSeller = async () => {
-    if (!prepared || stale) return;
-    setCopied(false);
-    setMessage("");
-    try {
-      await copyAndOpenSeller({
-        copyText: prepared.share.copyText,
-        messengerUrl: prepared.seller.messengerUrl,
-        code: prepared.cartRequest.code,
-        onCopied: () => {
-          setCopied(true);
-          setReturned(true);
-          console.info(
-            JSON.stringify({
-              event: "seller_copy_success",
-              publicCode: prepared.cartRequest.code,
-            }),
-          );
-        },
-      });
-    } catch {
-      console.warn(
-        JSON.stringify({
-          event: "seller_copy_failed",
-          publicCode: prepared.cartRequest.code,
-        }),
-      );
-      setManualCopy(true);
-    }
-  };
-
-  const copyManually = async () => {
-    if (!prepared) return;
-    try {
-      await navigator.clipboard.writeText(prepared.share.copyText);
-      setCopied(true);
-    } catch {
-      // Giữ vùng văn bản được chọn để người dùng long-press hoặc Copy thủ công.
-      manualTextRef.current?.focus();
-      manualTextRef.current?.select();
-    }
-  };
-
-  const secondaryShare = async () => {
-    if (!prepared || stale) return;
-    const result = await runNativeCartShare(prepared.share);
-    if (result === "CANCELLED") {
-      console.info(
-        JSON.stringify({
-          event: "native_share_cancelled",
-          publicCode: prepared.cartRequest.code,
-        }),
-      );
-      return;
-    }
-    console.info(
-      JSON.stringify({
-        event: result === "SHARED" ? "native_share_opened" : "native_share_failed",
-        publicCode: prepared.cartRequest.code,
-      }),
-    );
-    if (result === "UNAVAILABLE" || result === "FAILED") {
-      try {
-        await navigator.clipboard.writeText(prepared.share.copyText);
-        setCopied(true);
-        setMessage("Đã sao chép thông tin giỏ hàng.");
-      } catch {
-        setManualCopy(true);
-      }
     }
   };
 
@@ -910,10 +831,6 @@ function DirectSellerShareControls({
             Giỏ hàng đã thay đổi. Vui lòng chốt lại trước khi gửi.
           </p>
         )}
-        <p className="direct-share-help">
-          BabyJoy sẽ kiểm tra lại giá và tình trạng sản phẩm trước khi tạo thông
-          tin gửi cho shop.
-        </p>
         {message && <p className="form-error">{message}</p>}
         {priceChanges.length > 0 && (
           <div className="price-change-list">
@@ -952,79 +869,10 @@ function DirectSellerShareControls({
 
   return (
     <div className="prepared-share" role="status">
-      <div className="prepared-heading">
-        <Icon>check_circle</Icon>
-        <div>
-          <b>GIỎ HÀNG ĐÃ SẴN SÀNG</b>
-          <span>Mã {prepared.cartRequest.code}</span>
-        </div>
-      </div>
-      <p>
-        {prepared.cartRequest.itemLineCount} mặt hàng • {prepared.cartRequest.totalQuantity} sản phẩm
-      </p>
-      <Price value={prepared.cartRequest.subtotalVnd} />
-      <span className="seller-caption">GỬI GIỎ HÀNG TỚI</span>
-      <div className="seller-card">
-        {prepared.seller.avatarUrl ? (
-          <img src={prepared.seller.avatarUrl} alt="" />
-        ) : (
-          <span className="seller-avatar"><Icon>person</Icon></span>
-        )}
-        <p>
-          <b>{prepared.seller.displayName}</b>
-          <span>{prepared.seller.label}</span>
-          <small>Liên hệ BabyJoy</small>
-        </p>
-      </div>
-      {copied && <p className="copy-success">Đã sao chép giỏ hàng</p>}
-      {returned && (
-        <p className="return-note">
-          Giỏ hàng vẫn được giữ lại để bạn có thể gửi lại nếu cần.
-        </p>
-      )}
-      <button className="btn primary messenger-primary" onClick={() => void openSeller()}>
-        <Icon>forum</Icon> NHẮN SHOP QUA MESSENGER
+      <p>Giỏ hàng này đã được chốt và sẵn sàng gửi cho {prepared.seller.displayName}.</p>
+      <button className="btn primary messenger-primary" disabled={busy} onClick={() => void showGuide(prepared)}>
+        <Icon>arrow_forward</Icon> TIẾP TỤC GỬI GIỎ HÀNG
       </button>
-      <small className="copy-explanation">
-        Chúng tôi sẽ sao chép nội dung giỏ hàng trước khi mở Messenger.
-      </small>
-      <div className="share-divider"><span>hoặc</span></div>
-      <button className="btn secondary-btn web-share-secondary" onClick={() => void secondaryShare()}>
-        <Icon>{typeof navigator !== "undefined" && typeof navigator.share === "function" ? "ios_share" : "content_copy"}</Icon>
-        {typeof navigator !== "undefined" && typeof navigator.share === "function"
-          ? "CHIA SẺ BẰNG ỨNG DỤNG KHÁC"
-          : "SAO CHÉP THÔNG TIN"}
-      </button>
-      {message && <p className="form-error">{message}</p>}
-      {manualCopy && (
-        <div className="manual-copy-sheet" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title">
-          <div className="manual-copy-panel">
-            <h2 id="manual-copy-title">SAO CHÉP GIỎ HÀNG</h2>
-            <p>Trước khi mở Messenger, hãy sao chép nội dung bên dưới.</p>
-            <textarea
-              ref={manualTextRef}
-              readOnly
-              value={prepared.share.copyText}
-              aria-label="Nội dung giỏ hàng để sao chép"
-            />
-            <button className="btn primary" onClick={() => void copyManually()}>
-              <Icon>content_copy</Icon> SAO CHÉP
-            </button>
-            <button
-              className="btn secondary-btn"
-              onClick={() => {
-                recordSellerMessengerOpened(prepared.cartRequest.code);
-                window.location.assign(prepared.seller.messengerUrl);
-              }}
-            >
-              MỞ MESSENGER CỦA {prepared.seller.displayName.toLocaleUpperCase("vi-VN")}
-            </button>
-            <button className="manual-close" onClick={() => setManualCopy(false)}>
-              Đóng
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1535,6 +1383,184 @@ function SubmitSummary({
         <Icon>info</Icon>Phí giao hàng sẽ được người bán xác nhận.
       </p>
     </aside>
+  );
+}
+
+export function CartShareGuidePage() {
+  const navigate = useNavigate();
+  const code = decodeURIComponent(
+    useLocation().pathname.split("/").filter(Boolean).at(-1) ?? "",
+  );
+  const [prepared, setPrepared] = useState<PreparedCartShare | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"COPIED" | "FAILED">("FAILED");
+  const [copyFeedback, setCopyFeedback] = useState("");
+  const manualTextRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const value = readPreparedCartShare();
+    if (value?.cartRequest.code === code) {
+      setPrepared(value);
+      setCopyStatus(value.clipboardStatus ?? "FAILED");
+    }
+    setLoaded(true);
+  }, [code]);
+
+  const copyAgain = async () => {
+    if (!prepared) return;
+    const copied = await copyCartText(prepared.share.copyText);
+    const status = copied ? "COPIED" : "FAILED";
+    setCopyStatus(status);
+    setCopyFeedback(copied ? "Đã sao chép" : "Chưa thể sao chép tự động");
+    writePreparedCartShare({ ...prepared, clipboardStatus: status });
+    if (!copied) {
+      window.setTimeout(() => {
+        manualTextRef.current?.focus();
+        manualTextRef.current?.select();
+      });
+    }
+    console[copied ? "info" : "warn"](
+      JSON.stringify({
+        event: copied ? "checkout_copy_again" : "checkout_cart_copy_failed",
+        publicCode: prepared.cartRequest.code,
+      }),
+    );
+  };
+
+  if (!loaded) return <main className="cart-guide-loading">Đang mở hướng dẫn…</main>;
+  if (!prepared) {
+    return (
+      <main className="cart-guide-unavailable">
+        <Icon>content_paste_off</Icon>
+        <h1>Chưa có giỏ hàng để gửi</h1>
+        <p>Vui lòng quay lại giỏ hàng và chọn Chốt giỏ hàng.</p>
+        <Link className="btn primary" to="/cart">Quay lại giỏ hàng</Link>
+      </main>
+    );
+  }
+
+  const openMessenger = () => {
+    recordSellerMessengerOpened(prepared.cartRequest.code);
+    console.info(
+      JSON.stringify({
+        event: "checkout_messenger_click",
+        publicCode: prepared.cartRequest.code,
+      }),
+    );
+    window.location.assign(prepared.seller.messengerUrl);
+  };
+  const copied = copyStatus === "COPIED";
+  return (
+    <main className="cart-guide-page">
+      <header className="cart-guide-mobile-header">
+        <button type="button" onClick={() => navigate(-1)} aria-label="Quay lại giỏ hàng">
+          <Icon>arrow_back</Icon>
+        </button>
+        <span>Gửi giỏ hàng cho shop</span>
+      </header>
+      <div className="cart-guide-layout">
+        <section className="cart-guide-instructions">
+          <div className={`cart-guide-check ${copied ? "copied" : "failed"}`}>
+            <Icon>{copied ? "check" : "content_paste_off"}</Icon>
+          </div>
+          <div className="cart-guide-heading">
+            <h1>{copied ? "Giỏ hàng đã được sao chép" : "Chưa thể tự động sao chép giỏ hàng"}</h1>
+            <p>
+              {copied ? "Chỉ còn 2 bước để gửi đơn cho " : "Hãy sao chép lại giỏ hàng trước khi mở Messenger của "}
+              <strong>{prepared.seller.displayName}</strong>
+            </p>
+            <span className="cart-guide-mnemonic">Mở → Dán → Gửi</span>
+          </div>
+          <div className="cart-guide-steps">
+            <article>
+              <span>1</span>
+              <div>
+                <h2>Mở Messenger</h2>
+                <p>Nhấn nút Nhắn shop bên dưới để mở cuộc trò chuyện với {prepared.seller.displayName}.</p>
+              </div>
+            </article>
+            <article>
+              <span>2</span>
+              <div>
+                <h2>Dán giỏ hàng và gửi</h2>
+                <p>Trong Messenger, nhấn giữ ô nhập tin nhắn → chọn <b>Dán</b> → nhấn <b>Gửi</b>.</p>
+              </div>
+            </article>
+          </div>
+          {!copied && (
+            <label className="cart-guide-manual-copy">
+              <span>Nếu trình duyệt vẫn chặn sao chép, nhấn giữ nội dung bên dưới và chọn Sao chép.</span>
+              <textarea ref={manualTextRef} readOnly value={prepared.share.copyText} aria-label="Nội dung giỏ hàng để sao chép thủ công" />
+            </label>
+          )}
+          <GuideActions
+            copied={copied}
+            feedback={copyFeedback}
+            onCopy={() => void copyAgain()}
+            onMessenger={openMessenger}
+          />
+        </section>
+        <MessengerGuideIllustration seller={prepared.seller} />
+      </div>
+      <div className="cart-guide-mobile-actions">
+        <GuideActions
+          copied={copied}
+          feedback={copyFeedback}
+          onCopy={() => void copyAgain()}
+          onMessenger={openMessenger}
+        />
+      </div>
+    </main>
+  );
+}
+
+function GuideActions({
+  copied,
+  feedback,
+  onCopy,
+  onMessenger,
+}: {
+  copied: boolean;
+  feedback: string;
+  onCopy: () => void;
+  onMessenger: () => void;
+}) {
+  return (
+    <div className="cart-guide-actions">
+      <span>Mở Messenger → Dán → Gửi</span>
+      <button type="button" className="btn primary" onClick={onMessenger}>
+        <Icon>chat_bubble</Icon> Nhắn shop trên Messenger
+      </button>
+      <p className={copied ? "copy-ready" : "copy-warning"} role="status">
+        <Icon>{copied ? "check_circle" : "error"}</Icon>
+        {copied ? "Giỏ hàng đã được sao chép sẵn" : "Giỏ hàng chưa được sao chép"}
+      </p>
+      <button type="button" className="cart-guide-copy-again" onClick={onCopy}>
+        {feedback || "Sao chép lại giỏ hàng"}
+      </button>
+    </div>
+  );
+}
+
+function MessengerGuideIllustration({ seller }: { seller: SellerContact }) {
+  return (
+    <section className="messenger-guide" aria-label="Minh họa cách dán và gửi giỏ hàng trong Messenger">
+      <h2>Hướng dẫn nhanh: Nhấn giữ → Dán → Gửi</h2>
+      <div className="messenger-mockup">
+        <header>
+          {seller.avatarUrl ? <img src={seller.avatarUrl} alt="" /> : <span><Icon>storefront</Icon></span>}
+          <p><b>{seller.displayName}</b><small>● Đang hoạt động</small></p>
+        </header>
+        <div className="messenger-chat">
+          <p>🛒 Chi tiết giỏ hàng của bạn...</p>
+        </div>
+        <div className="messenger-paste-tip">Dán <Icon>content_paste</Icon></div>
+        <div className="messenger-input">
+          <Icon>add_circle</Icon><span>Nhắn tin...</span><Icon>send</Icon>
+        </div>
+      </div>
+      <p className="messenger-caption"><Icon>touch_app</Icon> Nhấn giữ khung chat để dán</p>
+    </section>
   );
 }
 

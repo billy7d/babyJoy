@@ -2,7 +2,7 @@ import { Navigate, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/site";
 import { CartProvider } from "../lib/cart";
 import { CatalogProvider } from "../lib/catalog-context";
-import { CartPage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SubmitCartPage, SuccessPage } from "../components/public-pages";
+import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SubmitCartPage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 
 export function meta({ location }: Route.MetaArgs) {
@@ -25,6 +25,7 @@ function RoutedContent() {
   if (pathname === "/cart") return <CartPage />;
   if (/^\/c\/[^/]+$/.test(pathname)) return <PublicCartSharePage />;
   if (pathname === "/cart/submit") return <SubmitCartPage />;
+  if (pathname.startsWith("/cart/guide/")) return <CartShareGuidePage />;
   if (pathname.startsWith("/cart/success/")) return <SuccessPage />;
   if (pathname === "/admin") return <Navigate to="/admin/products" replace />;
   if (pathname === "/admin/products") return <AdminProductsPage />;

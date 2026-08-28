@@ -14,6 +14,7 @@ export type SellerContact = {
 
 export type PreparedCartShare = {
   fingerprint: string;
+  clipboardStatus?: "COPIED" | "FAILED";
   cartRequest: {
     code: string;
     itemLineCount: number;
@@ -30,6 +31,51 @@ export type PreparedCartShare = {
   };
   seller: SellerContact;
 };
+
+export async function copyCartText(
+  text: string,
+  options: {
+    clipboard?: Pick<Clipboard, "writeText"> | null;
+    fallback?: (() => boolean) | null;
+  } = {},
+) {
+  const clipboard =
+    options.clipboard === undefined
+      ? typeof navigator === "undefined"
+        ? null
+        : navigator.clipboard
+      : options.clipboard;
+  try {
+    if (!clipboard?.writeText) throw new Error("CLIPBOARD_UNAVAILABLE");
+    await clipboard.writeText(text);
+    return true;
+  } catch {
+    if (options.fallback) {
+      try {
+        return options.fallback();
+      } catch {
+        return false;
+      }
+    }
+    if (typeof document === "undefined") return false;
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.readOnly = true;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    } finally {
+      textarea.remove();
+    }
+    return copied;
+  }
+}
 
 export function cartShareFingerprint(items: CartLine[]) {
   return items

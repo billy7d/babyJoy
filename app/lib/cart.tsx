@@ -8,6 +8,8 @@ type CartContextValue = {
   totalQuantity: number;
   subtotalVnd: number;
   addItem: (variantId: string, quantity?: number) => void;
+  incrementItem: (variantId: string) => void;
+  decrementItem: (variantId: string) => void;
   setQuantity: (variantId: string, quantity: number) => void;
   removeItem: (variantId: string) => void;
   clear: () => void;
@@ -20,6 +22,21 @@ const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({
   quantity: index === 0 ? 2 : 1,
 }));
 const CartContext = createContext<CartContextValue | null>(null);
+
+export function changeCartItemQuantity(
+  items: CartLine[],
+  variantId: string,
+  delta: number,
+) {
+  const existing = items.find((item) => item.variantId === variantId);
+  if (!existing)
+    return delta > 0 ? [...items, { variantId, quantity: Math.min(99, delta) }] : items;
+  const quantity = Math.min(99, existing.quantity + delta);
+  if (quantity <= 0) return items.filter((item) => item.variantId !== variantId);
+  return items.map((item) =>
+    item.variantId === variantId ? { ...item, quantity } : item,
+  );
+}
 
 function readCart(): CartLine[] {
   if (typeof window === "undefined") return demoCart;
@@ -74,6 +91,12 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
             { variantId, quantity: Math.min(99, quantity) },
           ]);
         });
+      },
+      incrementItem(variantId) {
+        setItems((current) => persist(changeCartItemQuantity(current, variantId, 1)));
+      },
+      decrementItem(variantId) {
+        setItems((current) => persist(changeCartItemQuantity(current, variantId, -1)));
       },
       setQuantity(variantId, quantity) {
         if (quantity <= 0)
