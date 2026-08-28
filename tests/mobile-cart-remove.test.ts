@@ -32,14 +32,16 @@ describe("mobile cart remove control", () => {
     expect(mobileCss).toContain("grid-template-columns: 96px minmax(0, 1fr)");
   });
 
-  it("aligns variant and remove action on one stable metadata row", () => {
-    expect(mobileCss).toContain("grid-template-columns: minmax(0, 1fr) auto");
-    expect(mobileCss).toContain('"variant remove"');
+  it("keeps variant and remove action adjacent on the same aligned row", () => {
+    expect(mobileCss).toContain(
+      "grid-template-columns: max-content max-content minmax(0, 1fr)",
+    );
+    expect(mobileCss).toContain('"variant remove ."');
     expect(mobileCss).toContain("grid-area: variant");
     expect(mobileCss).toContain("grid-area: remove");
-    expect(mobileCss).toContain("grid-area: price");
+    expect(mobileCss).toContain("column-gap: 6px");
     expect(mobileCss).toContain("align-self: center");
-    expect(mobileCss).toContain("justify-self: end");
+    expect(mobileCss).toContain("justify-self: start");
   });
 
   it("keeps quantity controls in the mobile card after the layout override", () => {
