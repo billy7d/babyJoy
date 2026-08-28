@@ -85,6 +85,23 @@ export function cartShareFingerprint(items: CartLine[]) {
     .join("|");
 }
 
+export function isPreparedCartShareCurrent(
+  prepared: PreparedCartShare,
+  items: CartLine[],
+) {
+  return prepared.fingerprint === cartShareFingerprint(items);
+}
+
+export function runWithCurrentPreparedCartShare(
+  prepared: PreparedCartShare,
+  items: CartLine[],
+  action: () => void,
+) {
+  if (!isPreparedCartShareCurrent(prepared, items)) return false;
+  action();
+  return true;
+}
+
 export function readPreparedCartShare(): PreparedCartShare | null {
   if (typeof window === "undefined") return null;
   const raw = window.sessionStorage.getItem(preparedCartShareKey);

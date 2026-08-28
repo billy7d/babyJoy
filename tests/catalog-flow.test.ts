@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyFilters } from "../app/components/public-pages";
+import { categories } from "../app/lib/catalog";
 import { mapApiProduct } from "../app/lib/catalog-context";
 
 const smokeApiRow = {
@@ -54,7 +55,7 @@ describe("D1 catalog flow", () => {
       name: "Fallback",
     });
     const d1Products = [fallback, mapApiProduct(smokeApiRow)];
-    const rendered = applyFilters(d1Products, new URLSearchParams());
+    const rendered = applyFilters(d1Products, categories, new URLSearchParams());
     expect(rendered).toHaveLength(2);
     expect(rendered.map((product) => product.slug)).toContain(
       smokeApiRow.slug,
@@ -63,6 +64,6 @@ describe("D1 catalog flow", () => {
 
   it("recomputes ProductGrid when CatalogProvider replaces fallback state", () => {
     const source = readFileSync("app/components/public-pages.tsx", "utf8");
-    expect(source).toContain("[products, params, categorySlug]");
+    expect(source).toContain("[products, categories, params, categorySlug]");
   });
 });

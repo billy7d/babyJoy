@@ -1,9 +1,44 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { applyFilters } from "../app/components/public-pages";
+import { isInlineCartIncrementDisabled } from "../app/components/ui";
 import { categories, products } from "../app/lib/catalog";
 import { changeCartItemQuantity } from "../app/lib/cart";
-import { copyCartText } from "../app/lib/cart-share";
+import {
+  cartShareFingerprint,
+  copyCartText,
+  isPreparedCartShareCurrent,
+  runWithCurrentPreparedCartShare,
+  type PreparedCartShare,
+} from "../app/lib/cart-share";
 import { normalizeSearchText, searchCatalog } from "../app/lib/search";
+
+function preparedCart(items: Array<{ variantId: string; quantity: number }>) {
+  return {
+    fingerprint: cartShareFingerprint(items),
+    cartRequest: {
+      code: "GH-TEST",
+      itemLineCount: items.length,
+      totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
+      subtotalVnd: 0,
+      createdAt: "2026-08-28T00:00:00.000Z",
+    },
+    share: {
+      title: "Giỏ hàng BabyJoy",
+      text: "Giỏ hàng",
+      url: "https://example.com/c/test",
+      copyText: "Giỏ hàng",
+      expiresAt: "2026-09-27T00:00:00.000Z",
+    },
+    seller: {
+      displayName: "BabyJoy",
+      label: "Shop",
+      messengerUrl: "https://m.me/babyjoy",
+      avatarKey: null,
+      avatarUrl: null,
+    },
+  } satisfies PreparedCartShare;
+}
 
 describe("inline cart quantity", () => {
   it("adds, increments rapidly, decrements, and removes through one cart authority", () => {
@@ -25,6 +60,25 @@ describe("inline cart quantity", () => {
         1,
       ),
     ).toEqual([{ variantId: "variant-gerber-227", quantity: 99 }]);
+  });
+
+  it.each([
+    ["AVAILABLE", 98, false],
+    ["AVAILABLE", 99, true],
+    ["OUT_OF_STOCK", 3, true],
+    ["HIDDEN", 1, true],
+  ] as const)(
+    "guards increment for %s at quantity %i",
+    (availability, quantity, expected) => {
+      expect(isInlineCartIncrementDisabled(availability, quantity)).toBe(expected);
+    },
+  );
+
+  it("keeps decrement enabled for unavailable items", () => {
+    const ui = readFileSync("app/components/ui.tsx", "utf8");
+    const decrementStart = ui.indexOf('aria-label={`Giảm số lượng');
+    const incrementStart = ui.indexOf('aria-label={`Tăng số lượng');
+    expect(ui.slice(decrementStart, incrementStart)).not.toContain("disabled=");
   });
 });
 
@@ -55,6 +109,73 @@ describe("catalog search", () => {
         (product) => product.id,
       ),
     ).toContain("prod-little-sprouts");
+  });
+
+  it.each(["banh an dam", "bánh ăn dặm", "banh"])(
+    "desktop filters match products through category metadata for %s",
+    (query) => {
+      const result = applyFilters(
+        products,
+        categories,
+        new URLSearchParams({ q: query }),
+      );
+      expect(result.some((product) => product.category === "banh-an-dam")).toBe(true);
+    },
+  );
+
+  it("applies the remaining desktop filters after category-name search", () => {
+    const result = applyFilters(
+      products,
+      categories,
+      new URLSearchParams({ q: "banh", age: "8+" }),
+    );
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.every((product) => product.age.startsWith("8+"))).toBe(true);
+  });
+});
+
+describe("prepared cart freshness", () => {
+  it("marks a quantity mutation stale", () => {
+    const prepared = preparedCart([{ variantId: "A", quantity: 1 }]);
+    expect(
+      isPreparedCartShareCurrent(prepared, [{ variantId: "A", quantity: 2 }]),
+    ).toBe(false);
+  });
+
+  it("marks item removal stale", () => {
+    const prepared = preparedCart([
+      { variantId: "A", quantity: 1 },
+      { variantId: "B", quantity: 1 },
+    ]);
+    expect(
+      isPreparedCartShareCurrent(prepared, [{ variantId: "A", quantity: 1 }]),
+    ).toBe(false);
+  });
+
+  it("treats reordered equivalent contents as current", () => {
+    const prepared = preparedCart([
+      { variantId: "A", quantity: 1 },
+      { variantId: "B", quantity: 2 },
+    ]);
+    expect(
+      isPreparedCartShareCurrent(prepared, [
+        { variantId: "B", quantity: 2 },
+        { variantId: "A", quantity: 1 },
+      ]),
+    ).toBe(true);
+  });
+
+  it("blocks Messenger again when cart changes at click time", () => {
+    const prepared = preparedCart([{ variantId: "A", quantity: 1 }]);
+    const assign = vi.fn();
+    expect(
+      runWithCurrentPreparedCartShare(
+        prepared,
+        [{ variantId: "A", quantity: 2 }],
+        () => assign(prepared.seller.messengerUrl),
+      ),
+    ).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
   });
 });
 

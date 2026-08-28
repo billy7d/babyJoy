@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
-import { formatVnd, type Product } from "../lib/catalog";
+import { formatVnd, type Category, type Product } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
 import {
@@ -18,6 +18,7 @@ import {
   getCartShareSubmissionToken,
   recordSellerMessengerOpened,
   readPreparedCartShare,
+  runWithCurrentPreparedCartShare,
   writePreparedCartShare,
   type PreparedCartShare,
   type SellerContact,
@@ -148,6 +149,7 @@ export function HomePage() {
 
 export function applyFilters(
   source: Product[],
+  categories: Category[],
   params: URLSearchParams,
   forcedCategory?: string,
 ) {
@@ -159,7 +161,7 @@ export function applyFilters(
   const available = params.get("available");
   const sort = params.get("sort") ?? "default";
   const searchSource = q
-    ? searchCatalog(source, [], q).products
+    ? searchCatalog(source, categories, q).products
     : source;
   const filtered = searchSource.filter((product) => {
     return (
@@ -194,8 +196,8 @@ export function ProductListPage({
   const [params, setParams] = useSearchParams();
   const [mobileFilters, setMobileFilters] = useState(false);
   const filtered = useMemo(
-    () => applyFilters(products, params, categorySlug),
-    [products, params, categorySlug],
+    () => applyFilters(products, categories, params, categorySlug),
+    [products, categories, params, categorySlug],
   );
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -1388,6 +1390,7 @@ function SubmitSummary({
 
 export function CartShareGuidePage() {
   const navigate = useNavigate();
+  const cart = useCart();
   const code = decodeURIComponent(
     useLocation().pathname.split("/").filter(Boolean).at(-1) ?? "",
   );
@@ -1439,15 +1442,33 @@ export function CartShareGuidePage() {
     );
   }
 
-  const openMessenger = () => {
-    recordSellerMessengerOpened(prepared.cartRequest.code);
-    console.info(
-      JSON.stringify({
-        event: "checkout_messenger_click",
-        publicCode: prepared.cartRequest.code,
-      }),
+  const currentFingerprint = cartShareFingerprint(cart.items);
+  const stale = prepared.fingerprint !== currentFingerprint;
+  if (stale) {
+    return (
+      <main className="cart-guide-unavailable">
+        <Icon>sync_problem</Icon>
+        <h1>Giỏ hàng đã thay đổi</h1>
+        <p>
+          Giỏ hàng hiện tại không còn giống với giỏ hàng đã chốt trước đó.
+          Vui lòng quay lại giỏ hàng và chốt lại trước khi gửi cho shop.
+        </p>
+        <Link className="btn primary" to="/cart">QUAY LẠI GIỎ HÀNG</Link>
+      </main>
     );
-    window.location.assign(prepared.seller.messengerUrl);
+  }
+
+  const openMessenger = () => {
+    runWithCurrentPreparedCartShare(prepared, cart.items, () => {
+      recordSellerMessengerOpened(prepared.cartRequest.code);
+      console.info(
+        JSON.stringify({
+          event: "checkout_messenger_click",
+          publicCode: prepared.cartRequest.code,
+        }),
+      );
+      window.location.assign(prepared.seller.messengerUrl);
+    });
   };
   const copied = copyStatus === "COPIED";
   return (

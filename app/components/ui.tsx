@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
-import type { Product } from "../lib/catalog";
+import type { Availability, Product } from "../lib/catalog";
 import { findVariantInProducts, formatVnd } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
@@ -257,13 +257,20 @@ export function InlineCartControl({ product }: { product: Product }) {
       <button
         type="button"
         aria-label={`Tăng số lượng ${product.name}`}
-        disabled={quantity >= 99}
+        disabled={isInlineCartIncrementDisabled(variant.availability, quantity)}
         onClick={() => cart.incrementItem(variant.id)}
       >
         <Icon>add</Icon>
       </button>
     </div>
   );
+}
+
+export function isInlineCartIncrementDisabled(
+  availability: Availability,
+  quantity: number,
+) {
+  return availability !== "AVAILABLE" || quantity >= 99;
 }
 
 function MobileSearchModal({ onClose }: { onClose: () => void }) {
