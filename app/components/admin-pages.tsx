@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
-  categories as fallbackCategories,
   formatVnd,
+  type Brand,
+  type Category,
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
@@ -158,8 +159,10 @@ export function AdminProductsPage() {
                     </td>
                     <td>
                       <Tag tone="neutral">
-                        {categories.find((item) => item.slug === product.category)
-                          ?.name ?? "Chưa phân loại"}
+                        {(product.categories ?? [product.category])
+                          .map((slug) => categories.find((item) => item.slug === slug)?.name)
+                          .filter(Boolean)
+                          .join(", ") || "Chưa phân loại"}
                       </Tag>
                     </td>
                     <td>{product.variants.length} vị</td>
@@ -249,12 +252,25 @@ export function ProductEditorPage() {
   const id = segments.at(-1) === "edit" ? segments.at(-2) : undefined;
   const navigate = useNavigate();
   const { categories, refresh } = useCatalog();
+  const [classificationCategories, setClassificationCategories] =
+    useState<Category[]>(categories);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [editing, setEditing] = useState<
-    (Product & { categoryIds?: string[]; tagIds?: string[]; sortOrder?: number; status?: string }) | null
+    (Product & {
+      categoryIds?: string[];
+      tagIds?: string[];
+      sortOrder?: number;
+      status?: string;
+      brandId?: string | null;
+      minAgeMonths?: number | null;
+      isBestSeller?: boolean | number;
+      bestSellerRank?: number | null;
+    }) | null
   >(null);
   const [images, setImages] = useState<ProductImageRecord[]>([]);
   const [tags, setTags] = useState<Array<{ id: string; name: string }>>([]);
   const [featured, setFeatured] = useState(false);
+  const [bestSeller, setBestSeller] = useState(false);
   const [visible, setVisible] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -271,15 +287,38 @@ export function ProductEditorPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const requests: Promise<Response>[] = [fetch("/api/admin/tags")];
+      const requests: Promise<Response>[] = [
+        fetch("/api/admin/tags"),
+        fetch("/api/admin/categories"),
+        fetch("/api/admin/brands"),
+      ];
       if (id) requests.push(fetch(`/api/admin/products/${id}`));
-      const [tagsResponse, productResponse] = await Promise.all(requests);
+      const [tagsResponse, categoriesResponse, brandsResponse, productResponse] =
+        await Promise.all(requests);
       if (cancelled) return;
       if (tagsResponse.ok) {
         const body = (await tagsResponse.json()) as {
           data?: Array<{ id: string; name: string }>;
         };
         setTags(body.data ?? []);
+      }
+      if (categoriesResponse.ok) {
+        const body = (await categoriesResponse.json()) as { data?: Category[] };
+        setClassificationCategories(
+          (body.data ?? []).map((category) => ({
+            ...category,
+            isActive: Boolean(category.isActive),
+          })),
+        );
+      }
+      if (brandsResponse.ok) {
+        const body = (await brandsResponse.json()) as { data?: Brand[] };
+        setBrands(
+          (body.data ?? []).map((brand) => ({
+            ...brand,
+            isActive: Boolean(brand.isActive),
+          })),
+        );
       }
       if (id && productResponse?.ok) {
         const body = (await productResponse.json()) as { data: Product };
@@ -288,10 +327,15 @@ export function ProductEditorPage() {
           tagIds?: string[];
           sortOrder?: number;
           status?: string;
+          brandId?: string | null;
+          minAgeMonths?: number | null;
+          isBestSeller?: boolean | number;
+          bestSellerRank?: number | null;
         };
         setEditing(product);
         setImages(product.images ?? []);
         setFeatured(Boolean(product.featured));
+        setBestSeller(Boolean(product.isBestSeller));
         setVisible(product.status !== "HIDDEN");
       } else if (id) {
         setMessage("Không tải được dữ liệu sản phẩm.");
@@ -372,13 +416,18 @@ export function ProductEditorPage() {
     const payload: ProductEditorSavePayload = {
       name: form.get("name"),
       slug: form.get("slug"),
-      brand: form.get("brand"),
+      brandId: form.get("brandId") || null,
+      minAgeMonths: form.get("minAgeMonths")
+        ? Number(form.get("minAgeMonths"))
+        : null,
+      isBestSeller: bestSeller,
+      bestSellerRank: bestSeller ? Number(form.get("bestSellerRank")) : null,
       shortDescription: form.get("shortDescription"),
       description: form.get("description"),
       status: visible ? "AVAILABLE" : "HIDDEN",
       featured,
       sortOrder: Number(form.get("sortOrder")),
-      categoryIds: form.get("categoryId") ? [String(form.get("categoryId"))] : [],
+      categoryIds: form.getAll("categoryIds"),
       tagIds: form.getAll("tagIds"),
       images: images.map(({ id: imageId, r2Key, altText }, sortOrder) => ({
         id: imageId,
@@ -436,6 +485,20 @@ export function ProductEditorPage() {
             >
               <Icon>save</Icon> LƯU SẢN PHẨM
             </button>
+            {id && (
+              <button
+                className="btn"
+                type="button"
+                onClick={async () => {
+                  if (!window.confirm("Lưu trữ sản phẩm này? Sản phẩm sẽ không còn xuất hiện trên catalog.")) return;
+                  const response = await fetch(`/api/admin/products/${id}`, { method: "DELETE" });
+                  if (response.ok) navigate("/admin/products");
+                  else setMessage("Chưa thể lưu trữ sản phẩm.");
+                }}
+              >
+                LƯU TRỮ
+              </button>
+            )}
           </div>
         </div>
         <div className="editor-grid">
@@ -461,10 +524,12 @@ export function ProductEditorPage() {
                 </label>
                 <label>
                   Thương hiệu
-                  <select name="brand" defaultValue={editing?.brand ?? ""}>
+                  <select name="brandId" defaultValue={editing?.brandId ?? ""}>
                     <option value="">Chọn thương hiệu...</option>
-                    {["Gerber", "Heinz", "HiPP", "Khác"].map((brand) => (
-                      <option key={brand}>{brand}</option>
+                    {brands.map((brand) => (
+                      <option key={brand.id} value={brand.id}>
+                        {brand.name}{brand.isActive === false ? " (đã ẩn)" : ""}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -598,42 +663,41 @@ export function ProductEditorPage() {
               </label>
             </EditorCard>
             <EditorCard icon="sell" title="Phân loại & Tags">
-              <label>
-                Danh mục chính
-                <select
-                  name="categoryId"
-                  defaultValue={
-                    editing?.categoryIds?.[0] ??
-                    categories.find(
-                      (category) => category.slug === editing?.category,
-                    )?.id ??
-                    ""
-                  }
-                >
-                  <option value="">Chọn danh mục...</option>
-                  {categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>Độ tuổi phù hợp</label>
-              <div className="editor-chips">
-                {["4+ tháng", "6+ tháng", "8+ tháng", "12+ tháng"].map(
-                  (age) => (
-                    <button
-                      type="button"
-                      className={
-                        age === (editing?.age ?? "6+ tháng") ? "active" : ""
+              <label>Nhóm sản phẩm</label>
+              <div className="selected-tags taxonomy-choices">
+                {classificationCategories.map((category) => (
+                  <label key={category.id} className="tag-choice">
+                    <input
+                      type="checkbox"
+                      name="categoryIds"
+                      value={category.id}
+                      defaultChecked={
+                        editing?.categoryIds?.includes(category.id) ??
+                        category.slug === editing?.category
                       }
-                      key={age}
-                    >
-                      {age}
-                    </button>
-                  ),
-                )}
+                      disabled={category.isActive === false && !editing?.categoryIds?.includes(category.id)}
+                    />
+                    <Tag tone={category.isActive === false ? "neutral" : "secondary"}>
+                      {category.name}{category.isActive === false ? " (đã ẩn)" : ""}
+                    </Tag>
+                  </label>
+                ))}
               </div>
+              <label>
+                Tuổi tối thiểu (tháng)
+                <input
+                  name="minAgeMonths"
+                  type="number"
+                  min="0"
+                  max="240"
+                  list="age-presets"
+                  defaultValue={editing?.minAgeMonths ?? ""}
+                  placeholder="Ví dụ: 6"
+                />
+                <datalist id="age-presets">
+                  {[6, 7, 10, 12].map((age) => <option key={age} value={age} />)}
+                </datalist>
+              </label>
               <label>Đặc điểm nổi bật (Tags)</label>
               <div className="selected-tags">
                 {tags.map((tag) => (
@@ -665,6 +729,24 @@ export function ProductEditorPage() {
                 value={featured}
                 onChange={setFeatured}
               />
+              <Toggle
+                label="Best seller"
+                description="Hiển thị huy hiệu và xếp hạng Best seller"
+                value={bestSeller}
+                onChange={setBestSeller}
+              />
+              {bestSeller && (
+                <label>
+                  Thứ tự Best seller
+                  <input
+                    name="bestSellerRank"
+                    type="number"
+                    min="1"
+                    required
+                    defaultValue={editing?.bestSellerRank ?? 1}
+                  />
+                </label>
+              )}
               <label>
                 Thứ tự hiển thị (Tùy chọn)
                 <input name="sortOrder" type="number" defaultValue={0} />
@@ -1131,23 +1213,89 @@ export function AdminCartRequestDetailPage() {
 
 export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   const isCategories = type === "categories";
-  const rows = isCategories
-    ? fallbackCategories.map((item, index) => ({
-        name: item.name,
-        slug: item.slug,
-        group: index ? "Danh mục con" : "Danh mục chính",
-        order: index + 1,
-      }))
-    : [
-        { name: "Hữu cơ", slug: "huu-co", group: "Đặc tính", order: 1 },
+  type TaxonomyRow = {
+    id: string;
+    name: string;
+    slug: string;
+    description?: string;
+    imageKey?: string | null;
+    sortOrder: number;
+    isActive: number | boolean;
+    productCount?: number;
+    groupType?: string | null;
+  };
+  type CategoryProduct = {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    selected: number | boolean;
+  };
+  const [rows, setRows] = useState<TaxonomyRow[]>([]);
+  const [editing, setEditing] = useState<TaxonomyRow | null>(null);
+  const [categoryProducts, setCategoryProducts] = useState<CategoryProduct[]>([]);
+  const [message, setMessage] = useState("");
+  const loadRows = async () => {
+    const response = await fetch(`/api/admin/${type}`);
+    if (!response.ok) throw new Error("TAXONOMY_LOAD_FAILED");
+    const body = (await response.json()) as { data?: TaxonomyRow[] };
+    setRows(body.data ?? []);
+  };
+  useEffect(() => {
+    void loadRows().catch(() => setMessage("Không tải được dữ liệu phân loại từ D1."));
+  }, [type]);
+  const openCategory = async (row: TaxonomyRow) => {
+    setEditing(row);
+    if (!isCategories) return;
+    const response = await fetch(`/api/admin/categories/${row.id}/products`);
+    const body = (await response.json()) as { data?: CategoryProduct[] };
+    setCategoryProducts(body.data ?? []);
+  };
+  const saveTaxonomyRow = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const response = await fetch(
+      editing ? `/api/admin/${type}/${editing.id}` : `/api/admin/${type}`,
+      {
+        method: editing ? "PUT" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: form.get("name"),
+          slug: form.get("slug"),
+          description: form.get("description"),
+          imageKey: form.get("imageKey") || null,
+          sortOrder: Number(form.get("sortOrder")),
+          isActive: form.get("isActive") === "on",
+          groupType: form.get("groupType") || null,
+        }),
+      },
+    );
+    const body = (await response.json()) as { id?: string; error?: { message?: string } };
+    if (!response.ok) {
+      setMessage(body.error?.message ?? "Chưa thể lưu phân loại.");
+      return;
+    }
+    if (isCategories && editing) {
+      const relationResponse = await fetch(
+        `/api/admin/categories/${editing.id}/products`,
         {
-          name: "Không thêm đường",
-          slug: "khong-them-duong",
-          group: "Đặc tính",
-          order: 2,
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            productIds: categoryProducts.filter((item) => item.selected).map((item) => item.id),
+          }),
         },
-        { name: "6–8 tháng", slug: "6-8-thang", group: "Độ tuổi", order: 3 },
-      ];
+      );
+      if (!relationResponse.ok) {
+        setMessage("Đã lưu nhóm nhưng chưa thể cập nhật danh sách sản phẩm.");
+        return;
+      }
+    }
+    setMessage("Đã lưu phân loại và quan hệ sản phẩm.");
+    setEditing(null);
+    setCategoryProducts([]);
+    await loadRows();
+  };
   return (
     <AdminShell title={isCategories ? "Danh Mục" : "Tags"}>
       <div className="admin-page-heading">
@@ -1159,7 +1307,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               : "Quản lý đặc tính và độ tuổi sản phẩm"}
           </p>
         </div>
-        <button className="btn primary">
+        <button className="btn primary" onClick={() => { setEditing(null); setCategoryProducts([]); }}>
           <Icon>add</Icon> THÊM {isCategories ? "DANH MỤC" : "TAG"}
         </button>
       </div>
@@ -1170,7 +1318,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               <tr>
                 <th>Tên</th>
                 <th>Slug</th>
-                <th>Nhóm</th>
+                <th>{isCategories ? "Products" : "Nhóm"}</th>
                 <th>Thứ tự</th>
                 <th>Trạng thái</th>
                 <th>Thao tác</th>
@@ -1178,18 +1326,18 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.slug}>
+                <tr key={row.id}>
                   <td>
                     <b>{row.name}</b>
                   </td>
                   <td>{row.slug}</td>
-                  <td>{row.group}</td>
-                  <td>{row.order}</td>
+                  <td>{isCategories ? (row.productCount ?? 0) : (row.groupType ?? "Đặc tính")}</td>
+                  <td>{row.sortOrder}</td>
                   <td>
-                    <StatusBadge status="AVAILABLE" />
+                    <StatusBadge status={row.isActive ? "AVAILABLE" : "HIDDEN"} />
                   </td>
                   <td>
-                    <button>
+                    <button type="button" onClick={() => void openCategory(row)}>
                       <Icon>edit</Icon>
                     </button>
                   </td>
@@ -1199,6 +1347,68 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
           </table>
         </div>
       </section>
+      <form className="editor-card taxonomy-editor" onSubmit={saveTaxonomyRow} key={editing?.id ?? "new"}>
+        <div className="editor-card-title">
+          <span><Icon>category</Icon><h2>{editing ? "Sửa phân loại" : "Thêm phân loại"}</h2></span>
+        </div>
+        <div className="form-grid">
+          <label>Tên *<input name="name" required defaultValue={editing?.name} /></label>
+          <label>Slug<input name="slug" defaultValue={editing?.slug} /></label>
+        </div>
+        {isCategories ? (
+          <>
+            <label>Mô tả<textarea name="description" defaultValue={editing?.description} /></label>
+            <label>R2 image key<input name="imageKey" defaultValue={editing?.imageKey ?? ""} /></label>
+          </>
+        ) : (
+          <label>Nhóm tag<input name="groupType" defaultValue={editing?.groupType ?? "ATTRIBUTE"} /></label>
+        )}
+        <div className="form-grid">
+          <label>Thứ tự<input name="sortOrder" type="number" defaultValue={editing?.sortOrder ?? rows.length + 1} /></label>
+          <label className="tag-choice"><input name="isActive" type="checkbox" defaultChecked={editing ? Boolean(editing.isActive) : true} /> Đang hoạt động</label>
+        </div>
+        {isCategories && editing && (
+          <section className="category-product-manager">
+            <h3>Sản phẩm trong nhóm ({categoryProducts.filter((item) => item.selected).length})</h3>
+            <div className="selected-tags taxonomy-choices">
+              {categoryProducts.map((product) => (
+                <label key={product.id} className="tag-choice">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(product.selected)}
+                    onChange={(event) =>
+                      setCategoryProducts((current) => current.map((item) =>
+                        item.id === product.id ? { ...item, selected: event.target.checked } : item,
+                      ))
+                    }
+                  />
+                  {product.name}
+                </label>
+              ))}
+            </div>
+          </section>
+        )}
+        <div className="editor-heading">
+          <span>{message}</span>
+          <div>
+            {isCategories && editing?.isActive ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!window.confirm(`Ẩn nhóm "${editing.name}"? Quan hệ sản phẩm sẽ được giữ nguyên.`)) return;
+                  await fetch(`/api/admin/categories/${editing.id}`, { method: "DELETE" });
+                  setEditing(null);
+                  setCategoryProducts([]);
+                  await loadRows();
+                }}
+              >
+                ẨN NHÓM
+              </button>
+            ) : null}
+            <button className="btn primary" type="submit"><Icon>save</Icon> LƯU</button>
+          </div>
+        </div>
+      </form>
     </AdminShell>
   );
 }

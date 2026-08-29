@@ -56,7 +56,9 @@ export function searchCatalog(
   const categoryBySlug = new Map(categories.map((category) => [category.slug, category]));
   const rankedProducts = products
     .map((product, index) => {
-      const categoryName = categoryBySlug.get(product.category)?.name ?? "";
+      const categoryName = (product.categories ?? [product.category])
+        .map((slug) => categoryBySlug.get(slug)?.name ?? "")
+        .join(" ");
       const score = Math.min(
         fieldScore(product.name, query, 0),
         fieldScore(categoryName, query, 20),

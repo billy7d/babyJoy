@@ -59,9 +59,22 @@ async function readBoundedJson(request: Request) {
   return JSON.parse(text) as unknown;
 }
 
-async function listCategories(env: Env) {
+async function listCategories(env: Env, includeInactive = false) {
   const result = await env.DB.prepare(
-    "SELECT id, parent_id AS parentId, name, slug, description, image_key AS imageKey, sort_order AS sortOrder FROM categories WHERE is_active = 1 ORDER BY sort_order, name",
+    `SELECT c.id, c.parent_id AS parentId, c.name, c.slug, c.description,
+      c.image_key AS imageKey, c.sort_order AS sortOrder, c.is_active AS isActive,
+      (SELECT COUNT(*) FROM product_categories pc WHERE pc.category_id = c.id) AS productCount
+     FROM categories c ${includeInactive ? "" : "WHERE c.is_active = 1"}
+     ORDER BY c.sort_order, c.name`,
+  ).all();
+  return json({ data: result.results });
+}
+
+async function listBrands(env: Env, includeInactive = false) {
+  const result = await env.DB.prepare(
+    `SELECT id, name, slug, sort_order AS sortOrder, is_active AS isActive
+     FROM brands ${includeInactive ? "" : "WHERE is_active = 1"}
+     ORDER BY sort_order, name`,
   ).all();
   return json({ data: result.results });
 }
@@ -71,6 +84,12 @@ type ProductRow = {
   name: string;
   slug: string;
   brand: string | null;
+  brandId: string | null;
+  brandSlug: string | null;
+  minAgeMonths: number | null;
+  isBestSeller: number;
+  bestSellerRank: number | null;
+  archivedAt: string | null;
   shortDescription: string;
   description: string;
   status: string;
@@ -96,12 +115,13 @@ type ProductImageRow = {
   sortOrder: number;
 };
 type ProductTagRow = { productId: string; name: string };
+type ProductCategoryRow = { productId: string; id: string; slug: string; name: string };
 
 async function hydrateProducts(rows: ProductRow[], env: Env) {
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
-  const [variants, images, tags] = await Promise.all([
+  const [variants, images, tags, categories] = await Promise.all([
     env.DB.prepare(
       `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder FROM product_variants WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
     )
@@ -117,6 +137,14 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
     )
       .bind(...ids)
       .all<ProductTagRow>(),
+    env.DB.prepare(
+      `SELECT pc.product_id AS productId, c.id, c.slug, c.name
+       FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+       WHERE pc.product_id IN (${placeholders}) AND c.is_active = 1
+       ORDER BY c.sort_order, c.name`,
+    )
+      .bind(...ids)
+      .all<ProductCategoryRow>(),
   ]);
   return rows.map((product) => ({
     ...product,
@@ -132,13 +160,33 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
     tagNames: tags.results
       .filter((tag) => tag.productId === product.id)
       .map((tag) => tag.name),
+    categories: categories.results
+      .filter((category) => category.productId === product.id)
+      .map(({ productId: _productId, ...category }) => category),
+    categoryIds: categories.results
+      .filter((category) => category.productId === product.id)
+      .map((category) => category.id),
+    categorySlugs: categories.results
+      .filter((category) => category.productId === product.id)
+      .map((category) => category.slug),
   }));
 }
 
 async function listProducts(request: Request, env: Env, includeHidden = false) {
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") ?? "").trim();
-  const category = url.searchParams.get("category");
+  const categories = (url.searchParams.get("category") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const brands = (url.searchParams.get("brand") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const ageValue = url.searchParams.get("age");
+  const age = ageValue === null ? null : Number.parseInt(ageValue, 10);
+  const bestSellerValue = url.searchParams.get("bestSeller");
+  const bestSeller = bestSellerValue === "1" || bestSellerValue === "true";
   const sort = url.searchParams.get("sort") ?? "default";
   const page = Math.max(
     1,
@@ -155,21 +203,35 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     ? ["1 = 1"]
     : [
         "p.status != 'HIDDEN'",
+        "p.archived_at IS NULL",
         "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN')",
       ];
   const values: Array<string | number> = [];
   if (q) {
     where.push(
-      "(p.name LIKE ? OR p.brand LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?))",
+      "(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?))",
     );
     values.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
-  if (category) {
+  if (categories.length) {
+    const categoryPlaceholders = categories.map(() => "?").join(",");
     where.push(
-      "EXISTS (SELECT 1 FROM product_categories spc JOIN categories sc ON sc.id = spc.category_id WHERE spc.product_id = p.id AND sc.slug = ?)",
+      `EXISTS (SELECT 1 FROM product_categories spc JOIN categories sc ON sc.id = spc.category_id WHERE spc.product_id = p.id AND sc.is_active = 1 AND sc.slug IN (${categoryPlaceholders}))`,
     );
-    values.push(category);
+    values.push(...categories);
   }
+  if (brands.length) {
+    const brandPlaceholders = brands.map(() => "?").join(",");
+    where.push(`b.slug IN (${brandPlaceholders})`);
+    values.push(...brands);
+  }
+  if (ageValue !== null) {
+    if (!Number.isSafeInteger(age) || Number(age) < 0 || Number(age) > 240)
+      return error("VALIDATION_ERROR", "Độ tuổi lọc không hợp lệ.", 422);
+    where.push("p.min_age_months <= ?");
+    values.push(Number(age));
+  }
+  if (bestSeller) where.push("p.is_best_seller = 1");
   const price =
     "COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'), 0)";
   const order =
@@ -177,11 +239,21 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       ? `${price} ASC`
       : sort === "price_desc"
         ? `${price} DESC`
-        : sort === "newest"
+      : sort === "newest"
           ? "p.created_at DESC"
+          : sort === "best_seller" || bestSeller
+            ? "p.is_best_seller DESC, p.best_seller_rank ASC, p.sort_order, p.name"
           : "p.sort_order, p.name";
   values.push(limit, (page - 1) * limit);
-  const sql = `SELECT p.id, p.name, p.slug, p.brand, p.short_description AS shortDescription, p.description, p.status, p.featured, p.sort_order AS sortOrder, (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id WHERE pc.product_id = p.id ORDER BY c.sort_order LIMIT 1) AS categorySlug FROM products p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`;
+  const sql = `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
+    p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
+    p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
+    p.archived_at AS archivedAt, p.short_description AS shortDescription,
+    p.description, p.status, p.featured, p.sort_order AS sortOrder,
+    (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+      WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order LIMIT 1) AS categorySlug
+    FROM products p LEFT JOIN brands b ON b.id = p.brand_id
+    WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`;
   const result = await env.DB.prepare(sql)
     .bind(...values)
     .all<ProductRow>();
@@ -200,7 +272,15 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
 
 async function getProduct(slug: string, env: Env) {
   const product = await env.DB.prepare(
-    "SELECT p.id, p.name, p.slug, p.brand, p.short_description AS shortDescription, p.description, p.status, p.featured, p.sort_order AS sortOrder, (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id WHERE pc.product_id = p.id ORDER BY c.sort_order LIMIT 1) AS categorySlug FROM products p WHERE p.slug = ? AND p.status != 'HIDDEN'",
+    `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
+      p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
+      p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
+      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      p.description, p.status, p.featured, p.sort_order AS sortOrder,
+      (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+        WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order LIMIT 1) AS categorySlug
+     FROM products p LEFT JOIN brands b ON b.id = p.brand_id
+     WHERE p.slug = ? AND p.status != 'HIDDEN' AND p.archived_at IS NULL`,
   )
     .bind(slug)
     .first<ProductRow>();
@@ -327,6 +407,10 @@ type AdminProductInput = {
   name?: string;
   slug?: string;
   brand?: string;
+  brandId?: string | null;
+  minAgeMonths?: number | null;
+  isBestSeller?: boolean;
+  bestSellerRank?: number | null;
   shortDescription?: string;
   description?: string;
   status?: string;
@@ -404,7 +488,28 @@ function validateAdminProduct(input: unknown) {
   if (
     categoryIds !== undefined &&
     (!Array.isArray(categoryIds) ||
-      categoryIds.some((value) => typeof value !== "string" || !value.trim()))
+      categoryIds.some((value) => typeof value !== "string" || !value.trim()) ||
+      new Set(categoryIds).size !== categoryIds.length)
+  )
+    throw new Error("VALIDATION_ERROR");
+  const brandId = body.brandId?.trim() || null;
+  const minAgeMonths =
+    body.minAgeMonths === null || body.minAgeMonths === undefined
+      ? null
+      : Number(body.minAgeMonths);
+  const isBestSeller = body.isBestSeller === true;
+  const bestSellerRank =
+    body.bestSellerRank === null || body.bestSellerRank === undefined
+      ? null
+      : Number(body.bestSellerRank);
+  if (
+    (minAgeMonths !== null &&
+      (!Number.isSafeInteger(minAgeMonths) || minAgeMonths < 0 || minAgeMonths > 240)) ||
+    (isBestSeller &&
+      (bestSellerRank === null ||
+        !Number.isSafeInteger(bestSellerRank) ||
+        bestSellerRank < 1)) ||
+    (!isBestSeller && bestSellerRank !== null)
   )
     throw new Error("VALIDATION_ERROR");
   if (
@@ -423,6 +528,10 @@ function validateAdminProduct(input: unknown) {
     featured: body.featured ? 1 : 0,
     sortOrder: Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : 0,
     variants,
+    brandId,
+    minAgeMonths,
+    isBestSeller: isBestSeller ? 1 : 0,
+    bestSellerRank,
     categoryIds,
     tagIds: body.tagIds,
     images,
@@ -431,7 +540,12 @@ function validateAdminProduct(input: unknown) {
 
 async function getAdminProduct(id: string, env: Env) {
   const product = await env.DB.prepare(
-    "SELECT id, name, slug, brand, short_description AS shortDescription, description, status, featured, sort_order AS sortOrder FROM products WHERE id = ?",
+    `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
+      p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
+      p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
+      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      p.description, p.status, p.featured, p.sort_order AS sortOrder
+     FROM products p LEFT JOIN brands b ON b.id = p.brand_id WHERE p.id = ?`,
   )
     .bind(id)
     .first<Record<string, unknown>>();
@@ -486,6 +600,47 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       .first())
   )
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  if (body.categoryIds !== undefined) {
+    const existing = id
+      ? await env.DB.prepare(
+          "SELECT category_id AS id FROM product_categories WHERE product_id = ?",
+        )
+          .bind(productId)
+          .all<{ id: string }>()
+      : { results: [] as Array<{ id: string }> };
+    const existingIds = new Set(existing.results.map((item) => item.id));
+    if (body.categoryIds.length) {
+      const placeholders = body.categoryIds.map(() => "?").join(",");
+      const rows = await env.DB.prepare(
+        `SELECT id, is_active AS isActive FROM categories WHERE id IN (${placeholders})`,
+      )
+        .bind(...body.categoryIds)
+        .all<{ id: string; isActive: number }>();
+      if (
+        rows.results.length !== body.categoryIds.length ||
+        rows.results.some((item) => !item.isActive && !existingIds.has(item.id))
+      )
+        return error(
+          "INVALID_CATEGORY",
+          "Nhóm sản phẩm không tồn tại hoặc đang bị ẩn.",
+          422,
+        );
+    }
+  }
+  if (body.brandId) {
+    const brand = await env.DB.prepare(
+      "SELECT id, is_active AS isActive FROM brands WHERE id = ?",
+    )
+      .bind(body.brandId)
+      .first<{ id: string; isActive: number }>();
+    const currentBrand = id
+      ? await env.DB.prepare("SELECT brand_id AS brandId FROM products WHERE id = ?")
+          .bind(productId)
+          .first<{ brandId: string | null }>()
+      : null;
+    if (!brand || (!brand.isActive && currentBrand?.brandId !== brand.id))
+      return error("INVALID_BRAND", "Hãng không tồn tại hoặc đang bị ẩn.", 422);
+  }
   const findConflict = () =>
     findProductConflict(env.DB, {
       productId,
@@ -514,13 +669,18 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   const statements = id
     ? [
         env.DB.prepare(
-          "UPDATE products SET name = ?, slug = ?, brand = ?, short_description = ?, description = ?, status = ?, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+          "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
         ).bind(
           body.name,
           body.slug,
-          body.brand ?? null,
+          body.brandId,
+          body.brandId,
+          body.minAgeMonths,
+          body.isBestSeller,
+          body.bestSellerRank,
           body.shortDescription ?? "",
           body.description ?? "",
+          body.status,
           body.status,
           body.featured,
           body.sortOrder,
@@ -530,12 +690,15 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       ]
     : [
         env.DB.prepare(
-          "INSERT INTO products (id, name, slug, brand, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ",
         ).bind(
           productId,
           body.name,
           body.slug,
-          body.brand ?? null,
+          body.brandId,
+          body.minAgeMonths,
+          body.isBestSeller,
+          body.bestSellerRank,
           body.shortDescription ?? "",
           body.description ?? "",
           body.status,
@@ -554,8 +717,8 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     [...new Set(body.categoryIds)].forEach((categoryId) =>
       statements.push(
         env.DB.prepare(
-          "INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)",
-        ).bind(productId, categoryId),
+          "INSERT INTO product_categories (product_id, category_id, created_at) VALUES (?, ?, ?)",
+        ).bind(productId, categoryId, now),
       ),
     );
   }
@@ -716,6 +879,146 @@ async function duplicateAdminProduct(id: string, env: Env) {
   return json({ success: true, id: newId }, 201);
 }
 
+async function archiveAdminProduct(id: string, env: Env) {
+  const exists = await env.DB.prepare("SELECT id FROM products WHERE id = ?")
+    .bind(id)
+    .first();
+  if (!exists)
+    return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE products SET status = 'HIDDEN', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ?",
+    ).bind(now, now, id),
+    env.DB.prepare(
+      "UPDATE product_variants SET availability = 'HIDDEN', updated_at = ? WHERE product_id = ?",
+    ).bind(now, id),
+  ]);
+  return json({ success: true, id, archivedAt: now });
+}
+
+async function getAdminCategory(id: string, env: Env) {
+  const category = await env.DB.prepare(
+    `SELECT c.id, c.name, c.slug, c.description, c.image_key AS imageKey,
+      c.sort_order AS sortOrder, c.is_active AS isActive,
+      (SELECT COUNT(*) FROM product_categories pc WHERE pc.category_id = c.id) AS productCount
+     FROM categories c WHERE c.id = ?`,
+  )
+    .bind(id)
+    .first<Record<string, unknown>>();
+  if (!category)
+    return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+  return json({ data: category });
+}
+
+async function listAdminCategoryProducts(
+  request: Request,
+  id: string,
+  env: Env,
+) {
+  const category = await env.DB.prepare(
+    "SELECT id, is_active AS isActive FROM categories WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; isActive: number }>();
+  if (!category)
+    return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+  const q = (new URL(request.url).searchParams.get("q") ?? "").trim();
+  const result = await env.DB.prepare(
+    `SELECT p.id, p.name, p.slug, p.status,
+      CASE WHEN pc.product_id IS NULL THEN 0 ELSE 1 END AS selected
+     FROM products p LEFT JOIN product_categories pc
+       ON pc.product_id = p.id AND pc.category_id = ?
+     WHERE (? = '' OR p.name LIKE ? OR p.slug LIKE ?)
+     ORDER BY selected DESC, p.sort_order, p.name LIMIT 200`,
+  )
+    .bind(id, q, `%${q}%`, `%${q}%`)
+    .all();
+  return json({ data: result.results });
+}
+
+async function replaceAdminCategoryProducts(
+  request: Request,
+  id: string,
+  env: Env,
+) {
+  const body = (await readBoundedJson(request)) as { productIds?: unknown };
+  if (
+    !Array.isArray(body.productIds) ||
+    body.productIds.some((value) => typeof value !== "string" || !value.trim()) ||
+    new Set(body.productIds).size !== body.productIds.length
+  )
+    return error("VALIDATION_ERROR", "Danh sách sản phẩm không hợp lệ.", 422);
+  const category = await env.DB.prepare(
+    "SELECT id, is_active AS isActive FROM categories WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; isActive: number }>();
+  if (!category)
+    return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+  if (!category.isActive) {
+    const existing = await env.DB.prepare(
+      "SELECT product_id AS id FROM product_categories WHERE category_id = ?",
+    )
+      .bind(id)
+      .all<{ id: string }>();
+    const existingIds = new Set(existing.results.map((item) => item.id));
+    if (body.productIds.some((productId) => !existingIds.has(productId)))
+      return error(
+        "CATEGORY_INACTIVE",
+        "Không thể gán sản phẩm mới vào nhóm đang ẩn.",
+        422,
+      );
+  }
+  if (body.productIds.length) {
+    const placeholders = body.productIds.map(() => "?").join(",");
+    const products = await env.DB.prepare(
+      `SELECT id FROM products WHERE id IN (${placeholders})`,
+    )
+      .bind(...body.productIds)
+      .all<{ id: string }>();
+    if (products.results.length !== body.productIds.length)
+      return error("INVALID_PRODUCT", "Có sản phẩm không tồn tại.", 422);
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM product_categories WHERE category_id = ?").bind(id),
+    ...body.productIds.map((productId) =>
+      env.DB.prepare(
+        "INSERT INTO product_categories (product_id, category_id, created_at) VALUES (?, ?, ?)",
+      ).bind(productId, id, now),
+    ),
+  ]);
+  return json({ success: true, productCount: body.productIds.length });
+}
+
+async function removeAdminCategoryProduct(
+  categoryId: string,
+  productId: string,
+  env: Env,
+) {
+  const result = await env.DB.prepare(
+    "DELETE FROM product_categories WHERE category_id = ? AND product_id = ?",
+  )
+    .bind(categoryId, productId)
+    .run();
+  if (!result.meta.changes)
+    return error("RELATION_NOT_FOUND", "Sản phẩm không thuộc nhóm này.", 404);
+  return json({ success: true });
+}
+
+async function deactivateAdminCategory(id: string, env: Env) {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    "UPDATE categories SET is_active = 0, updated_at = ? WHERE id = ?",
+  )
+    .bind(now, id)
+    .run();
+  if (!result.meta.changes)
+    return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+  return json({ success: true, id, deactivated: true });
+}
+
 async function saveTaxonomy(
   request: Request,
   env: Env,
@@ -726,6 +1029,7 @@ async function saveTaxonomy(
     name?: string;
     slug?: string;
     description?: string;
+    imageKey?: string | null;
     groupType?: string;
     sortOrder?: number;
     isActive?: boolean;
@@ -737,17 +1041,17 @@ async function saveTaxonomy(
   const rowId = id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   if (kind === "categories") {
-    await env.DB.prepare(
+    const statement = env.DB.prepare(
       id
-        ? "UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
-        : "INSERT INTO categories (id, name, slug, description, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-      .bind(
+        ? "UPDATE categories SET name = ?, slug = ?, description = ?, image_key = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
+        : "INSERT INTO categories (id, name, slug, description, image_key, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(
         ...(id
           ? [
               name,
               slug,
               body.description ?? "",
+              body.imageKey?.trim() || null,
               body.sortOrder ?? 0,
               body.isActive === false ? 0 : 1,
               now,
@@ -758,13 +1062,22 @@ async function saveTaxonomy(
               name,
               slug,
               body.description ?? "",
+              body.imageKey?.trim() || null,
               body.sortOrder ?? 0,
               body.isActive === false ? 0 : 1,
               now,
               now,
             ]),
-      )
-      .run();
+      );
+    try {
+      const result = await statement.run();
+      if (id && !result.meta.changes)
+        return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+    } catch (caught) {
+      if (caught instanceof Error && caught.message.includes("UNIQUE"))
+        return error("SLUG_CONFLICT", `Slug "${slug}" đã tồn tại.`, 409);
+      throw caught;
+    }
   } else {
     await env.DB.prepare(
       id
@@ -817,6 +1130,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
   const path = url.pathname;
   if (request.method === "GET" && path === "/api/categories")
     return listCategories(env);
+  if (request.method === "GET" && path === "/api/brands")
+    return listBrands(env);
   if (
     request.method === "GET" &&
     (path === "/api/products" || path === "/api/search")
@@ -872,22 +1187,46 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
     return getAdminProduct(productMatch[1], env);
   if (request.method === "PUT" && productMatch)
     return saveAdminProduct(request, env, productMatch[1]);
+  if (request.method === "DELETE" && productMatch)
+    return archiveAdminProduct(productMatch[1], env);
   if (request.method === "POST" && duplicateMatch)
     return duplicateAdminProduct(duplicateMatch[1], env);
   if (request.method === "GET" && path === "/api/admin/categories")
-    return listCategories(env);
+    return listCategories(env, true);
+  if (request.method === "GET" && path === "/api/admin/brands")
+    return listBrands(env, true);
   if (request.method === "GET" && path === "/api/admin/tags") {
     const result = await env.DB.prepare(
-      "SELECT * FROM tags ORDER BY sort_order, name",
+      "SELECT id, name, slug, group_type AS groupType, sort_order AS sortOrder, is_active AS isActive FROM tags ORDER BY sort_order, name",
     ).all();
     return json({ data: result.results });
   }
   const categoryMatch = path.match(/^\/api\/admin\/categories\/([^/]+)$/);
+  const categoryProductsMatch = path.match(
+    /^\/api\/admin\/categories\/([^/]+)\/products$/,
+  );
+  const categoryProductMatch = path.match(
+    /^\/api\/admin\/categories\/([^/]+)\/products\/([^/]+)$/,
+  );
   const tagMatch = path.match(/^\/api\/admin\/tags\/([^/]+)$/);
   if (request.method === "POST" && path === "/api/admin/categories")
     return saveTaxonomy(request, env, "categories");
+  if (request.method === "GET" && categoryProductsMatch)
+    return listAdminCategoryProducts(request, categoryProductsMatch[1], env);
+  if (request.method === "PUT" && categoryProductsMatch)
+    return replaceAdminCategoryProducts(request, categoryProductsMatch[1], env);
+  if (request.method === "DELETE" && categoryProductMatch)
+    return removeAdminCategoryProduct(
+      categoryProductMatch[1],
+      categoryProductMatch[2],
+      env,
+    );
+  if (request.method === "GET" && categoryMatch)
+    return getAdminCategory(categoryMatch[1], env);
   if (request.method === "PUT" && categoryMatch)
     return saveTaxonomy(request, env, "categories", categoryMatch[1]);
+  if (request.method === "DELETE" && categoryMatch)
+    return deactivateAdminCategory(categoryMatch[1], env);
   if (request.method === "POST" && path === "/api/admin/tags")
     return saveTaxonomy(request, env, "tags");
   if (request.method === "PUT" && tagMatch)

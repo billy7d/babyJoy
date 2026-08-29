@@ -37,7 +37,17 @@ import {
 
 export function HomePage() {
   const { products, categories } = useCatalog();
-  const featured = products.filter((product) => product.featured).slice(0, 4);
+  const bestSellers = products
+    .filter((product) => product.isBestSeller)
+    .sort(
+      (left, right) =>
+        (left.bestSellerRank ?? Number.MAX_SAFE_INTEGER) -
+        (right.bestSellerRank ?? Number.MAX_SAFE_INTEGER),
+    );
+  const featured = (bestSellers.length
+    ? bestSellers
+    : products.filter((product) => product.featured)
+  ).slice(0, 4);
   return (
     <PublicShell>
       <section className="hero">
@@ -130,7 +140,7 @@ export function HomePage() {
       <section className="featured section">
         <div className="section-heading">
           <div>
-            <h2>Sản phẩm nổi bật</h2>
+            <h2>{bestSellers.length ? "Best seller" : "Sản phẩm nổi bật"}</h2>
             <p>Những hương vị được các bé yêu thích nhất.</p>
           </div>
           <Link to="/shop">
@@ -154,9 +164,12 @@ export function applyFilters(
   forcedCategory?: string,
 ) {
   const q = params.get("q") ?? "";
-  const category = forcedCategory ?? params.get("category");
-  const brand = params.get("brand");
-  const age = params.get("age");
+  const selectedCategories = (forcedCategory ?? params.get("category") ?? "")
+    .split(",")
+    .filter(Boolean);
+  const selectedBrands = (params.get("brand") ?? "").split(",").filter(Boolean);
+  const age = Number.parseInt(params.get("age") ?? "", 10);
+  const bestSeller = params.get("bestSeller") === "1";
   const tag = params.get("tag");
   const available = params.get("available");
   const sort = params.get("sort") ?? "default";
@@ -164,10 +177,20 @@ export function applyFilters(
     ? searchCatalog(source, categories, q).products
     : source;
   const filtered = searchSource.filter((product) => {
+    const productMinAge =
+      product.minAgeMonths ?? Number.parseInt(product.age, 10);
     return (
-      (!category || product.category === category) &&
-      (!brand || product.brand === brand) &&
-      (!age || product.age.startsWith(age)) &&
+      (!selectedCategories.length ||
+        selectedCategories.some((category) =>
+          (product.categories ?? [product.category]).includes(category),
+        )) &&
+      (!selectedBrands.length ||
+        selectedBrands.some(
+          (brand) => product.brandSlug === brand || product.brand === brand,
+        )) &&
+      (!Number.isFinite(age) ||
+        (Number.isFinite(productMinAge) && productMinAge <= age)) &&
+      (!bestSeller || product.isBestSeller) &&
       (!tag || product.tags.includes(tag)) &&
       (!available ||
         product.variants.some(
@@ -181,6 +204,11 @@ export function applyFilters(
     if (sort === "price_asc") return aPrice - bPrice;
     if (sort === "price_desc") return bPrice - aPrice;
     if (sort === "newest") return b.id.localeCompare(a.id);
+    if (sort === "best_seller")
+      return (
+        (a.bestSellerRank ?? Number.MAX_SAFE_INTEGER) -
+        (b.bestSellerRank ?? Number.MAX_SAFE_INTEGER)
+      );
     return 0;
   });
 }
@@ -192,7 +220,7 @@ export function ProductListPage({
   searchMode?: boolean;
   categorySlug?: string;
 }) {
-  const { products, categories } = useCatalog();
+  const { products, categories, brands } = useCatalog();
   const [params, setParams] = useSearchParams();
   const [mobileFilters, setMobileFilters] = useState(false);
   const filtered = useMemo(
@@ -204,6 +232,12 @@ export function ProductListPage({
     if (value) next.set(key, value);
     else next.delete(key);
     setParams(next);
+  };
+  const toggleCsvFilter = (key: "category" | "brand", value: string) => {
+    const selected = new Set((params.get(key) ?? "").split(",").filter(Boolean));
+    if (selected.has(value)) selected.delete(value);
+    else selected.add(value);
+    setFilter(key, [...selected].join(","));
   };
   const title = searchMode
     ? `Kết quả tìm kiếm${params.get("q") ? ` cho “${params.get("q")}”` : ""}`
@@ -217,17 +251,20 @@ export function ProductListPage({
       {categories.map((item) => (
         <label key={item.id}>
           <input
-            type="radio"
+            type="checkbox"
             name="category"
-            checked={(categorySlug ?? params.get("category")) === item.slug}
+            checked={(categorySlug
+              ? [categorySlug]
+              : (params.get("category") ?? "").split(",")
+            ).includes(item.slug)}
             disabled={Boolean(categorySlug)}
-            onChange={() => setFilter("category", item.slug)}
+            onChange={() => toggleCsvFilter("category", item.slug)}
           />
           {item.name}
         </label>
       ))}
       <h3>Độ tuổi</h3>
-      {["4+", "6+", "8+", "12+"].map((item) => (
+      {["6", "7", "10", "12"].map((item) => (
         <label key={item}>
           <input
             type="radio"
@@ -235,21 +272,32 @@ export function ProductListPage({
             checked={params.get("age") === item}
             onChange={() => setFilter("age", item)}
           />
-          {item} tháng
+          {item}m+
         </label>
       ))}
       <h3>Thương hiệu</h3>
-      {["Gerber", "Heinz", "HiPP", "Wakodo"].map((item) => (
-        <label key={item}>
+      {brands.map((item) => (
+        <label key={item.id}>
           <input
-            type="radio"
+            type="checkbox"
             name="brand"
-            checked={params.get("brand") === item}
-            onChange={() => setFilter("brand", item)}
+            checked={(params.get("brand") ?? "").split(",").includes(item.slug)}
+            onChange={() => toggleCsvFilter("brand", item.slug)}
           />
-          {item}
+          {item.name}
         </label>
       ))}
+      <h3>Best seller</h3>
+      <label>
+        <input
+          type="checkbox"
+          checked={params.get("bestSeller") === "1"}
+          onChange={(event) =>
+            setFilter("bestSeller", event.target.checked ? "1" : "")
+          }
+        />
+        Chỉ xem Best seller
+      </label>
       <h3>Đặc tính</h3>
       <div className="filter-tags">
         {[
@@ -315,6 +363,7 @@ export function ProductListPage({
               <option value="newest">Mới nhất</option>
               <option value="price_asc">Giá thấp đến cao</option>
               <option value="price_desc">Giá cao đến thấp</option>
+              <option value="best_seller">Best seller</option>
             </select>
           </label>
         </div>
@@ -328,8 +377,8 @@ export function ProductListPage({
           {categories.map((item) => (
             <button
               key={item.id}
-              className={params.get("category") === item.slug ? "active" : ""}
-              onClick={() => setFilter("category", item.slug)}
+              className={(params.get("category") ?? "").split(",").includes(item.slug) ? "active" : ""}
+              onClick={() => toggleCsvFilter("category", item.slug)}
             >
               {item.name}
             </button>

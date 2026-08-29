@@ -203,6 +203,7 @@ export function ProductCard({
       <Link to={`/product/${product.slug}`} className="product-image">
         <ProductImage product={product} loading="lazy" />
         <span className="product-tags">
+          {product.isBestSeller && <Tag tone="primary">BEST SELLER</Tag>}
           {unavailable ? (
             <Tag tone="error">Hết hàng</Tag>
           ) : (

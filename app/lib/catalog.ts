@@ -22,13 +22,21 @@ export type Product = {
   slug: string;
   name: string;
   brand: string;
+  brandId?: string | null;
+  brandSlug?: string | null;
   shortDescription: string;
   description: string;
   image: string;
   imageKey?: string | null;
   images?: ProductImageRecord[];
   category: string;
+  categories?: string[];
+  categoryIds?: string[];
   age: string;
+  minAgeMonths?: number | null;
+  isBestSeller?: boolean;
+  bestSellerRank?: number | null;
+  archivedAt?: string | null;
   tags: string[];
   featured?: boolean;
   variants: Variant[];
@@ -39,6 +47,18 @@ export type Category = {
   name: string;
   slug: string;
   image: string;
+  description?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+  productCount?: number;
+};
+
+export type Brand = {
+  id: string;
+  name: string;
+  slug: string;
+  sortOrder?: number;
+  isActive?: boolean;
 };
 
 export const categories: Category[] = [

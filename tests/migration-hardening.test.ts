@@ -37,6 +37,7 @@ describe("forward migration xóa seed demo", () => {
     `);
 
     database.exec(migration("0005_remove_demo_cart_request.sql"));
+    database.exec(migration("0006_product_taxonomy_v1.sql"));
 
     expect(
       database
@@ -70,6 +71,15 @@ describe("forward migration xóa seed demo", () => {
       .map((column) => (column as { name: string }).name);
     expect(columns).toEqual(expect.arrayContaining(["telegram_status", "messenger_delivery_status"]));
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM categories WHERE slug IN ('bot-an-dam', 'banh-an-dam', 'trai-cay-nghien', 'pudding-custard-hu-dinh-duong', 'tui-thuc-an', 'hu-thuc-an')").get(),
+    ).toEqual({ count: 6 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM brands WHERE slug IN ('heinz', 'ellas-kitchen', 'organix', 'kiddylicious', 'cerelac', 'hipp', 'kendamil')").get(),
+    ).toEqual({ count: 7 });
+    expect(
+      database.prepare("SELECT brand_id, min_age_months FROM products WHERE id = 'prod-heinz'").get(),
+    ).toEqual({ brand_id: "brand-heinz", min_age_months: 4 });
     database.close();
   });
 });

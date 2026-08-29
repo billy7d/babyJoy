@@ -162,14 +162,16 @@ describe("catalog search", () => {
     },
   );
 
-  it("applies the remaining desktop filters after category-name search", () => {
+  it("áp dụng tuổi tối thiểu theo <= sau tìm kiếm tên nhóm", () => {
     const result = applyFilters(
       products,
       categories,
       new URLSearchParams({ q: "banh", age: "8+" }),
     );
     expect(result.length).toBeGreaterThan(0);
-    expect(result.every((product) => product.age.startsWith("8+"))).toBe(true);
+    expect(
+      result.every((product) => Number.parseInt(product.age, 10) <= 8),
+    ).toBe(true);
   });
 });
 
