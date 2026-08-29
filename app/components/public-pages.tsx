@@ -8,7 +8,7 @@ import {
   type Product,
 } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
-import { useCart } from "../lib/cart";
+import { cartStorageKey, parseStoredCart, useCart } from "../lib/cart";
 import {
   cartFingerprint,
   clearPendingMessengerCart,
@@ -1289,6 +1289,7 @@ export function CartShareGuidePage() {
   const [loaded, setLoaded] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"COPIED" | "FAILED">("FAILED");
   const [copyFeedback, setCopyFeedback] = useState("");
+  const [clickGuardStale, setClickGuardStale] = useState(false);
   const manualTextRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -1353,7 +1354,7 @@ export function CartShareGuidePage() {
   }
 
   const currentFingerprint = cartShareFingerprint(cart.items);
-  const stale = prepared.fingerprint !== currentFingerprint;
+  const stale = clickGuardStale || prepared.fingerprint !== currentFingerprint;
   if (stale) {
     return (
       <main className="cart-guide-unavailable">
@@ -1369,7 +1370,9 @@ export function CartShareGuidePage() {
   }
 
   const openMessenger = () => {
-    runWithCurrentPreparedCartShare(prepared, cart.items, () => {
+    // Đọc lại localStorage tại thời điểm click để chặn thay đổi từ tab khác.
+    const latestItems = parseStoredCart(window.localStorage.getItem(cartStorageKey));
+    const allowed = runWithCurrentPreparedCartShare(prepared, latestItems, () => {
       recordSellerMessengerOpened(prepared.cartRequest.code);
       console.info(
         JSON.stringify({
@@ -1378,7 +1381,8 @@ export function CartShareGuidePage() {
         }),
       );
       window.location.assign(prepared.seller.messengerUrl);
-    }, () => !cartDetails(cart.items, products).some((line) => line.unavailable));
+    }, () => !cartDetails(latestItems, products).some((line) => line.unavailable));
+    if (!allowed) setClickGuardStale(true);
   };
   const copied = copyStatus === "COPIED";
   return (

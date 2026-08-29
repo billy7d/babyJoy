@@ -277,6 +277,17 @@ describe("post-checkout clipboard guide", () => {
     expect(pages).not.toContain("Thanh toán thành công");
   });
 
+  it("đọc lại cart persisted trước click Messenger để chặn thay đổi từ tab khác", () => {
+    const pages = readFileSync("app/components/public-pages.tsx", "utf8");
+    expect(pages).toContain(
+      "parseStoredCart(window.localStorage.getItem(cartStorageKey))",
+    );
+    expect(pages).toContain(
+      "const allowed = runWithCurrentPreparedCartShare(prepared, latestItems",
+    );
+    expect(pages).toContain("if (!allowed) setClickGuardStale(true);");
+  });
+
   it("keeps the mobile search modal and shared card control wired together", () => {
     const ui = readFileSync("app/components/ui.tsx", "utf8");
     const css = readFileSync("app/app.css", "utf8");
