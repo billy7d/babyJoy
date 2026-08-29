@@ -2,12 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
   formatVnd,
+  getDisplayVariant,
   type Brand,
   type Category,
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
 import { mapApiProduct, useCatalog } from "../lib/catalog-context";
+import {
+  createDraftVariant,
+  mapVariantValidationIssue,
+  toEditableVariant,
+  validateEditableVariants,
+  type EditableVariant,
+  type VariantField,
+  type VariantFieldErrors,
+} from "../lib/product-variants";
 import {
   getProductEditPath,
   ProductEditorSaveController,
@@ -19,6 +29,7 @@ import { ProductImage } from "./product-image";
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
 type AdminProduct = Product & { adminStatus: string };
+type VariantErrors = Record<string, VariantFieldErrors>;
 
 export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
   const product = mapApiProduct(row);
@@ -145,7 +156,7 @@ export function AdminProductsPage() {
             </thead>
             <tbody>
               {filteredProducts.map((product) => {
-                const variant = product.variants[0];
+                const variant = getDisplayVariant(product);
                 return (
                   <tr key={product.id}>
                     <td>
@@ -268,6 +279,11 @@ export function ProductEditorPage() {
     }) | null
   >(null);
   const [images, setImages] = useState<ProductImageRecord[]>([]);
+  const [variants, setVariants] = useState<EditableVariant[]>(() => [
+    createDraftVariant(),
+  ]);
+  const [deletedVariantIds, setDeletedVariantIds] = useState<string[]>([]);
+  const [variantErrors, setVariantErrors] = useState<VariantErrors>({});
   const [tags, setTags] = useState<Array<{ id: string; name: string }>>([]);
   const [featured, setFeatured] = useState(false);
   const [bestSeller, setBestSeller] = useState(false);
@@ -287,6 +303,12 @@ export function ProductEditorPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      if (!id) {
+        setEditing(null);
+        setVariants([createDraftVariant()]);
+        setDeletedVariantIds([]);
+        setVariantErrors({});
+      }
       const requests: Promise<Response>[] = [
         fetch("/api/admin/tags"),
         fetch("/api/admin/categories"),
@@ -333,6 +355,9 @@ export function ProductEditorPage() {
           bestSellerRank?: number | null;
         };
         setEditing(product);
+        setVariants(product.variants.map(toEditableVariant));
+        setDeletedVariantIds([]);
+        setVariantErrors({});
         setImages(product.images ?? []);
         setFeatured(Boolean(product.featured));
         setBestSeller(Boolean(product.isBestSeller));
@@ -409,8 +434,61 @@ export function ProductEditorPage() {
     });
   };
 
+  const updateVariant = (
+    clientId: string,
+    field: VariantField,
+    value: string,
+  ) => {
+    setVariants((current) =>
+      current.map((variant) =>
+        variant.clientId === clientId ? { ...variant, [field]: value } : variant,
+      ),
+    );
+    setVariantErrors((current) => {
+      const row = current[clientId];
+      if (!row || !row[field]) return current;
+      const nextRow = { ...row };
+      delete nextRow[field];
+      const next = { ...current };
+      if (Object.keys(nextRow).length) next[clientId] = nextRow;
+      else delete next[clientId];
+      return next;
+    });
+  };
+
+  const addVariant = () => {
+    setVariants((current) => [...current, createDraftVariant()]);
+  };
+
+  const deleteVariant = (variant: EditableVariant) => {
+    setVariants((current) =>
+      current.filter((item) => item.clientId !== variant.clientId),
+    );
+    setVariantErrors((current) => {
+      if (!current[variant.clientId]) return current;
+      const next = { ...current };
+      delete next[variant.clientId];
+      return next;
+    });
+    if (variant.id)
+      setDeletedVariantIds((current) =>
+        current.includes(variant.id!) ? current : [...current, variant.id!],
+      );
+  };
+
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const errors = validateEditableVariants(variants);
+    if (!variants.length) {
+      setMessage("Sản phẩm cần có ít nhất một phân loại.");
+      setVariantErrors({});
+      return;
+    }
+    if (Object.keys(errors).length) {
+      setVariantErrors(errors);
+      setMessage("Vui lòng kiểm tra thông tin các phân loại.");
+      return;
+    }
     setMessage("Đang lưu...");
     const form = new FormData(event.currentTarget);
     const payload: ProductEditorSavePayload = {
@@ -435,15 +513,11 @@ export function ProductEditorPage() {
         altText,
         sortOrder,
       })),
-      variants: [
-        {
-          id: editing?.variants[0].id,
-          name: form.get("variantName"),
-          sku: form.get("sku"),
-          priceVnd: Number(form.get("priceVnd")),
-          availability: visible ? "AVAILABLE" : "HIDDEN",
-        },
-      ],
+      variants: variants.map((variant) => ({
+        ...variant,
+        priceVnd: Number(variant.priceVnd),
+      })),
+      deletedVariantIds,
     };
     const task = saveController.save(payload);
     if (!task) return;
@@ -455,7 +529,27 @@ export function ProductEditorPage() {
         await refresh();
         if (result.created)
           navigate(getProductEditPath(result.id), { replace: true });
+        else {
+          // Đồng bộ lại ID server cấp cho draft để lần Save kế tiếp vẫn là UPDATE.
+          const response = await fetch(`/api/admin/products/${result.id}`);
+          if (response.ok) {
+            const body = (await response.json()) as { data?: Product };
+            if (body.data) {
+              setEditing(body.data);
+              setVariants(body.data.variants.map(toEditableVariant));
+              setDeletedVariantIds([]);
+              setVariantErrors({});
+            }
+          }
+        }
       } else {
+        const mappedVariantErrors = mapVariantValidationIssue(
+          result.details,
+          variants,
+          result.message,
+        );
+        if (Object.keys(mappedVariantErrors).length)
+          setVariantErrors((current) => ({ ...current, ...mappedVariantErrors }));
         setMessage(result.message);
       }
     } catch {
@@ -556,6 +650,7 @@ export function ProductEditorPage() {
               icon="view_list"
               title="Phân loại & Giá bán"
               action="+ Thêm phân loại"
+              onAction={addVariant}
             >
               <div className="variant-table">
                 <div className="variant-head">
@@ -564,25 +659,74 @@ export function ProductEditorPage() {
                   <span>Giá bán (₫)</span>
                   <span>Tình trạng</span>
                 </div>
-                <div>
-                  <input
-                    name="variantName"
-                    defaultValue={editing?.variants[0].name ?? "Mặc định"}
-                  />
-                  <input
-                    name="sku"
-                    defaultValue={editing?.variants[0].sku ?? "SP-001"}
-                  />
-                <input
-                  name="priceVnd"
-                  type="number"
-                    defaultValue={editing?.variants[0].priceVnd ?? 89000}
-                  />
-                  <StatusBadge status="AVAILABLE" />
-                  <button type="button">
-                    <Icon>delete</Icon>
-                  </button>
-                </div>
+                {variants.map((variant) => {
+                  const errors = variantErrors[variant.clientId] ?? {};
+                  return (
+                    <div className="variant-row" key={variant.id ?? variant.clientId}>
+                      <label>
+                        <span className="sr-only">Tên phân loại</span>
+                        <input
+                          value={variant.name}
+                          onChange={(event) =>
+                            updateVariant(variant.clientId, "name", event.target.value)
+                          }
+                          aria-invalid={Boolean(errors.name)}
+                          aria-describedby={errors.name ? `${variant.clientId}-name-error` : undefined}
+                        />
+                        {errors.name && <small id={`${variant.clientId}-name-error`} className="form-error">{errors.name}</small>}
+                      </label>
+                      <label>
+                        <span className="sr-only">Mã SKU</span>
+                        <input
+                          value={variant.sku}
+                          onChange={(event) =>
+                            updateVariant(variant.clientId, "sku", event.target.value)
+                          }
+                          aria-invalid={Boolean(errors.sku)}
+                          aria-describedby={errors.sku ? `${variant.clientId}-sku-error` : undefined}
+                        />
+                        {errors.sku && <small id={`${variant.clientId}-sku-error`} className="form-error">{errors.sku}</small>}
+                      </label>
+                      <label>
+                        <span className="sr-only">Giá bán</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={variant.priceVnd}
+                          onChange={(event) =>
+                            updateVariant(variant.clientId, "priceVnd", event.target.value)
+                          }
+                          aria-invalid={Boolean(errors.priceVnd)}
+                          aria-describedby={errors.priceVnd ? `${variant.clientId}-price-error` : undefined}
+                        />
+                        {errors.priceVnd && <small id={`${variant.clientId}-price-error`} className="form-error">{errors.priceVnd}</small>}
+                      </label>
+                      <label>
+                        <span className="sr-only">Tình trạng</span>
+                        <select
+                          value={variant.availability}
+                          onChange={(event) =>
+                            updateVariant(variant.clientId, "availability", event.target.value)
+                          }
+                          aria-invalid={Boolean(errors.availability)}
+                          aria-describedby={errors.availability ? `${variant.clientId}-availability-error` : undefined}
+                        >
+                          <option value="AVAILABLE">Đang bán</option>
+                          <option value="OUT_OF_STOCK">Tạm hết</option>
+                          <option value="HIDDEN">Đã ẩn</option>
+                        </select>
+                        {errors.availability && <small id={`${variant.clientId}-availability-error`} className="form-error">{errors.availability}</small>}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => deleteVariant(variant)}
+                        aria-label={`Xóa phân loại ${variant.name || "mới"}`}
+                      >
+                        <Icon>delete</Icon>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </EditorCard>
           </div>
@@ -763,11 +907,13 @@ function EditorCard({
   icon,
   title,
   action,
+  onAction,
   children,
 }: {
   icon: string;
   title: string;
   action?: string;
+  onAction?: () => void;
   children: React.ReactNode;
 }) {
   return (
@@ -777,7 +923,7 @@ function EditorCard({
           <Icon>{icon}</Icon>
           <h2>{title}</h2>
         </span>
-        {action && <button type="button">{action}</button>}
+        {action && <button type="button" onClick={onAction}>{action}</button>}
       </div>
       {children}
     </section>

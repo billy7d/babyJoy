@@ -226,6 +226,24 @@ describe("prepared cart freshness", () => {
     expect(analytics).not.toHaveBeenCalled();
     expect(assign).not.toHaveBeenCalled();
   });
+
+  it("blocks a prepared checkout when its live variant is unavailable", () => {
+    const prepared = preparedCart([{ variantId: "deleted-variant", quantity: 1 }]);
+    const action = vi.fn();
+    expect(
+      runWithCurrentPreparedCartShare(
+        prepared,
+        [{ variantId: "deleted-variant", quantity: 1 }],
+        action,
+        () => false,
+      ),
+    ).toBe(false);
+    expect(action).not.toHaveBeenCalled();
+
+    const source = readFileSync("app/components/public-pages.tsx", "utf8");
+    expect(source).toContain("const hasUnavailable = cartDetails(cart.items, products).some");
+    expect(source).toContain("Phân loại trong giỏ không còn khả dụng");
+  });
 });
 
 describe("post-checkout clipboard guide", () => {

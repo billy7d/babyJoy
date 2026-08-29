@@ -427,14 +427,33 @@ type AdminProductInput = {
   }>;
   variants?: Array<{
     id?: string;
+    clientId?: string;
     name?: string;
     sku?: string;
-    priceVnd?: number;
-    compareAtPriceVnd?: number | null;
+    priceVnd?: number | string;
+    compareAtPriceVnd?: number | string | null;
     availability?: string;
     sortOrder?: number;
   }>;
+  deletedVariantIds?: string[];
 };
+
+type VariantValidationIssue = {
+  code: string;
+  field?: "name" | "sku" | "priceVnd" | "availability";
+  variantId?: string | null;
+  clientId?: string | null;
+  message: string;
+};
+
+class AdminProductValidationError extends Error {
+  constructor(
+    readonly issue: VariantValidationIssue,
+    readonly status = 422,
+  ) {
+    super(issue.message);
+  }
+}
 
 function normalizeSlug(value: string) {
   return value
@@ -448,41 +467,126 @@ function normalizeSlug(value: string) {
 }
 
 function validateAdminProduct(input: unknown) {
-  if (!input || typeof input !== "object") throw new Error("VALIDATION_ERROR");
+  const invalid = (message = "Thông tin sản phẩm chưa hợp lệ."): never => {
+    throw new AdminProductValidationError({ code: "VALIDATION_ERROR", message });
+  };
+  if (!input || typeof input !== "object") invalid();
   const body = input as AdminProductInput;
-  const name = body.name?.trim() ?? "";
-  const slug = normalizeSlug(body.slug?.trim() || name);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const slugInput = typeof body.slug === "string" ? body.slug.trim() : "";
+  const slug = normalizeSlug(slugInput || name);
   const statuses = ["AVAILABLE", "OUT_OF_STOCK", "HIDDEN"];
   if (
     !name ||
     name.length > 180 ||
     !slug ||
     !statuses.includes(body.status ?? "AVAILABLE") ||
-    !Array.isArray(body.variants) ||
-    !body.variants.length
+    !Array.isArray(body.variants)
   )
-    throw new Error("VALIDATION_ERROR");
-  const variants = body.variants.map((variant, index) => {
-    const variantName = variant.name?.trim() ?? "";
-    const priceVnd = Number(variant.priceVnd);
-    const availability = variant.availability ?? "AVAILABLE";
+    invalid();
+  const rawVariants = body.variants!;
+  const variants = rawVariants.map((variant, index) => {
+    if (!variant || typeof variant !== "object") invalid();
+    const variantName = typeof variant.name === "string" ? variant.name.trim() : "";
+    const sku = typeof variant.sku === "string" ? variant.sku.trim() : "";
+    const rawPrice = variant.priceVnd;
+    const priceVnd =
+      typeof rawPrice !== "number" && typeof rawPrice !== "string"
+        ? Number.NaN
+        : typeof rawPrice === "string" && !rawPrice.trim()
+          ? Number.NaN
+          : Number(rawPrice);
+    const rawAvailability = variant.availability;
+    const availability =
+      rawAvailability === undefined
+        ? "AVAILABLE"
+        : typeof rawAvailability === "string"
+          ? rawAvailability
+          : "__INVALID__";
+    const variantId = typeof variant.id === "string" ? variant.id.trim() : "";
+    const clientId =
+      typeof variant.clientId === "string" ? variant.clientId.trim() : "";
+    const issue = (code: string, field: VariantValidationIssue["field"], message: string) => {
+      throw new AdminProductValidationError({
+        code,
+        field,
+        variantId: variantId || null,
+        clientId: clientId || null,
+        message,
+      });
+    };
+    if (variant.id !== undefined && (!variantId || typeof variant.id !== "string"))
+      throw new AdminProductValidationError({
+        code: "VARIANT_OWNERSHIP",
+        variantId: variantId || null,
+        clientId: clientId || null,
+        message: "ID phân loại không hợp lệ.",
+      });
+    if (!variantName || variantName.length > 180)
+      issue("INVALID_VARIANT_NAME", "name", "Tên phân loại là bắt buộc.");
+    if (!sku || sku.length > 120)
+      issue("INVALID_SKU", "sku", "Mã SKU là bắt buộc.");
+    if (!Number.isSafeInteger(priceVnd) || priceVnd <= 0)
+      issue("INVALID_PRICE", "priceVnd", "Giá bán phải là số nguyên lớn hơn 0.");
+    if (!statuses.includes(availability))
+      issue("INVALID_AVAILABILITY", "availability", "Tình trạng phân loại không hợp lệ.");
+    const rawCompareAtPrice = variant.compareAtPriceVnd;
+    const compareAtPriceVnd =
+      rawCompareAtPrice === null || rawCompareAtPrice === undefined
+        ? null
+        : typeof rawCompareAtPrice !== "number" &&
+            typeof rawCompareAtPrice !== "string"
+          ? Number.NaN
+          : Number(rawCompareAtPrice);
     if (
-      !variantName ||
-      !Number.isSafeInteger(priceVnd) ||
-      priceVnd < 0 ||
-      !statuses.includes(availability)
+      compareAtPriceVnd !== null &&
+      (!Number.isSafeInteger(compareAtPriceVnd) || compareAtPriceVnd < 0)
     )
-      throw new Error("VALIDATION_ERROR");
+      issue("INVALID_PRICE", "priceVnd", "Giá so sánh không hợp lệ.");
     return {
       ...variant,
+      id: variantId || undefined,
+      clientId: clientId || undefined,
       name: variantName,
+      sku,
       priceVnd,
+      compareAtPriceVnd,
       availability,
       sortOrder: Number.isFinite(variant.sortOrder)
         ? Number(variant.sortOrder)
         : index,
     };
   });
+  const skuOwners = new Map<string, (typeof variants)[number]>();
+  variants.forEach((variant) => {
+    const previous = skuOwners.get(variant.sku);
+    if (previous) {
+      throw new AdminProductValidationError({
+        code: "DUPLICATE_SKU",
+        field: "sku",
+        variantId: variant.id ?? null,
+        clientId: variant.clientId ?? null,
+        message: "Mã SKU bị trùng trong danh sách phân loại.",
+      });
+    }
+    skuOwners.set(variant.sku, variant);
+  });
+  const rawDeletedVariantIds = body.deletedVariantIds;
+  const deletedVariantIds = Array.isArray(rawDeletedVariantIds)
+    ? rawDeletedVariantIds.map((value) =>
+        typeof value === "string" ? value.trim() : "",
+      )
+    : [];
+  if (
+    (rawDeletedVariantIds !== undefined &&
+      !Array.isArray(rawDeletedVariantIds)) ||
+    deletedVariantIds.some((value) => !value) ||
+    new Set(deletedVariantIds).size !== deletedVariantIds.length
+  )
+    invalid("Danh sách phân loại cần xóa không hợp lệ.");
+  const variantIds = variants.map((variant) => variant.id).filter(Boolean) as string[];
+  if (new Set(variantIds).size !== variantIds.length)
+    invalid("Mỗi phân loại chỉ được xuất hiện một lần.");
   const categoryIds =
     body.categoryIds ?? (body.categoryId ? [body.categoryId] : undefined);
   if (
@@ -491,7 +595,7 @@ function validateAdminProduct(input: unknown) {
       categoryIds.some((value) => typeof value !== "string" || !value.trim()) ||
       new Set(categoryIds).size !== categoryIds.length)
   )
-    throw new Error("VALIDATION_ERROR");
+    invalid("Danh sách nhóm sản phẩm không hợp lệ.");
   const brandId = body.brandId?.trim() || null;
   const minAgeMonths =
     body.minAgeMonths === null || body.minAgeMonths === undefined
@@ -511,13 +615,13 @@ function validateAdminProduct(input: unknown) {
         bestSellerRank < 1)) ||
     (!isBestSeller && bestSellerRank !== null)
   )
-    throw new Error("VALIDATION_ERROR");
+    invalid("Thông tin tuổi hoặc Best seller không hợp lệ.");
   if (
     body.tagIds !== undefined &&
     (!Array.isArray(body.tagIds) ||
       body.tagIds.some((value) => typeof value !== "string" || !value.trim()))
   )
-    throw new Error("VALIDATION_ERROR");
+    invalid("Danh sách tag không hợp lệ.");
   const images =
     body.images === undefined ? undefined : normalizeProductImages(body.images);
   return {
@@ -528,6 +632,7 @@ function validateAdminProduct(input: unknown) {
     featured: body.featured ? 1 : 0,
     sortOrder: Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : 0,
     variants,
+    deletedVariantIds,
     brandId,
     minAgeMonths,
     isBestSeller: isBestSeller ? 1 : 0,
@@ -538,7 +643,7 @@ function validateAdminProduct(input: unknown) {
   };
 }
 
-async function getAdminProduct(id: string, env: Env) {
+async function readAdminProductData(id: string, env: Env) {
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
@@ -549,10 +654,9 @@ async function getAdminProduct(id: string, env: Env) {
   )
     .bind(id)
     .first<Record<string, unknown>>();
-  if (!product)
-    return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  if (!product) return null;
   const variants = await env.DB.prepare(
-    "SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder FROM product_variants WHERE product_id = ? ORDER BY sort_order",
+    "SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder FROM product_variants WHERE product_id = ? ORDER BY sort_order, created_at, id",
   )
     .bind(id)
     .all();
@@ -571,35 +675,125 @@ async function getAdminProduct(id: string, env: Env) {
   )
     .bind(id)
     .all<Omit<ProductImageRow, "productId">>();
-  return json({
-    data: {
-      ...product,
-      variants: variants.results,
-      categoryIds: categories.results.map((item) => item.id),
-      tagIds: tags.results.map((item) => item.id),
-      images: images.results.map((image) => ({
-        ...image,
-        url: getPublicImageUrl(image.r2Key),
-      })),
-    },
-  });
+  return {
+    ...product,
+    variants: variants.results,
+    categoryIds: categories.results.map((item) => item.id),
+    tagIds: tags.results.map((item) => item.id),
+    images: images.results.map((image) => ({
+      ...image,
+      url: getPublicImageUrl(image.r2Key),
+    })),
+  };
+}
+
+async function getAdminProduct(id: string, env: Env) {
+  const product = await readAdminProductData(id, env);
+  if (!product)
+    return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  return json({ data: product });
 }
 
 async function saveAdminProduct(request: Request, env: Env, id?: string) {
   let body: ReturnType<typeof validateAdminProduct>;
   try {
     body = validateAdminProduct(await readBoundedJson(request));
-  } catch {
+  } catch (caught) {
+    if (caught instanceof AdminProductValidationError)
+      return error(
+        caught.issue.code,
+        caught.issue.message,
+        caught.status,
+        caught.issue,
+      );
     return error("VALIDATION_ERROR", "Thông tin sản phẩm chưa hợp lệ.", 422);
   }
   const productId = id ?? crypto.randomUUID();
-  if (
-    id &&
-    !(await env.DB.prepare("SELECT id FROM products WHERE id = ?")
-      .bind(id)
-      .first())
-  )
+  const existingProduct = id
+    ? await env.DB.prepare("SELECT id FROM products WHERE id = ?")
+        .bind(id)
+        .first<{ id: string }>()
+    : null;
+  if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+
+  // Đọc toàn bộ ID trước transaction để phân biệt rõ update, insert và delete.
+  const existingVariants = id
+    ? await env.DB.prepare(
+        "SELECT id FROM product_variants WHERE product_id = ?",
+      )
+        .bind(productId)
+        .all<{ id: string }>()
+    : { results: [] as Array<{ id: string }> };
+  const existingVariantIds = new Set(
+    existingVariants.results.map((variant) => variant.id),
+  );
+  const deletedVariantIds = new Set(body.deletedVariantIds);
+  if (!id && deletedVariantIds.size)
+    return error(
+      "VARIANT_OWNERSHIP",
+      "Không thể xóa phân loại khi tạo sản phẩm mới.",
+      422,
+      { code: "VARIANT_OWNERSHIP", field: "deletedVariantIds" },
+    );
+  for (const variant of body.variants) {
+    if (variant.id && !existingVariantIds.has(variant.id))
+      return error(
+        "VARIANT_OWNERSHIP",
+        "Phân loại không thuộc sản phẩm này.",
+        422,
+        {
+          code: "VARIANT_OWNERSHIP",
+          field: "variantId",
+          variantId: variant.id,
+          clientId: variant.clientId ?? null,
+          message: "Phân loại không thuộc sản phẩm này.",
+        },
+      );
+    if (variant.id && deletedVariantIds.has(variant.id))
+      return error(
+        "VALIDATION_ERROR",
+        "Không thể vừa cập nhật vừa xóa cùng một phân loại.",
+        422,
+        {
+          code: "VALIDATION_ERROR",
+          field: "variantId",
+          variantId: variant.id,
+          clientId: variant.clientId ?? null,
+          message: "Không thể vừa cập nhật vừa xóa cùng một phân loại.",
+        },
+      );
+  }
+  for (const variantId of deletedVariantIds) {
+    if (!existingVariantIds.has(variantId))
+      return error(
+        "VARIANT_OWNERSHIP",
+        "Phân loại không thuộc sản phẩm này.",
+        422,
+        {
+          code: "VARIANT_OWNERSHIP",
+          field: "deletedVariantIds",
+          variantId,
+          clientId: null,
+          message: "Phân loại không thuộc sản phẩm này.",
+        },
+      );
+  }
+  const newVariantCount = body.variants.filter((variant) => !variant.id).length;
+  const finalVariantCount =
+    existingVariantIds.size - deletedVariantIds.size + newVariantCount;
+  if (finalVariantCount < 1)
+    return error(
+      "AT_LEAST_ONE_VARIANT",
+      "Sản phẩm cần có ít nhất một phân loại.",
+      422,
+      {
+        code: "AT_LEAST_ONE_VARIANT",
+        field: "variants",
+        message: "Sản phẩm cần có ít nhất một phân loại.",
+      },
+    );
+
   if (body.categoryIds !== undefined) {
     const existing = id
       ? await env.DB.prepare(
@@ -653,6 +847,35 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   if (existingConflict) {
     const conflict = productConflictError(existingConflict);
     return error(conflict.code, conflict.message, 409, conflict.details);
+  }
+  const skuValues = [...new Set(body.variants.map((variant) => variant.sku))];
+  if (skuValues.length) {
+    const placeholders = skuValues.map(() => "?").join(",");
+    const skuRows = await env.DB.prepare(
+      `SELECT id, product_id AS productId, sku FROM product_variants WHERE sku IN (${placeholders})`,
+    )
+      .bind(...skuValues)
+      .all<{ id: string; productId: string; sku: string }>();
+    for (const row of skuRows.results) {
+      if (deletedVariantIds.has(row.id)) continue;
+      const incoming = body.variants.find((variant) => variant.sku === row.sku);
+      const isSameVariant =
+        incoming?.id === row.id && row.productId === productId;
+      if (isSameVariant) continue;
+      return error(
+        "DUPLICATE_SKU",
+        `SKU "${row.sku}" đã được sử dụng.`,
+        409,
+        {
+          code: "DUPLICATE_SKU",
+          field: "sku",
+          variantId: incoming?.id ?? null,
+          clientId: incoming?.clientId ?? null,
+          ownerId: row.productId,
+          message: `SKU "${row.sku}" đã được sử dụng.`,
+        },
+      );
+    }
   }
   if (body.images) {
     try {
@@ -736,37 +959,49 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       ),
     );
   }
-  const existingVariants = id
-    ? await env.DB.prepare(
-        "SELECT id FROM product_variants WHERE product_id = ?",
-      )
-        .bind(productId)
-        .all<{ id: string }>()
-    : { results: [] as Array<{ id: string }> };
-  const existingVariantIds = new Set(
-    existingVariants.results.map((variant) => variant.id),
-  );
-  body.variants.forEach((variant) => {
-    const variantId =
-      variant.id && existingVariantIds.has(variant.id)
-        ? variant.id
-        : crypto.randomUUID();
+  // Xóa explicit trước khi ghi để cho phép tái sử dụng SKU vừa được giải phóng.
+  [...deletedVariantIds].forEach((variantId) =>
     statements.push(
       env.DB.prepare(
-        "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, sku = excluded.sku, price_vnd = excluded.price_vnd, compare_at_price_vnd = excluded.compare_at_price_vnd, availability = excluded.availability, sort_order = excluded.sort_order, updated_at = excluded.updated_at",
-      ).bind(
-        variantId,
-        productId,
-        variant.name,
-        variant.sku?.trim() || null,
-        variant.priceVnd,
-        variant.compareAtPriceVnd ?? null,
-        variant.availability,
-        variant.sortOrder,
-        now,
-        now,
-      ),
-    );
+        "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
+      ).bind(variantId, productId),
+    ),
+  );
+  body.variants.forEach((variant) => {
+    if (variant.id) {
+      statements.push(
+        env.DB.prepare(
+          "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?",
+        ).bind(
+          variant.name,
+          variant.sku,
+          variant.priceVnd,
+          variant.compareAtPriceVnd ?? null,
+          variant.availability,
+          variant.sortOrder,
+          now,
+          variant.id,
+          productId,
+        ),
+      );
+    } else {
+      statements.push(
+        env.DB.prepare(
+          "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ).bind(
+          crypto.randomUUID(),
+          productId,
+          variant.name,
+          variant.sku,
+          variant.priceVnd,
+          variant.compareAtPriceVnd ?? null,
+          variant.availability,
+          variant.sortOrder,
+          now,
+          now,
+        ),
+      );
+    }
   });
   if (body.images !== undefined) {
     const existingImages = id
@@ -823,8 +1058,14 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       409,
     );
   }
+  const persistedProduct = await readAdminProductData(productId, env);
   return json(
-    { success: true, id: productId, slug: body.slug },
+    {
+      success: true,
+      id: productId,
+      slug: body.slug,
+      product: persistedProduct,
+    },
     id ? 200 : 201,
   );
 }

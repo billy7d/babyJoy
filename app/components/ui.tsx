@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import type { Availability, Product } from "../lib/catalog";
-import { findVariantInProducts, formatVnd } from "../lib/catalog";
+import {
+  findVariantInProducts,
+  formatVnd,
+  getDefaultVariant,
+  getDisplayVariant,
+} from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
 import { searchCatalog } from "../lib/search";
 import { ProductImage } from "./product-image";
+import type { CartLine } from "../lib/cart";
+import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
 
 export function Icon({
   children,
@@ -194,8 +201,9 @@ export function ProductCard({
   product: Product;
   compact?: boolean;
 }) {
-  const variant = product.variants[0];
-  const unavailable = variant.availability !== "AVAILABLE";
+  const variant = getDefaultVariant(product);
+  const displayVariant = getDisplayVariant(product) ?? variant;
+  const unavailable = !variant || variant.availability !== "AVAILABLE";
   return (
     <article
       className={`product-card ${compact ? "compact" : ""} ${unavailable ? "unavailable" : ""}`}
@@ -218,7 +226,7 @@ export function ProductCard({
         </Link>
         {!compact && <p>{product.shortDescription}</p>}
         <div className="product-foot">
-          <Price value={variant.priceVnd} />
+          <Price value={displayVariant?.priceVnd ?? 0} />
           <InlineCartControl product={product} />
         </div>
       </div>
@@ -228,7 +236,8 @@ export function ProductCard({
 
 export function InlineCartControl({ product }: { product: Product }) {
   const cart = useCart();
-  const variant = product.variants[0];
+  const variant = getDefaultVariant(product);
+  if (!variant) return null;
   const quantity =
     cart.items.find((item) => item.variantId === variant.id)?.quantity ?? 0;
   const unavailable = variant.availability !== "AVAILABLE";
@@ -381,9 +390,16 @@ function MobileSearchModal({ onClose }: { onClose: () => void }) {
             <div className="mobile-search-products">
               {results.products.map((product) => (
                 <article key={product.id}>
-                  <button className="search-product-link" type="button" onClick={() => go(`/product/${product.slug}`)}>
+                  <button
+                    className="search-product-link"
+                    type="button"
+                    onClick={() => go(`/product/${product.slug}`)}
+                  >
                     <ProductImage product={product} />
-                    <span><b>{product.name}</b><Price value={product.variants[0].priceVnd} /></span>
+                    <span>
+                      <b>{product.name}</b>
+                      <Price value={getDisplayVariant(product)?.priceVnd ?? 0} />
+                    </span>
                   </button>
                   <InlineCartControl product={product} />
                 </article>
@@ -408,10 +424,12 @@ export function QuantityStepper({
   variantId,
   value,
   onChange,
+  availability,
 }: {
   variantId?: string;
   value: number;
   onChange?: (value: number) => void;
+  availability?: Availability;
 }) {
   const cart = useCart();
   const update = (next: number) =>
@@ -427,6 +445,7 @@ export function QuantityStepper({
       <span>{value}</span>
       <button
         aria-label="Tăng số lượng"
+        disabled={availability !== undefined && availability !== "AVAILABLE"}
         onClick={() => update(Math.min(99, value + 1))}
       >
         <Icon>add</Icon>
@@ -511,19 +530,48 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 export function cartDetails(
-  items: { variantId: string; quantity: number }[],
+  items: CartLine[],
   products: Product[],
 ) {
   return items.flatMap((line) => {
     const found = findVariantInProducts(products, line.variantId);
-    return found
-      ? [
-          {
-            ...found,
-            ...line,
-            lineTotal: found.variant.priceVnd * line.quantity,
-          },
-        ]
-      : [];
+    if (found)
+      return [
+        {
+          ...found,
+          ...line,
+          unavailable: found.variant.availability !== "AVAILABLE",
+          lineTotal: found.variant.priceVnd * line.quantity,
+        },
+      ];
+    const variant = {
+      id: line.variantId,
+      name: line.variantName ?? "Phân loại không còn tồn tại",
+      sku: line.sku ?? "",
+      priceVnd: line.priceVnd ?? 0,
+      availability: "HIDDEN" as const,
+    };
+    const product: Product = {
+      id: line.productId ?? `removed-${line.variantId}`,
+      slug: "",
+      name: line.productName ?? "Sản phẩm không còn tồn tại",
+      brand: "",
+      shortDescription: "",
+      description: "",
+      image: PRODUCT_IMAGE_PLACEHOLDER,
+      category: "",
+      age: "",
+      tags: [],
+      variants: [variant],
+    };
+    return [
+      {
+        product,
+        variant,
+        ...line,
+        unavailable: true,
+        lineTotal: variant.priceVnd * line.quantity,
+      },
+    ];
   });
 }

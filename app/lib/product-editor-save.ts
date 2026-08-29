@@ -6,17 +6,19 @@ export type ProductEditorSavePayload = {
     sortOrder: number;
   }>;
   variants: Array<Record<string, unknown>>;
+  deletedVariantIds?: string[];
   [key: string]: unknown;
 };
 
 type SaveResponseBody = {
   id?: string;
   slug?: string;
+  product?: unknown;
   error?: { code?: string; message?: string; details?: unknown };
 };
 
 export type ProductEditorSaveResult =
-  | { ok: true; id: string; slug?: string; created: boolean }
+  | { ok: true; id: string; slug?: string; created: boolean; product?: unknown }
   | { ok: false; code?: string; message: string; details?: unknown };
 
 type RequestProductSave = (
@@ -90,6 +92,12 @@ export class ProductEditorSaveController {
     }
     // Ghi nhớ ID ngay khi create thành công; Save kế tiếp luôn là PUT dù route chưa render lại.
     this.productId = body.id;
-    return { ok: true, id: body.id, slug: body.slug, created: !currentId };
+    return {
+      ok: true,
+      id: body.id,
+      slug: body.slug,
+      created: !currentId,
+      product: body.product,
+    };
   }
 }

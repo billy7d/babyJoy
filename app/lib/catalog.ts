@@ -198,3 +198,19 @@ export function findVariantInProducts(source: Product[], variantId: string) {
   }
   return undefined;
 }
+
+/** Chọn phân loại mặc định có thể mua; chỉ dùng phần tử đầu tiên làm phương án cuối. */
+export function getDefaultVariant(product: Product) {
+  return (
+    product.variants.find((variant) => variant.availability === "AVAILABLE") ??
+    product.variants.find((variant) => variant.availability !== "HIDDEN") ??
+    product.variants.at(0)
+  );
+}
+
+/** Giá đại diện luôn lấy mức thấp nhất đang hiển thị, không khóa vào phần tử đầu tiên. */
+export function getDisplayVariant(product: Product) {
+  return product.variants
+    .filter((variant) => variant.availability !== "HIDDEN")
+    .sort((left, right) => left.priceVnd - right.priceVnd)[0] ?? getDefaultVariant(product);
+}

@@ -2,7 +2,16 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { canonicalVariantIds, findVariantInProducts } from "./catalog";
 import { useCatalog } from "./catalog-context";
 
-export type CartLine = { variantId: string; quantity: number };
+export type CartLine = {
+  variantId: string;
+  quantity: number;
+  // Snapshot nhẹ giúp hiển thị rõ dòng cũ nếu variant bị gỡ khỏi catalog.
+  productId?: string;
+  productName?: string;
+  variantName?: string;
+  sku?: string;
+  priceVnd?: number;
+};
 type CartContextValue = {
   items: CartLine[];
   hydrated: boolean;
@@ -52,7 +61,12 @@ export function parseStoredCart(raw: string | null): CartLine[] {
         line.variantId.trim().length > 0 &&
         Number.isInteger(line.quantity) &&
         Number(line.quantity) >= 1 &&
-        Number(line.quantity) <= 99
+        Number(line.quantity) <= 99 &&
+        (line.productId === undefined || typeof line.productId === "string") &&
+        (line.productName === undefined || typeof line.productName === "string") &&
+        (line.variantName === undefined || typeof line.variantName === "string") &&
+        (line.sku === undefined || typeof line.sku === "string") &&
+        (line.priceVnd === undefined || (typeof line.priceVnd === "number" && Number.isSafeInteger(line.priceVnd) && line.priceVnd >= 0))
       );
     });
     return items.length === parsed.items.length ? items : [];
@@ -64,6 +78,25 @@ export function parseStoredCart(raw: string | null): CartLine[] {
 function readCart(): CartLine[] {
   if (typeof window === "undefined") return [];
   return parseStoredCart(window.localStorage.getItem(cartStorageKey));
+}
+
+function snapshotCartLine(
+  variantId: string,
+  quantity: number,
+  products: ReturnType<typeof useCatalog>["products"],
+): CartLine {
+  const found = findVariantInProducts(products, variantId);
+  return found
+    ? {
+        variantId,
+        quantity,
+        productId: found.product.id,
+        productName: found.product.name,
+        variantName: found.variant.name,
+        sku: found.variant.sku,
+        priceVnd: found.variant.priceVnd,
+      }
+    : { variantId, quantity };
 }
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
@@ -86,7 +119,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
     const subtotalVnd = items.reduce((sum, item) => {
       const match = findVariantInProducts(products, item.variantId);
-      return sum + (match?.variant.priceVnd ?? 0) * item.quantity;
+      return sum + (match?.variant.priceVnd ?? item.priceVnd ?? 0) * item.quantity;
     }, 0);
     return {
       items,
@@ -94,6 +127,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       totalQuantity,
       subtotalVnd,
       addItem(variantId, quantity = 1) {
+        if (!Number.isSafeInteger(quantity) || quantity < 1) return;
+        const match = findVariantInProducts(products, variantId);
+        if (!match || match.variant.availability !== "AVAILABLE") return;
+        const amount = Math.min(99, quantity);
         setItems((current) => {
           const existing = current.find((item) => item.variantId === variantId);
           if (existing)
@@ -102,25 +139,38 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
                 item.variantId === variantId
                   ? {
                       ...item,
-                      quantity: Math.min(99, item.quantity + quantity),
+                      quantity: Math.min(99, item.quantity + amount),
                     }
                   : item,
               ),
             );
           return persist([
             ...current,
-            { variantId, quantity: Math.min(99, quantity) },
+            snapshotCartLine(variantId, amount, products),
           ]);
         });
       },
       incrementItem(variantId) {
-        setItems((current) => persist(changeCartItemQuantity(current, variantId, 1)));
+        const match = findVariantInProducts(products, variantId);
+        if (!match || match.variant.availability !== "AVAILABLE") return;
+        setItems((current) => {
+          const existing = current.find((item) => item.variantId === variantId);
+          const next = changeCartItemQuantity(current, variantId, 1);
+          if (existing || next === current) return persist(next);
+          return persist(
+            next.map((item) =>
+              item.variantId === variantId
+                ? snapshotCartLine(variantId, item.quantity, products)
+                : item,
+            ),
+          );
+        });
       },
       decrementItem(variantId) {
         setItems((current) => persist(changeCartItemQuantity(current, variantId, -1)));
       },
       setQuantity(variantId, quantity) {
-        if (quantity <= 0)
+        if (!Number.isSafeInteger(quantity) || quantity <= 0)
           setItems((current) =>
             persist(current.filter((item) => item.variantId !== variantId)),
           );

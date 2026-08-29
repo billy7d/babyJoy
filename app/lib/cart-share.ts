@@ -96,8 +96,9 @@ export function runWithCurrentPreparedCartShare(
   prepared: PreparedCartShare,
   items: CartLine[],
   action: () => void,
+  canSend: () => boolean = () => true,
 ) {
-  if (!isPreparedCartShareCurrent(prepared, items)) return false;
+  if (!isPreparedCartShareCurrent(prepared, items) || !canSend()) return false;
   action();
   return true;
 }

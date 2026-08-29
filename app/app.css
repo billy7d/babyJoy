@@ -62,3 +62,14 @@
 .taxonomy-choices{max-height:280px;overflow:auto;align-items:flex-start}.taxonomy-editor{margin-top:24px}.category-product-manager{margin-top:18px;padding-top:16px;border-top:1px solid var(--outline-variant)}.category-product-manager h3{margin-bottom:12px}.product-tags .tag-primary{font-weight:800;letter-spacing:.04em}
 .channel-card{position:relative;padding:30px;border-radius:24px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.035)}.channel-card h2{display:flex;gap:12px;margin-bottom:20px;font-size:29px}.channel-icon{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#229ed9;color:#fff}.channel-time{position:absolute;top:96px;right:30px;color:var(--on-variant);font-size:13px}.channel-card p{margin:18px 0}.channel-card .btn{width:100%}
 @media(max-width:639px){.channel-card{margin-bottom:18px;padding:20px}}
+/* Các row phân loại dùng khóa client ổn định nhưng vẫn giữ nguyên lưới card hiện tại. */
+.variant-table>div:last-child{display:block;padding:0}
+.variant-table .variant-row{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr 36px;gap:8px;align-items:center;padding:12px}
+.variant-table .variant-row label{min-width:0;margin:0}
+.variant-table .variant-row input,.variant-table .variant-row select{min-width:0;width:100%;padding:6px;border:0;border-bottom:1px solid var(--surface-container);background:transparent}
+.variant-table .variant-row select{padding-inline:2px}
+.variant-table .variant-row .form-error{display:block;margin-top:4px;padding:3px 4px;font-size:11px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:639px){.variant-table>div:last-child{min-width:0}.variant-table .variant-row{min-width:620px}}
+/* O selector cũ của card nhắm vào phần tử cuối; row mới vẫn phải giữ cùng layout với mọi row. */
+.variant-table>div:last-child.variant-row{display:grid;padding:12px}

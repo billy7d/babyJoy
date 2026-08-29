@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
-import { formatVnd, type Category, type Product } from "../lib/catalog";
+import {
+  formatVnd,
+  getDefaultVariant,
+  getDisplayVariant,
+  type Category,
+  type Product,
+} from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
 import {
@@ -199,8 +205,8 @@ export function applyFilters(
     );
   });
   return filtered.sort((a, b) => {
-    const aPrice = a.variants[0].priceVnd;
-    const bPrice = b.variants[0].priceVnd;
+    const aPrice = getDisplayVariant(a)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
+    const bPrice = getDisplayVariant(b)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
     if (sort === "price_asc") return aPrice - bPrice;
     if (sort === "price_desc") return bPrice - aPrice;
     if (sort === "newest") return b.id.localeCompare(a.id);
@@ -480,14 +486,23 @@ export function ProductDetailPage() {
     useLocation().pathname.split("/").filter(Boolean).at(-1) ?? "",
   );
   const product = products.find((item) => item.slug === slug) ?? products[0];
-  const [variantId, setVariantId] = useState(product.variants[0].id);
+  const [variantId, setVariantId] = useState(
+    () => getDefaultVariant(product)?.id ?? "",
+  );
   const [quantity, setQuantity] = useState(1);
   const [toast, setToast] = useState(false);
   const [selectedImage, setSelectedImage] = useState(0);
   const { addItem } = useCart();
+  useEffect(() => {
+    setVariantId((current) =>
+      product.variants.some((item) => item.id === current)
+        ? current
+        : (getDefaultVariant(product)?.id ?? ""),
+    );
+  }, [product]);
   const variant =
     product.variants.find((item) => item.id === variantId) ??
-    product.variants[0];
+    getDefaultVariant(product);
   const productImages = product.images?.length
     ? product.images
     : [
@@ -506,6 +521,7 @@ export function ProductDetailPage() {
         },
       ];
   const add = () => {
+    if (!variant || variant.availability !== "AVAILABLE") return;
     addItem(variant.id, quantity);
     setToast(true);
     window.setTimeout(() => setToast(false), 2200);
@@ -550,8 +566,8 @@ export function ProductDetailPage() {
           <h1>{product.name}</h1>
           <p>{product.description}</p>
           <div className="detail-price">
-            <Price value={variant.priceVnd} />
-            {variant.compareAtPriceVnd && (
+            <Price value={variant?.priceVnd ?? 0} />
+            {variant?.compareAtPriceVnd && (
               <del>{formatVnd(variant.compareAtPriceVnd)}</del>
             )}
           </div>
@@ -566,6 +582,7 @@ export function ProductDetailPage() {
                   key={item.id}
                   className={variantId === item.id ? "active" : ""}
                   onClick={() => setVariantId(item.id)}
+                  aria-pressed={variantId === item.id}
                 >
                   {item.name}
                 </button>
@@ -574,10 +591,25 @@ export function ProductDetailPage() {
           </div>
           <div className="detail-quantity">
             <span>Số lượng</span>
-            <QuantityStepper value={quantity} onChange={setQuantity} />
-            <small>Còn hàng</small>
+            <QuantityStepper
+              value={quantity}
+              onChange={setQuantity}
+              availability={variant?.availability}
+            />
+            <small>
+              {variant?.availability === "AVAILABLE"
+                ? "Còn hàng"
+                : variant?.availability === "OUT_OF_STOCK"
+                  ? "Tạm hết hàng"
+                  : "Không bán"
+              }
+            </small>
           </div>
-          <button className="btn primary add-cart" onClick={add}>
+          <button
+            className="btn primary add-cart"
+            onClick={add}
+            disabled={!variant || variant.availability !== "AVAILABLE"}
+          >
             <Icon>shopping_bag</Icon> THÊM VÀO GIỎ
           </button>
           <div className="detail-benefits">
@@ -629,8 +661,16 @@ export function ProductDetailPage() {
         </section>
       </article>
       <div className="mobile-add-bar">
-        <QuantityStepper value={quantity} onChange={setQuantity} />
-        <button className="btn primary" onClick={add}>
+        <QuantityStepper
+          value={quantity}
+          onChange={setQuantity}
+          availability={variant?.availability}
+        />
+        <button
+          className="btn primary"
+          onClick={add}
+          disabled={!variant || variant.availability !== "AVAILABLE"}
+        >
           <Icon>shopping_bag</Icon> THÊM VÀO GIỎ
         </button>
       </div>
@@ -671,12 +711,20 @@ export function CartPage() {
         ) : (
           <div className="cart-layout">
             <div className="cart-items">
-              {lines.map(({ product, variant, quantity, lineTotal }) => (
-                <article className="cart-item" key={variant.id}>
+              {lines.map(({ product, variant, quantity, lineTotal, unavailable }) => (
+                <article
+                  className={`cart-item ${unavailable ? "cart-item-unavailable" : ""}`}
+                  key={variant.id}
+                >
                   <ProductImage product={product} />
                   <div className="cart-item-info">
                     <h2>{product.name}</h2>
                     <Tag>{variant.name}</Tag>
+                    {unavailable && (
+                      <p className="form-error" role="alert">
+                        Phân loại này không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.
+                      </p>
+                    )}
                     <button
                       className="remove-line"
                       onClick={() => cart.removeItem(variant.id)}
@@ -689,7 +737,11 @@ export function CartPage() {
                       <Price value={variant.priceVnd} />
                     </div>
                   </div>
-                  <QuantityStepper variantId={variant.id} value={quantity} />
+                  <QuantityStepper
+                    variantId={variant.id}
+                    value={quantity}
+                    availability={variant.availability}
+                  />
                   <div className="line-total">
                     <span>Thành tiền</span>
                     <Price value={lineTotal} />
@@ -798,6 +850,7 @@ function DirectSellerShareControls({
   const [message, setMessage] = useState("");
   const [priceChanges, setPriceChanges] = useState<PriceChange[]>([]);
   const stale = Boolean(prepared && prepared.fingerprint !== fingerprint);
+  const hasUnavailable = lines.some((line) => line.unavailable);
 
   const showGuide = async (value: PreparedCartShare) => {
     const copied = await copyCartText(value.share.copyText);
@@ -818,6 +871,8 @@ function DirectSellerShareControls({
     setPriceChanges([]);
     try {
       if (!lines.length) throw new Error("Giỏ hàng đang trống.");
+      if (hasUnavailable)
+        throw new Error("Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng.");
       if (!seller) throw new Error("Người bán chưa được cấu hình.");
       if (forceNew) clearPreparedCartShare();
       const submissionToken = getCartShareSubmissionToken(fingerprint, forceNew);
@@ -869,12 +924,17 @@ function DirectSellerShareControls({
     }
   };
 
-  if (!prepared || stale) {
+  if (!prepared || stale || hasUnavailable) {
     return (
       <div className="direct-share-checkout">
         {stale && (
           <p className="share-warning" role="alert">
             Giỏ hàng đã thay đổi. Vui lòng chốt lại trước khi gửi.
+          </p>
+        )}
+        {hasUnavailable && (
+          <p className="share-warning" role="alert">
+            Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng trước khi chốt.
           </p>
         )}
         {message && <p className="form-error">{message}</p>}
@@ -904,7 +964,7 @@ function DirectSellerShareControls({
         )}
         <button
           className="btn primary direct-prepare"
-          disabled={busy}
+          disabled={busy || hasUnavailable}
           onClick={() => void prepare(false, stale)}
         >
           {busy ? "ĐANG KIỂM TRA..." : "CHỐT GIỎ HÀNG"}
@@ -949,6 +1009,7 @@ function MessengerCheckoutControls({
   );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const hasUnavailable = lines.some((line) => line.unavailable);
 
   const completeSentCart = (value: PendingMessengerCart) => {
     // Chỉ xóa đúng snapshot đã submit; thay đổi mới của khách luôn được giữ lại.
@@ -1010,6 +1071,7 @@ function MessengerCheckoutControls({
 
   const openMessenger = (url: string) => {
     // Điều hướng same-tab ổn định trên cả mobile và desktop, không phụ thuộc popup.
+    if (hasUnavailable) return;
     window.location.assign(url);
   };
 
@@ -1018,6 +1080,8 @@ function MessengerCheckoutControls({
     setMessage("");
     try {
       if (!lines.length) throw new Error("Giỏ hàng đang trống.");
+      if (hasUnavailable)
+        throw new Error("Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng.");
       if (forceNew) {
         clearPendingMessengerCart();
         setPending(null);
@@ -1081,7 +1145,11 @@ function MessengerCheckoutControls({
                 ? "BabyJoy đang gửi giỏ hàng"
                 : "Đang chờ xác nhận trên Messenger"}
         </b>
-        {!expired && (
+        {hasUnavailable ? (
+          <p className="form-error" role="alert">
+            Phiên này có phân loại không còn khả dụng. Vui lòng quay lại giỏ hàng và xóa dòng đó.
+          </p>
+        ) : !expired && (
           <p>
             Mở Messenger, xác nhận giỏ hàng và quay lại BabyJoy. Shop sẽ nhận
             giỏ hàng ngay trong cuộc trò chuyện của bạn.
@@ -1094,7 +1162,7 @@ function MessengerCheckoutControls({
           </button>
         ) : (
           <div className="messenger-actions">
-            <button className="btn primary" onClick={() => openMessenger(pending.messengerUrl)}>
+            <button className="btn primary" disabled={hasUnavailable} onClick={() => openMessenger(pending.messengerUrl)}>
               MỞ MESSENGER
             </button>
             <button className="btn secondary-btn" disabled={busy} onClick={() => void checkStatus()}>
@@ -1113,7 +1181,12 @@ function MessengerCheckoutControls({
         Messenger.
       </p>
       {message && <p className="form-error">{message}</p>}
-      <button className="btn primary" disabled={busy} onClick={() => void start()}>
+      {hasUnavailable && (
+        <p className="share-warning" role="alert">
+          Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng trước khi gửi.
+        </p>
+      )}
+      <button className="btn primary" disabled={busy || hasUnavailable} onClick={() => void start()}>
         {busy ? "ĐANG TẠO PHIÊN..." : "XÁC NHẬN QUA MESSENGER"} <Icon>send</Icon>
       </button>
     </div>
@@ -1208,6 +1281,7 @@ export function PublicCartSharePage() {
 export function CartShareGuidePage() {
   const navigate = useNavigate();
   const cart = useCart();
+  const { products } = useCatalog();
   const code = decodeURIComponent(
     useLocation().pathname.split("/").filter(Boolean).at(-1) ?? "",
   );
@@ -1261,6 +1335,23 @@ export function CartShareGuidePage() {
     );
   }
 
+  const hasUnavailable = cartDetails(cart.items, products).some(
+    (line) => line.unavailable,
+  );
+  if (hasUnavailable) {
+    return (
+      <main className="cart-guide-unavailable">
+        <Icon>inventory_2</Icon>
+        <h1>Phân loại trong giỏ không còn khả dụng</h1>
+        <p>
+          Một phân loại đã bị xóa hoặc tạm ngưng sau khi chốt giỏ. Vui lòng
+          quay lại giỏ hàng, xóa dòng này và chốt lại trước khi gửi cho shop.
+        </p>
+        <Link className="btn primary" to="/cart">QUAY LẠI GIỎ HÀNG</Link>
+      </main>
+    );
+  }
+
   const currentFingerprint = cartShareFingerprint(cart.items);
   const stale = prepared.fingerprint !== currentFingerprint;
   if (stale) {
@@ -1287,7 +1378,7 @@ export function CartShareGuidePage() {
         }),
       );
       window.location.assign(prepared.seller.messengerUrl);
-    });
+    }, () => !cartDetails(cart.items, products).some((line) => line.unavailable));
   };
   const copied = copyStatus === "COPIED";
   return (
