@@ -1,0 +1,496 @@
+<html lang="vi"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "on-tertiary-container": "#7a2e37",
+                "tertiary-fixed": "#ffdadb",
+                "outline-variant": "#dac2b6",
+                "outline": "#877369",
+                "on-tertiary-fixed": "#3f020e",
+                "on-secondary-fixed": "#00201f",
+                "inverse-on-surface": "#f2f0ef",
+                "inverse-primary": "#ffb68d",
+                "secondary": "#2e6765",
+                "surface-container-high": "#e9e8e7",
+                "tertiary": "#96454c",
+                "on-secondary": "#ffffff",
+                "surface-dim": "#dbdad9",
+                "on-tertiary-fixed-variant": "#792e36",
+                "surface-bright": "#fbf9f8",
+                "secondary-container": "#b0eae7",
+                "apricot-surface": "#ffe0d1",
+                "on-error": "#ffffff",
+                "surface-variant": "#e4e2e1",
+                "on-primary-fixed": "#331200",
+                "inverse-surface": "#303030",
+                "secondary-fixed-dim": "#98d1ce",
+                "secondary-fixed": "#b3edea",
+                "tertiary-container": "#ff9aa1",
+                "surface-container": "#efedec",
+                "primary-container": "#ff9f66",
+                "on-secondary-container": "#326c69",
+                "surface-container-highest": "#e4e2e1",
+                "surface": "#fbf9f8",
+                "on-surface-variant": "#54433a",
+                "error": "#ba1a1a",
+                "on-tertiary": "#ffffff",
+                "surface-tint": "#944a18",
+                "primary": "#944a18",
+                "on-primary-fixed-variant": "#763300",
+                "primary-fixed-dim": "#ffb68d",
+                "on-surface": "#1b1c1b",
+                "on-secondary-fixed-variant": "#0f4f4d",
+                "on-error-container": "#93000a",
+                "surface-container-lowest": "#ffffff",
+                "primary-fixed": "#ffdbc9",
+                "warm-gray": "#49454e",
+                "tertiary-fixed-dim": "#ffb2b6",
+                "on-background": "#1b1c1b",
+                "on-primary": "#ffffff",
+                "on-primary-container": "#773401",
+                "background": "#fbf9f8",
+                "seafoam-surface": "#d3ecea",
+                "surface-container-low": "#f5f3f2",
+                "error-container": "#ffdad6"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "xl": "40px",
+                "margin-desktop": "64px",
+                "margin-mobile": "16px",
+                "xs": "4px",
+                "lg": "24px",
+                "sm": "8px",
+                "md": "16px",
+                "gutter": "16px"
+        },
+        "fontFamily": {
+                "body-md": [
+                        "Be Vietnam Pro"
+                ],
+                "body-lg": [
+                        "Be Vietnam Pro"
+                ],
+                "price-display": [
+                        "Quicksand"
+                ],
+                "headline-lg-mobile": [
+                        "Quicksand"
+                ],
+                "headline-sm": [
+                        "Quicksand"
+                ],
+                "label-lg": [
+                        "Be Vietnam Pro"
+                ],
+                "headline-md": [
+                        "Quicksand"
+                ],
+                "headline-lg": [
+                        "Quicksand"
+                ],
+                "body-sm": [
+                        "Be Vietnam Pro"
+                ],
+                "label-md": [
+                        "Be Vietnam Pro"
+                ]
+        },
+        "fontSize": {
+                "body-md": [
+                        "16px",
+                        {
+                                "lineHeight": "1.6",
+                                "fontWeight": "400"
+                        }
+                ],
+                "body-lg": [
+                        "18px",
+                        {
+                                "lineHeight": "1.6",
+                                "fontWeight": "400"
+                        }
+                ],
+                "price-display": [
+                        "20px",
+                        {
+                                "lineHeight": "1.2",
+                                "fontWeight": "700"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "32px",
+                        {
+                                "lineHeight": "1.3",
+                                "fontWeight": "700"
+                        }
+                ],
+                "headline-sm": [
+                        "24px",
+                        {
+                                "lineHeight": "1.4",
+                                "fontWeight": "600"
+                        }
+                ],
+                "label-lg": [
+                        "16px",
+                        {
+                                "lineHeight": "1.2",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-md": [
+                        "32px",
+                        {
+                                "lineHeight": "1.3",
+                                "fontWeight": "700"
+                        }
+                ],
+                "headline-lg": [
+                        "48px",
+                        {
+                                "lineHeight": "1.2",
+                                "fontWeight": "700"
+                        }
+                ],
+                "body-sm": [
+                        "14px",
+                        {
+                                "lineHeight": "1.5",
+                                "fontWeight": "400"
+                        }
+                ],
+                "label-md": [
+                        "14px",
+                        {
+                                "lineHeight": "1.2",
+                                "fontWeight": "500"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script><link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700&amp;family=Quicksand:wght@600;700&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/></head><body class="bg-background font-body-md text-on-surface"><header class="fixed top-0 w-full z-50 bg-surface/90 backdrop-blur-md shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-20 max-w-[1200px] mx-auto px-md flex items-center justify-between gap-lg"><div class="flex items-center gap-sm shrink-0"><img alt="BabyJoy Logo (Final)" class="h-10 w-auto object-contain" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA43JPTmM85IEBCGehed0H5p99Ze2xx4FIW3wLaMdEZg1YK-GFArs9kD_Oukpscum9FEGXpP7MyiRFFHjc8FiLtEmO0visWVUsHHZxZMMEz3gxMjh2KOLcMuQmkILba64v4WurHgvLpseszPhlqEyr4XvcHcse-ukuZZj4FglAIk_aRAYywPH8IVlK_Hhaf3vbbidDH2AsMpQqO05rxyN2akiKaSATO0dNyxNrISygYMLCaHvLWi7eLjg"/><span class="font-headline-sm text-headline-sm text-primary tracking-tight">BabyJoy</span></div><nav class="hidden md:flex items-center gap-lg ml-xl" data-active-classes="text-primary font-bold"><a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" data-path="trang-chu" href="#">Trang chủ</a><a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" data-path="san-pham" href="#">Sản phẩm</a><a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" data-path="danh-muc" href="#">Danh mục</a></nav><div class="flex-1 max-w-md mx-lg relative hidden lg:block"><span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-on-surface-variant">search</span><input class="w-full bg-surface-container rounded-full py-sm pl-xl pr-md font-body-sm text-body-sm focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all" placeholder="Tìm kiếm đồ ăn dặm cho bé..." type="text"/></div><div class="flex items-center gap-md"><div class="relative cursor-pointer group"><span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">shopping_cart</span><span class="absolute -top-xs -right-xs bg-tertiary text-on-tertiary text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full border-2 border-surface">3</span></div></div></div></header><main class="w-full pt-20 bg-surface"><div class="flex flex-col w-full">
+<div class="max-w-[1200px] mx-auto w-full px-md pb-xl">
+<!-- Breadcrumb & Header -->
+<div class="py-lg border-b border-outline-variant/30 flex justify-between items-end mb-lg">
+<div>
+<nav class="flex items-center gap-xs text-on-surface-variant font-body-sm text-body-sm mb-sm">
+<a class="hover:text-primary transition-colors" href="#">Trang chủ</a>
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+<a class="hover:text-primary transition-colors" href="#">Sản phẩm</a>
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+<span class="text-on-surface font-medium">Sản phẩm ăn dặm</span>
+</nav>
+<h1 class="font-headline-lg text-headline-lg text-on-surface">Sản phẩm ăn dặm</h1>
+<p class="font-body-md text-body-md text-on-surface-variant mt-xs">64 sản phẩm dinh dưỡng cho bé</p>
+</div>
+<div class="flex items-center gap-md">
+<span class="font-body-sm text-body-sm text-on-surface-variant">Sắp xếp theo:</span>
+<select class="bg-surface-container rounded-lg py-sm px-md font-body-sm text-body-sm text-on-surface border-none focus:ring-1 focus:ring-primary outline-none">
+<option>Mặc định</option>
+<option>Mới nhất</option>
+<option>Giá thấp đến cao</option>
+<option>Giá cao đến thấp</option>
+</select>
+</div>
+</div>
+<div class="flex gap-xl items-start">
+<!-- Sidebar Filters -->
+<aside class="w-64 shrink-0 hidden lg:flex flex-col gap-xl sticky top-24">
+<!-- Category Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Danh mục</h3>
+<div class="flex flex-col gap-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input checked="" class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface group-hover:text-primary transition-colors">Bột ăn dặm</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Bánh ăn dặm</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Váng sữa, sữa chua</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Gia vị cho bé</span>
+</label>
+</div>
+</div>
+<!-- Age Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Độ tuổi</h3>
+<div class="flex flex-col gap-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">4 - 6 tháng</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">6 - 8 tháng</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">8 - 12 tháng</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Trên 12 tháng</span>
+</label>
+</div>
+</div>
+<!-- Brand Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Thương hiệu</h3>
+<div class="flex flex-col gap-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Gerber</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Heinz</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">HiPP</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Wakodo</span>
+</label>
+</div>
+</div>
+<!-- Tags Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Đặc tính</h3>
+<div class="flex flex-wrap gap-xs">
+<button class="px-md py-xs rounded-full bg-surface-container text-on-surface font-body-sm text-body-sm hover:bg-secondary-container hover:text-on-secondary-container transition-colors">Hữu cơ</button>
+<button class="px-md py-xs rounded-full bg-secondary text-on-secondary font-body-sm text-body-sm shadow-md">Không chứa sữa</button>
+<button class="px-md py-xs rounded-full bg-surface-container text-on-surface font-body-sm text-body-sm hover:bg-secondary-container hover:text-on-secondary-container transition-colors">Không đường</button>
+<button class="px-md py-xs rounded-full bg-surface-container text-on-surface font-body-sm text-body-sm hover:bg-secondary-container hover:text-on-secondary-container transition-colors">Không biến đổi gen</button>
+</div>
+</div>
+<!-- Price Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Giá</h3>
+<div class="flex flex-col gap-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Dưới 50.000 ₫</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">50.000 ₫ - 100.000 ₫</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Trên 100.000 ₫</span>
+</label>
+</div>
+</div>
+<!-- Status Filter -->
+<div>
+<h3 class="font-label-lg text-label-lg text-on-surface mb-md">Tình trạng</h3>
+<div class="flex flex-col gap-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Còn hàng</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="w-4 h-4 rounded text-primary focus:ring-primary border-outline-variant bg-surface-container accent-primary" type="checkbox"/>
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-primary transition-colors">Khuyến mãi</span>
+</label>
+</div>
+</div>
+<!-- Promotional Banner in Sidebar -->
+
+</aside>
+<!-- Product Grid -->
+<div class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
+<!-- Product 1 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-secondary text-on-secondary font-label-md text-label-md px-sm py-xs rounded-full text-[10px] uppercase tracking-wider">Hữu cơ</span>
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">6+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="A brightly lit, high-quality product photo of a blue Gerber organic baby cereal canister sitting on a clean wooden kitchen table. A small wooden spoon rests nearby. Warm, natural window lighting. Modern, soft, welcoming aesthetic matching the BabyJoy brand." src="https://lh3.googleusercontent.com/aida-public/AB6AXuANBlQQYYkMyuUql8qLTXoWCx0lvwS1QeJVJ-7u232XPtUF-mmXVqN7VbuukquJTH4qQC57WdUXQuAfiFeLPee8mbroD9Bp5leq-Fl8MJE5pPoVzVzFGvq-GDxnIvQ4EQ37TxKb1jXs-0pmsPAuPgmCFOmwfv9_-eufurYQOcxFYSBTvtonnD8PNIr7LuK9Oz7H60SIqfLKrI5nh4iELfKer7Z9i0v19kJWHXnghnk66kfrqMioOjozGA"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Bột ăn dặm Gerber Organic Lúa mạch &amp; Trái cây tổng hợp</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">227g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">125.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 2 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">4+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="Product photography of HiPP organic baby food jar, carrot and potato purée. Placed on a light cream surface with some fresh carrots gently blurred in the background. Soft depth of field, bright and healthy feel." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDB99Qus2sykQnkpywC-WnvskZx-_J3QNslNBe5UjEksGr7TGYx7AsSosAZwJu7fmpalz80sLSCn-bPJNY4wdPBOGh1V2us5W_8cKK8tG_wpXmqRQpQ8Zuc7UpedxKM1BfabsFc2ksnuk2gQKIiNyvitlMQZZALBOx9bDBMC39j_9dAg-HwppKhSagjvw3NqgCZlow9ZERghfeshjRBoRqlv3d17U5lMnKRAQeDoumGnGqPCX6WgyAAFw"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Dinh dưỡng đóng lọ HiPP Cà rốt &amp; Khoai tây nghiền</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">125g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">55.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 3 (Out of Stock) -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group transition-all duration-300 relative flex flex-col opacity-70 cursor-not-allowed">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-error text-on-error font-label-md text-label-md px-sm py-xs rounded-full text-[10px] uppercase tracking-wider">Hết hàng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low grayscale">
+<img class="object-cover w-full h-full" data-alt="A box of Heinz baby rice cereal photographed on a kitchen counter. The image has a slightly muted tone to indicate it is out of stock. Clean, safe, organic baby food aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDE0aSfrqxtRZbZxqJF0pMQr3EAsmWo3Fh8dU7AXz5G59TpgjKLj5dG2nnqzJ0MjfNbHrF_o-FAybZz-HJ_i2UX-SHrk7VXHig0iAhJkEbdjSwTVr2XnuIEYIHTgvOPLSUFAyd9wRr-XJ-A9flCSYcGoQefGytmBBf2xvb-0tBXiTKsGgeo_IasSftHCHNd7Bb-IRvNk7OsRInwEPFJuauFvvNqDa3tF6uCuWq-0zWiCMfiNQ32gkX1jw"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm flex-1">Bột ăn dặm Heinz Gạo xay nhuyễn &amp; Rau củ</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">120g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">89.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-surface-container-highest text-on-surface-variant flex items-center justify-center cursor-not-allowed shrink-0" disabled="">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 4 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">6+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="Gerber star puffs snack container, sweet potato flavor, on a light cream table scattered with a few star-shaped puffs. Warm and inviting light, soft focus background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBfRaUzHEnK_Tadl7GXIRpeeWTp65AtuRkqu52h4-RD8TkEDv5jlEs5EwFSr-7-1675h1zpg1uKMO54L77uIDZR0jhoddN0yaS9H9urYF1fIlsqPBBVai88DGpvyvmRlsUwfkd9727JINql7KTSvcEj_8f4E6lBzEt_j0ri4R30KpPbbxMYOT4nVidok4cXneOeFIY0QLpS8f2Hb-3UchzGw9OpcIbJ0nDfzvg63lZKYZ2gBGulmTW_Cg"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Bánh gạo lứt Gerber Vị rau bina &amp; dâu tây</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">42g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">75.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 5 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">6+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="Pouch of Wakodo baby food, salmon and vegetable stew, sitting upright on a white marble surface. Bright overhead lighting, clean and professional product shot." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDB99Qus2sykQnkpywC-WnvskZx-_J3QNslNBe5UjEksGr7TGYx7AsSosAZwJu7fmpalz80sLSCn-bPJNY4wdPBOGh1V2us5W_8cKK8tG_wpXmqRQpQ8Zuc7UpedxKM1BfabsFc2ksnuk2gQKIiNyvitlMQZZALBOx9bDBMC39j_9dAg-HwppKhSagjvw3NqgCZlow9ZERghfeshjRBoRqlv3d17U5lMnKRAQeDoumGnGqPCX6WgyAAFw"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Hoa quả nghiền Wakodo Vị táo &amp; Chuối</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">130g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">59.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 6 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-secondary text-on-secondary font-label-md text-label-md px-sm py-xs rounded-full text-[10px] uppercase tracking-wider">Không chứa sữa</span>
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">8+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="Pouch of Wakodo baby food, salmon and vegetable stew, sitting upright on a white marble surface. Bright overhead lighting, clean and professional product shot." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBfRaUzHEnK_Tadl7GXIRpeeWTp65AtuRkqu52h4-RD8TkEDv5jlEs5EwFSr-7-1675h1zpg1uKMO54L77uIDZR0jhoddN0yaS9H9urYF1fIlsqPBBVai88DGpvyvmRlsUwfkd9727JINql7KTSvcEj_8f4E6lBzEt_j0ri4R30KpPbbxMYOT4nVidok4cXneOeFIY0QLpS8f2Hb-3UchzGw9OpcIbJ0nDfzvg63lZKYZ2gBGulmTW_Cg"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Cháo ăn dặm Wakodo Vị cá hồi &amp; Rau củ hầm</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">80g</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">45.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Product 7 -->
+<div class="bg-surface-container-lowest rounded-[16px] overflow-hidden group hover:shadow-lg transition-all duration-300 relative flex flex-col">
+<div class="absolute top-sm left-sm flex flex-col gap-xs z-10">
+<span class="bg-surface/90 backdrop-blur-sm text-on-surface font-label-md text-label-md px-sm py-xs rounded-full text-[10px]">6+ tháng</span>
+</div>
+<div class="aspect-square relative overflow-hidden bg-surface-container-low">
+<img class="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" data-alt="Heinz baby custard jar, vanilla flavor, next to a small silver spoon on a soft linen napkin. Soft, natural morning light. Creamy and delicious appearance." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDnFKC-j7Z30YQ0Eddgm1QBvoRpkQHy9x0Qm-qwOewayPVfiGDP5jRx9e-SJYuVXc8lLZRY8TxnNjCRyLPD96e4UOVcwyk6yZ2ytmk1rYBh3lc2CqzctOORW4jWtWI9GFhGCtHcFUjfFZO2zhFVgnvpyKc0JYe36Lt_YzeIWfdi-agkd09oUCjZ0qxhH_pYntLxbC7dQbBGa1r5eHIXDUgZ_dfhcqUo_kXNQuTvFGj8Xwfuyc_B7YcStA"/>
+</div>
+<div class="p-md flex flex-col flex-1">
+<h3 class="font-headline-sm text-[18px] text-on-surface line-clamp-2 mb-sm group-hover:text-primary transition-colors flex-1">Dầu Olive Extra Virgin cho bé</h3>
+<div class="flex items-center gap-xs mb-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">nutrition</span>
+<span class="font-body-sm text-body-sm">250ml</span>
+</div>
+<div class="flex items-end justify-between mt-auto">
+<span class="font-price-display text-price-display text-on-surface">120.000 ₫</span>
+<button aria-label="Thêm vào giỏ" class="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-surface-tint hover:shadow-md transition-all shrink-0">
+<span class="material-symbols-outlined">add_shopping_cart</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Pagination -->
+<div class="flex justify-center items-center gap-xs mt-xl pt-lg border-t border-outline-variant/30">
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50" disabled="">
+<span class="material-symbols-outlined">chevron_left</span>
+</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center bg-primary text-on-primary font-label-md text-label-md shadow-sm">1</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors font-label-md text-label-md">2</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors font-label-md text-label-md">3</button>
+<span class="text-on-surface-variant">...</span>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors font-label-md text-label-md">8</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined">chevron_right</span>
+</button>
+</div>
+</div>
+</div></main><footer class="w-full bg-surface-container py-xl"><div class="max-w-[1200px] mx-auto px-md grid grid-cols-1 md:grid-cols-3 gap-xl"><div class="space-y-sm"><div class="flex items-center gap-sm mb-md"><img alt="BabyJoy Logo" class="h-8 w-auto" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA43JPTmM85IEBCGehed0H5p99Ze2xx4FIW3wLaMdEZg1YK-GFArs9kD_Oukpscum9FEGXpP7MyiRFFHjc8FiLtEmO0visWVUsHHZxZMMEz3gxMjh2KOLcMuQmkILba64v4WurHgvLpseszPhlqEyr4XvcHcse-ukuZZj4FglAIk_aRAYywPH8IVlK_Hhaf3vbbidDH2AsMpQqO05rxyN2akiKaSATO0dNyxNrISygYMLCaHvLWi7eLjg"/><span class="font-headline-sm text-headline-sm text-primary">BabyJoy</span></div><p class="font-body-sm text-body-sm text-on-surface-variant">Đồng hành cùng mẹ trong hành trình ăn dặm hạnh phúc của bé yêu.</p></div><div class="flex flex-col gap-sm"><h4 class="font-label-lg text-label-lg text-on-surface uppercase tracking-wider mb-sm">Hỗ trợ</h4><a class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary" href="#">Chính sách vận chuyển</a><a class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary" href="#">Hướng dẫn mua hàng</a><a class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary" href="#">Đổi trả &amp; Hoàn tiền</a></div><div class="flex flex-col gap-sm"><h4 class="font-label-lg text-label-lg text-on-surface uppercase tracking-wider mb-sm">Liên hệ</h4><div class="flex items-center gap-sm text-on-surface-variant"><span class="material-symbols-outlined text-[18px]">mail</span><span class="font-body-sm">hello@babyjoy.vn</span></div><div class="flex items-center gap-sm text-on-surface-variant"><span class="material-symbols-outlined text-[18px]">call</span><span class="font-body-sm">1900 123 456</span></div></div></div><div class="max-w-[1200px] mx-auto px-md mt-xl pt-lg border-t border-outline-variant text-center"><p class="font-body-sm text-body-sm text-on-surface-variant opacity-70">© 2024 BabyJoy - Dinh dưỡng trọn vẹn cho bé yêu.</p></div></footer></body></html>

@@ -1,0 +1,160 @@
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { canonicalVariantIds, findVariantInProducts } from "./catalog";
+import { useCatalog } from "./catalog-context";
+
+export type CartLine = { variantId: string; quantity: number };
+type CartContextValue = {
+  items: CartLine[];
+  hydrated: boolean;
+  totalQuantity: number;
+  subtotalVnd: number;
+  addItem: (variantId: string, quantity?: number) => void;
+  incrementItem: (variantId: string) => void;
+  decrementItem: (variantId: string) => void;
+  setQuantity: (variantId: string, quantity: number) => void;
+  removeItem: (variantId: string) => void;
+  clear: () => void;
+  resetDemoCart: () => void;
+};
+
+export const cartStorageKey = "babyjoy.cart.v1";
+const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({
+  variantId,
+  quantity: index === 0 ? 2 : 1,
+}));
+const CartContext = createContext<CartContextValue | null>(null);
+
+export function changeCartItemQuantity(
+  items: CartLine[],
+  variantId: string,
+  delta: number,
+) {
+  const existing = items.find((item) => item.variantId === variantId);
+  if (!existing)
+    return delta > 0 ? [...items, { variantId, quantity: Math.min(99, delta) }] : items;
+  const quantity = Math.min(99, existing.quantity + delta);
+  if (quantity <= 0) return items.filter((item) => item.variantId !== variantId);
+  return items.map((item) =>
+    item.variantId === variantId ? { ...item, quantity } : item,
+  );
+}
+
+export function parseStoredCart(raw: string | null): CartLine[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    if (!Array.isArray(parsed.items)) return [];
+    const items = parsed.items.filter((item): item is CartLine => {
+      if (!item || typeof item !== "object") return false;
+      const line = item as Record<string, unknown>;
+      return (
+        typeof line.variantId === "string" &&
+        line.variantId.trim().length > 0 &&
+        Number.isInteger(line.quantity) &&
+        Number(line.quantity) >= 1 &&
+        Number(line.quantity) <= 99
+      );
+    });
+    return items.length === parsed.items.length ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+function readCart(): CartLine[] {
+  if (typeof window === "undefined") return [];
+  return parseStoredCart(window.localStorage.getItem(cartStorageKey));
+}
+
+export function CartProvider({ children }: { children: React.ReactNode }) {
+  const [items, setItems] = useState<CartLine[]>([]);
+  const [hydrated, setHydrated] = useState(false);
+  const { products } = useCatalog();
+
+  useEffect(() => {
+    setItems(readCart());
+    setHydrated(true);
+  }, []);
+
+  const persist = (next: CartLine[]) => {
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(cartStorageKey, JSON.stringify({ items: next }));
+    return next;
+  };
+
+  const value = useMemo<CartContextValue>(() => {
+    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+    const subtotalVnd = items.reduce((sum, item) => {
+      const match = findVariantInProducts(products, item.variantId);
+      return sum + (match?.variant.priceVnd ?? 0) * item.quantity;
+    }, 0);
+    return {
+      items,
+      hydrated,
+      totalQuantity,
+      subtotalVnd,
+      addItem(variantId, quantity = 1) {
+        setItems((current) => {
+          const existing = current.find((item) => item.variantId === variantId);
+          if (existing)
+            return persist(
+              current.map((item) =>
+                item.variantId === variantId
+                  ? {
+                      ...item,
+                      quantity: Math.min(99, item.quantity + quantity),
+                    }
+                  : item,
+              ),
+            );
+          return persist([
+            ...current,
+            { variantId, quantity: Math.min(99, quantity) },
+          ]);
+        });
+      },
+      incrementItem(variantId) {
+        setItems((current) => persist(changeCartItemQuantity(current, variantId, 1)));
+      },
+      decrementItem(variantId) {
+        setItems((current) => persist(changeCartItemQuantity(current, variantId, -1)));
+      },
+      setQuantity(variantId, quantity) {
+        if (quantity <= 0)
+          setItems((current) =>
+            persist(current.filter((item) => item.variantId !== variantId)),
+          );
+        else
+          setItems((current) =>
+            persist(
+              current.map((item) =>
+                item.variantId === variantId
+                  ? { ...item, quantity: Math.min(99, quantity) }
+                  : item,
+              ),
+            ),
+          );
+      },
+      removeItem(variantId) {
+        setItems((current) =>
+          persist(current.filter((item) => item.variantId !== variantId)),
+        );
+      },
+      clear() {
+        setItems(persist([]));
+      },
+      resetDemoCart() {
+        setItems(persist(demoCart));
+      },
+    };
+  }, [hydrated, items, products]);
+
+  return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
+}
+
+export function useCart() {
+  const context = useContext(CartContext);
+  if (!context)
+    throw new Error("useCart phải được dùng bên trong CartProvider");
+  return context;
+}

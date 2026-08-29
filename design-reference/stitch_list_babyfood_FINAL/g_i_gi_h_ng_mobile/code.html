@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+
+<html lang="vi"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Gửi giỏ hàng</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<style data-purpose="custom-styles">
+    /* Custom styles for specific elements if needed */
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    }
+  </style>
+</head>
+<body class="bg-[#FCFCFC] text-[#333333] antialiased">
+<!-- BEGIN: MobileHeader -->
+<header class="bg-white border-b border-gray-200 sticky top-0 z-10 px-4 py-3 flex items-center h-14">
+<button aria-label="Go back" class="mr-3 text-[#A85822] focus:outline-none">
+<svg class="h-6 w-6" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M15 19l-7-7 7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+<h1 class="text-lg font-semibold text-[#8B4513]">Gửi giỏ hàng</h1>
+</header>
+<!-- END: MobileHeader -->
+<!-- BEGIN: MainContent -->
+<main class="pb-24">
+<!-- BEGIN: FormSection -->
+<section class="p-4 bg-white mb-2">
+<p class="text-sm text-gray-600 mb-6">Để hoàn tất việc gửi giỏ hàng, vui lòng cung cấp thông tin liên hệ bên dưới. Người bán sẽ kiểm tra giỏ hàng và liên hệ với bạn để xác nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán.</p>
+<form class="space-y-4">
+<div>
+<label class="block text-sm font-medium text-gray-700 mb-1" for="fullName">Họ và Tên</label>
+<input class="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-[#A85822] focus:border-[#A85822] sm:text-sm bg-gray-50 text-[#333333]" id="fullName" name="fullName" placeholder="Nguyễn Văn A" type="text"/>
+</div>
+<div>
+<label class="block text-sm font-medium text-gray-700 mb-1" for="phone">Số điện thoại *</label>
+<input class="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-[#A85822] focus:border-[#A85822] sm:text-sm bg-gray-50 text-[#333333]" id="phone" name="phone" placeholder="0912 345 678" required="" type="tel"/>
+</div>
+<div>
+<label class="block text-sm font-medium text-gray-700 mb-1" for="socialLink">Telegram / Facebook Link <span class="text-gray-500 font-normal">(Tuỳ chọn)</span></label>
+<div class="relative rounded-md shadow-sm">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+<input class="w-full pl-10 border border-gray-300 rounded-md py-2 px-3 focus:outline-none focus:ring-[#A85822] focus:border-[#A85822] sm:text-sm bg-gray-50 text-[#333333]" id="socialLink" name="socialLink" placeholder="https://t.me/username..." type="url"/>
+</div>
+</div>
+<div>
+<label class="block text-sm font-medium text-gray-700 mb-1" for="notes">Ghi chú thêm</label>
+<textarea class="w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-[#A85822] focus:border-[#A85822] sm:text-sm bg-gray-50 text-[#333333] resize-none" id="notes" name="notes" placeholder="Ví dụ: Bé nhà mình hay bị dị ứng đậu phộng..." rows="3"></textarea>
+</div>
+<div class="flex items-start mt-4 pt-4 border-t border-gray-100">
+<div class="flex-shrink-0 mt-0.5">
+<svg class="h-4 w-4 text-[#8B4513]" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+<p class="ml-2 text-xs text-gray-500 leading-relaxed">
+            Thông tin của bạn sẽ được bảo mật và chỉ sử dụng mục đích liên hệ xử lý giỏ hàng ăn dặm cho bé. Tham khảo <a class="text-[#A85822] underline font-medium" href="#">Chính sách bảo mật</a> của chúng tôi.
+          </p>
+</div>
+</form>
+</section>
+<!-- END: FormSection -->
+<!-- BEGIN: OrderSummary -->
+<section class="p-4 bg-white mt-2">
+<h2 class="text-base font-semibold text-[#8B4513] mb-3">Tóm tắt giỏ hàng</h2>
+<div class="space-y-2 mb-4 border-b border-gray-100 pb-4">
+<div class="flex justify-between text-sm">
+<span class="text-gray-600">Số lượng mặt hàng</span>
+<span class="font-medium">3</span>
+</div>
+<div class="flex justify-between text-sm">
+<span class="text-gray-600">Tổng số lượng sản phẩm</span>
+<span class="font-medium">4</span>
+</div>
+<div class="flex justify-between text-sm">
+<span class="text-gray-600">Tạm tính</span>
+<span class="font-medium text-[#333333]">367.000 ₫</span>
+</div>
+</div>
+<div class="bg-[#F8F5F2] rounded-md p-3">
+<p class="text-xs text-[#8B4513] text-center flex items-center justify-center gap-1">
+<svg class="h-4 w-4" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+          Phí giao hàng sẽ được người bán xác nhận.
+        </p>
+</div>
+</section>
+<!-- END: OrderSummary -->
+</main>
+<!-- END: MainContent -->
+<!-- BEGIN: StickyFooterCTA -->
+<div class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+<button class="w-full bg-[#A85822] text-white font-semibold py-3 rounded-md hover:bg-[#8B4513] transition-colors flex justify-center items-center gap-2" type="button">
+      XÁC NHẬN GỬI GIỎ HÀNG
+      <svg class="h-5 w-5" fill="none" stroke="currentColor" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+<!-- END: StickyFooterCTA -->
+</body></html>

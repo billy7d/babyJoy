@@ -1,0 +1,86 @@
+/*
+ * Mobile cart affordances loaded after app.css.
+ * Keep the existing cart state/checkout logic untouched while restoring
+ * the remove-item action that the base mobile rules hide.
+ */
+@media (max-width: 639px) {
+  .cart-item {
+    grid-template-columns: 96px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-items: start;
+    column-gap: 12px;
+    row-gap: 8px;
+  }
+
+  .cart-item > img {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .cart-item-info {
+    min-width: 0;
+    grid-column: 2;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    grid-template-areas:
+      "title title title"
+      "variant remove ."
+      "price price price";
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 2px;
+  }
+
+  .cart-item-info h2 {
+    grid-area: title;
+    margin-bottom: 2px;
+    overflow-wrap: anywhere;
+  }
+
+  .cart-item-info .tag {
+    grid-area: variant;
+    align-self: center;
+    justify-self: start;
+  }
+
+  .cart-item .remove-line {
+    grid-area: remove;
+    align-self: center;
+    justify-self: start;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border: 1px solid color-mix(in srgb, var(--error) 22%, transparent);
+    border-radius: 999px;
+    background: var(--surface-lowest);
+    color: var(--error);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .cart-item .remove-line .material-symbols-outlined {
+    font-size: 20px;
+  }
+
+  .cart-item .remove-line:active {
+    background: var(--error-container);
+  }
+
+  .cart-item-info .unit-price {
+    grid-area: price;
+    margin-top: 2px;
+  }
+
+  .cart-item .quantity-stepper {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+}
