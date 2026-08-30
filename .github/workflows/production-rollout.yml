@@ -35,8 +35,6 @@ jobs:
     environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      # Optional. If omitted, the workflow resolves the account from the token
-      # when the token can see exactly one Cloudflare account.
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
     steps:
@@ -60,12 +58,10 @@ jobs:
             echo "Unsupported production rollout trigger: $GITHUB_EVENT_NAME / $GITHUB_REF_NAME" >&2
             exit 1
           fi
-
           if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ]; then
             echo "Unsupported rollout mode: $mode" >&2
             exit 1
           fi
-
           echo "value=$mode" >> "$GITHUB_OUTPUT"
           echo "Resolved production rollout mode: $mode"
 
@@ -107,23 +103,18 @@ jobs:
             echo "Using configured CLOUDFLARE_ACCOUNT_ID."
             exit 0
           fi
-
           npx wrangler whoami --json > /tmp/cloudflare-whoami.json
           node <<'NODE'
           const fs = require('fs');
           const data = JSON.parse(fs.readFileSync('/tmp/cloudflare-whoami.json', 'utf8'));
           const accounts = Array.isArray(data.accounts) ? data.accounts : [];
           if (accounts.length !== 1 || !accounts[0]?.id) {
-            console.error(
-              `The API token can see ${accounts.length} Cloudflare accounts. ` +
-              'Add the optional GitHub production secret CLOUDFLARE_ACCOUNT_ID to select one explicitly.',
-            );
+            console.error(`Expected exactly one Cloudflare account, found ${accounts.length}.`);
             process.exit(1);
           }
           fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_ACCOUNT_ID=${accounts[0].id}\n`);
           NODE
           rm -f /tmp/cloudflare-whoami.json
-          echo "Cloudflare account resolved from API token."
 
       - name: Run quality checks
         shell: bash
@@ -196,15 +187,16 @@ jobs:
           ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
         run: |
           set -euo pipefail
-          # React Router deploys with build/server/wrangler.json rather than
-          # wrangler.jsonc directly. Rebuild after toggling the flag so the
-          # generated deployment config carries the intended value.
           npm run build
-          if [ "$ROLLOUT_MODE" = "prepare" ]; then
-            grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "false"' build/server/wrangler.json
-          else
-            grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "true"' build/server/wrangler.json
-          fi
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('build/server/wrangler.json', 'utf8'));
+          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED
+            ?? config.env?.production?.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
+          const expected = process.env.ROLLOUT_MODE === 'prepare' ? 'false' : 'true';
+          console.log(`Generated deployment gate flag: ${value}; expected: ${expected}`);
+          if (value !== expected) process.exit(1);
+          NODE
 
       - name: Deploy production Worker
         run: npx wrangler deploy --env production
@@ -218,21 +210,16 @@ jobs:
             local attempts=0
             until "$@"; do
               attempts=$((attempts + 1))
-              if [ "$attempts" -ge 12 ]; then
-                return 1
-              fi
+              if [ "$attempts" -ge 12 ]; then return 1; fi
               sleep 5
             done
           }
-
           retry bash -c 'status=$(curl -sS -o /tmp/home.html -w "%{http_code}" https://metraphuong.com/); test "$status" = "200"'
           retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "200"'
-
           if grep -q "STOREFRONT_SESSION_REQUIRED" /tmp/products.json; then
             echo "Public catalog API unexpectedly requires a storefront session while gate should be disabled." >&2
             exit 1
           fi
-
           echo "Prepare smoke passed: homepage and public products API are reachable with gate disabled."
 
       - name: Smoke test gate enabled
@@ -244,13 +231,10 @@ jobs:
             local attempts=0
             until "$@"; do
               attempts=$((attempts + 1))
-              if [ "$attempts" -ge 12 ]; then
-                return 1
-              fi
+              if [ "$attempts" -ge 12 ]; then return 1; fi
               sleep 5
             done
           }
-
           retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
           grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products.json
           retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
