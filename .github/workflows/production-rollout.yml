@@ -16,6 +16,10 @@ on:
         required: false
         default: ""
         type: string
+  push:
+    branches:
+      - "rollout/prepare/**"
+      - "rollout/enable/**"
 
 concurrency:
   group: production-rollout
@@ -39,6 +43,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve rollout mode
+        id: rollout_mode
+        shell: bash
+        env:
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            mode="$DISPATCH_MODE"
+          elif [[ "$GITHUB_REF_NAME" == rollout/prepare/* ]]; then
+            mode="prepare"
+          elif [[ "$GITHUB_REF_NAME" == rollout/enable/* ]]; then
+            mode="enable_gate"
+          else
+            echo "Unsupported production rollout trigger: $GITHUB_EVENT_NAME / $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ]; then
+            echo "Unsupported rollout mode: $mode" >&2
+            exit 1
+          fi
+
+          echo "value=$mode" >> "$GITHUB_OUTPUT"
+          echo "Resolved production rollout mode: $mode"
+
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -54,8 +84,8 @@ jobs:
             exit 1
           fi
 
-      - name: Validate enable confirmation
-        if: ${{ inputs.mode == 'enable_gate' }}
+      - name: Validate manual enable confirmation
+        if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' && github.event_name == 'workflow_dispatch' }}
         shell: bash
         env:
           CONFIRM_ENABLE_GATE: ${{ inputs.confirm_enable_gate }}
@@ -104,11 +134,11 @@ jobs:
           npm run build
 
       - name: Apply production D1 migrations
-        if: ${{ inputs.mode == 'prepare' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
         run: npx wrangler d1 migrations apply babyjoy-db --remote --env production
 
       - name: Initialize storefront access secret if missing
-        if: ${{ inputs.mode == 'prepare' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -126,7 +156,7 @@ jobs:
           rm -f /tmp/worker-secrets.json
 
       - name: Force gate disabled for prepare deploy
-        if: ${{ inputs.mode == 'prepare' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -142,7 +172,7 @@ jobs:
           NODE
 
       - name: Enable gate in deployment config
-        if: ${{ inputs.mode == 'enable_gate' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +195,7 @@ jobs:
         run: npx wrangler deploy --env production
 
       - name: Smoke test gate disabled
-        if: ${{ inputs.mode == 'prepare' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -191,7 +221,7 @@ jobs:
           echo "Prepare smoke passed: homepage and public products API are reachable with gate disabled."
 
       - name: Smoke test gate enabled
-        if: ${{ inputs.mode == 'enable_gate' }}
+        if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -211,7 +241,7 @@ jobs:
 
           retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
 
-          status=$(curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ || true)
+          curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ > /tmp/admin-status.txt || true
           if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null; then
             echo "Admin route was incorrectly captured by storefront gating." >&2
             exit 1
