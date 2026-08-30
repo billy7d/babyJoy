@@ -12,7 +12,8 @@
     "MESSENGER_PAGE_USERNAME": "babyjoy-test",
     "META_GRAPH_API_VERSION": "v26.0",
     "MESSENGER_CHECKOUT_ENABLED": "false",
-    "DIRECT_SELLER_SHARE_ENABLED": "true"
+    "DIRECT_SELLER_SHARE_ENABLED": "true",
+    "STOREFRONT_ACCESS_GATE_ENABLED": "false"
   },
   "d1_databases": [
     { "binding": "DB", "database_name": "babyjoy-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
@@ -31,7 +32,7 @@
       "workers_dev": false,
       "preview_urls": false,
       "secrets": {
-        "required": ["CART_SHARE_SECRET"]
+        "required": ["CART_SHARE_SECRET", "STOREFRONT_ACCESS_SECRET"]
       },
       "routes": [
         { "pattern": "metraphuong.com", "custom_domain": true }
@@ -44,7 +45,8 @@
         "MESSENGER_PAGE_USERNAME": "",
         "META_GRAPH_API_VERSION": "v26.0",
         "MESSENGER_CHECKOUT_ENABLED": "false",
-        "DIRECT_SELLER_SHARE_ENABLED": "true"
+        "DIRECT_SELLER_SHARE_ENABLED": "true",
+        "STOREFRONT_ACCESS_GATE_ENABLED": "false"
       },
       "d1_databases": [
         { "binding": "DB", "database_name": "babyjoy-db", "database_id": "6d19fcf2-6385-493b-a377-a31d5e42de03", "migrations_dir": "migrations" }

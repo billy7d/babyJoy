@@ -8,7 +8,7 @@ import {
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
-import { mapApiProduct, useCatalog } from "../lib/catalog-context";
+import { mapApiProduct } from "../lib/catalog-context";
 import {
   createDraftVariant,
   mapVariantValidationIssue,
@@ -55,7 +55,7 @@ export function adminProductMatchesStatus(
 }
 
 export function AdminProductsPage() {
-  const { categories } = useCatalog();
+  const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [statusFilter, setStatusFilter] = useState<AdminProductStatus>("ALL");
   const [query, setQuery] = useState("");
@@ -63,6 +63,32 @@ export function AdminProductsPage() {
   const [hasNext, setHasNext] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/admin/categories", {
+      headers: { accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("ADMIN_CATEGORIES_LOAD_FAILED");
+        return response.json() as Promise<{ data?: Category[] }>;
+      })
+      .then((body) => {
+        if (!cancelled)
+          setCategories(
+            (body.data ?? []).map((category) => ({
+              ...category,
+              isActive: Boolean(category.isActive),
+            })),
+          );
+      })
+      .catch(() => {
+        if (!cancelled) setCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -262,9 +288,8 @@ export function ProductEditorPage() {
   const segments = useLocation().pathname.split("/").filter(Boolean);
   const id = segments.at(-1) === "edit" ? segments.at(-2) : undefined;
   const navigate = useNavigate();
-  const { categories, refresh } = useCatalog();
   const [classificationCategories, setClassificationCategories] =
-    useState<Category[]>(categories);
+    useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [editing, setEditing] = useState<
     (Product & {
@@ -526,7 +551,6 @@ export function ProductEditorPage() {
       const result = await task;
       if (result.ok) {
         setMessage("Đã lưu sản phẩm và liên kết ảnh R2.");
-        await refresh();
         if (result.created)
           navigate(getProductEditPath(result.id), { replace: true });
         else {
@@ -1570,6 +1594,10 @@ export function AdminSettingsPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [storefrontTtlDays, setStorefrontTtlDays] = useState("15");
+  const [storefrontTtlBusy, setStorefrontTtlBusy] = useState(false);
+  const [storefrontTtlMessage, setStorefrontTtlMessage] = useState("");
+  const [storefrontTtlError, setStorefrontTtlError] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1596,6 +1624,28 @@ export function AdminSettingsPage() {
       })
       .catch(() => {
         if (!cancelled) setError("Không tải được cấu hình người bán từ D1.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/admin/settings")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("STOREFRONT_SETTINGS_LOAD_FAILED");
+        return response.json() as Promise<{
+          data?: { storefrontSessionTtlSeconds?: number };
+        }>;
+      })
+      .then((body) => {
+        const seconds = body.data?.storefrontSessionTtlSeconds;
+        if (!cancelled && typeof seconds === "number")
+          setStorefrontTtlDays(String(seconds / 86400));
+      })
+      .catch(() => {
+        if (!cancelled)
+          setStorefrontTtlError("Không tải được thời hạn session storefront.");
       });
     return () => {
       cancelled = true;
@@ -1663,6 +1713,36 @@ export function AdminSettingsPage() {
       setBusy(false);
     }
   };
+  const saveStorefrontTtl = async () => {
+    setStorefrontTtlBusy(true);
+    setStorefrontTtlError("");
+    setStorefrontTtlMessage("");
+    try {
+      const days = Number(storefrontTtlDays);
+      if (!Number.isFinite(days) || days < 1 / 24 || days > 365)
+        throw new Error("Thời hạn phải từ 1 giờ đến 365 ngày.");
+      const response = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          storefrontSessionTtlSeconds: Math.round(days * 86400),
+        }),
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as {
+          error?: { message?: string };
+        };
+        throw new Error(body.error?.message || "Chưa thể lưu thời hạn session.");
+      }
+      setStorefrontTtlMessage("Đã lưu. Chỉ session cấp mới sẽ dùng TTL này.");
+    } catch (caught) {
+      setStorefrontTtlError(
+        caught instanceof Error ? caught.message : "Chưa thể lưu thời hạn session.",
+      );
+    } finally {
+      setStorefrontTtlBusy(false);
+    }
+  };
   return (
     <AdminShell title="Cài Đặt">
       <div className="admin-page-heading">
@@ -1696,6 +1776,38 @@ export function AdminSettingsPage() {
         </p>
         <button className="btn primary">
           <Icon>save</Icon> LƯU CÀI ĐẶT
+        </button>
+      </section>
+      <section className="editor-card settings-card storefront-settings-card">
+        <div className="editor-card-title">
+          <span>
+            <Icon>lock_clock</Icon>
+            <h2>Quyền truy cập storefront</h2>
+          </span>
+        </div>
+        <p>
+          Session mặc định có thời hạn cố định và không tự gia hạn khi khách
+          quay lại website. TTL riêng của từng link có thể đặt tại Link truy cập.
+        </p>
+        <label>
+          Thời hạn session mặc định (ngày)
+          <input
+            type="number"
+            min="0.0416667"
+            max="365"
+            step="0.0416667"
+            value={storefrontTtlDays}
+            onChange={(event) => setStorefrontTtlDays(event.target.value)}
+          />
+        </label>
+        {storefrontTtlError && <p className="form-error">{storefrontTtlError}</p>}
+        {storefrontTtlMessage && <p className="form-success">{storefrontTtlMessage}</p>}
+        <button
+          className="btn primary"
+          disabled={storefrontTtlBusy}
+          onClick={() => void saveStorefrontTtl()}
+        >
+          <Icon>save</Icon> {storefrontTtlBusy ? "ĐANG LƯU..." : "LƯU THỜI HẠN SESSION"}
         </button>
       </section>
       <section className="editor-card settings-card seller-settings-card">

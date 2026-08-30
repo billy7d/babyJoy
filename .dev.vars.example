@@ -2,3 +2,4 @@ META_PAGE_ACCESS_TOKEN=replace-with-local-page-token
 META_APP_SECRET=replace-with-local-app-secret
 META_WEBHOOK_VERIFY_TOKEN=replace-with-local-verify-token
 CART_SHARE_SECRET=replace-with-at-least-32-random-characters
+STOREFRONT_ACCESS_SECRET=replace-with-at-least-32-random-characters

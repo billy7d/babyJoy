@@ -35,9 +35,17 @@ npm run test:e2e
 npx wrangler secret put META_PAGE_ACCESS_TOKEN --env production
 npx wrangler secret put META_APP_SECRET --env production
 npx wrangler secret put META_WEBHOOK_VERIFY_TOKEN --env production
+npx wrangler secret put STOREFRONT_ACCESS_SECRET --env production
 npm run db:migrate:remote
 npm run deploy -- --env production
 ```
+
+Storefront access gate:
+
+- STOREFRONT_ACCESS_GATE_ENABLED is the rollout flag. Keep it false while
+  deploying the migration and secret, then enable it after smoke tests.
+- STOREFRONT_ACCESS_SECRET is required in production. Never put this secret,
+  a raw access credential, or a raw session token in source or logs.
 
 Các biến không phải secret trong `wrangler.jsonc`:
 

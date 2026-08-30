@@ -138,6 +138,14 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         fetch("/api/categories", { headers: { accept: "application/json" } }),
         fetch("/api/brands", { headers: { accept: "application/json" } }),
       ]);
+      if (
+        [productsResponse, categoriesResponse, brandsResponse].some(
+          (response) => response.status === 401 || response.status === 503,
+        ) &&
+        typeof window !== "undefined"
+      ) {
+        window.location.assign("/access-required");
+      }
       if (!productsResponse.ok || !categoriesResponse.ok || !brandsResponse.ok)
         throw new Error("CATALOG_LOAD_FAILED");
       const productsBody = (await productsResponse.json()) as {

@@ -459,6 +459,7 @@ const adminLinks = [
   ["/admin/categories", "category", "Danh mục"],
   ["/admin/tags", "sell", "Tags"],
   ["/admin/cart-requests", "shopping_basket", "Giỏ hàng gửi đến"],
+  ["/admin/access-links", "key", "Link truy cập"],
   ["/admin/settings", "settings", "Cài đặt"],
 ];
 
@@ -517,6 +518,8 @@ export function StatusBadge({ status }: { status: string }) {
     CREATED: "Chờ xác nhận",
     IDENTIFIED: "Đã nhận diện",
     EXPIRED: "Hết hạn",
+    ACTIVE: "Đang hoạt động",
+    REVOKED: "Đã khóa",
     MESSENGER: "Messenger",
     LEGACY: "Kênh cũ",
     SHARE: "Chia sẻ thủ công",

@@ -38,6 +38,7 @@ describe("forward migration xóa seed demo", () => {
 
     database.exec(migration("0005_remove_demo_cart_request.sql"));
     database.exec(migration("0006_product_taxonomy_v1.sql"));
+    database.exec(migration("0007_storefront_access_gate_v1.sql"));
 
     expect(
       database
@@ -80,6 +81,33 @@ describe("forward migration xóa seed demo", () => {
     expect(
       database.prepare("SELECT brand_id, min_age_months FROM products WHERE id = 'prod-heinz'").get(),
     ).toEqual({ brand_id: "brand-heinz", min_age_months: 4 });
+    expect(
+      database
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('access_links', 'access_link_groups', 'access_sessions', 'access_link_events') ORDER BY name")
+        .all(),
+    ).toEqual([
+      { name: "access_link_events" },
+      { name: "access_link_groups" },
+      { name: "access_links" },
+      { name: "access_sessions" },
+    ]);
+    expect(
+      database
+        .prepare("SELECT value FROM app_settings WHERE key = 'storefront_session_ttl_seconds'")
+        .get(),
+    ).toEqual({ value: "1296000" });
+    expect(
+      database
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name LIKE 'idx_access_%' ORDER BY name")
+        .all(),
+    ).toEqual([
+      { name: "idx_access_link_events_type_time" },
+      { name: "idx_access_link_events_visitor" },
+      { name: "idx_access_link_groups_link" },
+      { name: "idx_access_links_status_deleted" },
+      { name: "idx_access_sessions_link_expiry" },
+      { name: "idx_access_sessions_link_version" },
+    ]);
     database.close();
   });
 });

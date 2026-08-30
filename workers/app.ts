@@ -3,7 +3,10 @@ import {
   mapCartItemSnapshot,
   type CartItemSnapshotRow,
 } from "./services";
-import { authorizeAdminRequest } from "./access";
+import {
+  authorizeAdminRequest,
+  type AdminAuthorization,
+} from "./access";
 import {
   ImageUploadError,
   normalizeProductImages,
@@ -28,6 +31,29 @@ import {
   prepareCartShare,
   saveAdminSellerSettings,
 } from "./cart-share";
+import {
+  addAdminAnalyticsExemption,
+  authorizeStorefrontSession,
+  createAccessLink,
+  deleteAccessLink,
+  getStorefrontSettings,
+  handleAccessRequest,
+  isAccessEndpointPath,
+  isStorefrontAccessGateEnabled,
+  isStorefrontProtectedApiPath,
+  isStorefrontProtectedHtmlPath,
+  listAccessLinks,
+  resetAccessLinkSessions,
+  revokeAccessLink,
+  rotateAccessLink,
+  saveStorefrontSettings,
+  storefrontAccessRequiredRedirect,
+  storefrontGateMisconfiguredResponse,
+  storefrontSessionRequiredResponse,
+  testAccessLink,
+  updateAccessLink,
+  redactPathForLog,
+} from "./storefront-access";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -1366,9 +1392,40 @@ async function deleteImage(id: string, env: Env) {
   return json({ success: true });
 }
 
-async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
+function adminAuthorizationError(authorization: AdminAuthorization) {
+  if (!authorization.authorized && authorization.reason === "MISSING_CONFIG")
+    return error(
+      "ACCESS_NOT_CONFIGURED",
+      "Cloudflare Access chưa được cấu hình cho production.",
+      503,
+    );
+  return error(
+    "UNAUTHORIZED",
+    "Cloudflare Access JWT không hợp lệ hoặc còn thiếu.",
+    401,
+  );
+}
+
+async function handleApi(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  preauthorizedAdmin?: AdminAuthorization,
+) {
   const url = new URL(request.url);
   const path = url.pathname;
+  if (request.method === "GET" && path === "/api/storefront/session") {
+    const authorization = await authorizeStorefrontSession(request, env);
+    if (!authorization.valid) {
+      if (authorization.reason === "MISSING_SECRET")
+        return storefrontGateMisconfiguredResponse();
+      return storefrontSessionRequiredResponse();
+    }
+    return json({
+      authenticated: isStorefrontAccessGateEnabled(env),
+      gateEnabled: isStorefrontAccessGateEnabled(env),
+    });
+  }
   if (request.method === "GET" && path === "/api/categories")
     return listCategories(env);
   if (request.method === "GET" && path === "/api/brands")
@@ -1400,22 +1457,64 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext) {
     );
   if (path === "/api/meta/messenger/webhook")
     return handleMessengerWebhook(request, env, ctx);
+  let verifiedAdminEmail: string | undefined;
   if (path.startsWith("/api/admin/")) {
-    const authorization = await authorizeAdminRequest(request, env);
+    const authorization =
+      preauthorizedAdmin ?? (await authorizeAdminRequest(request, env));
     if (!authorization.authorized) {
-      if (authorization.reason === "MISSING_CONFIG")
-        return error(
-          "ACCESS_NOT_CONFIGURED",
-          "Cloudflare Access chưa được cấu hình cho production.",
-          503,
-        );
-      return error(
-        "UNAUTHORIZED",
-        "Cloudflare Access JWT không hợp lệ hoặc còn thiếu.",
-        401,
-      );
+      return adminAuthorizationError(authorization);
     }
+    verifiedAdminEmail =
+      typeof authorization.payload?.email === "string"
+        ? authorization.payload.email
+        : undefined;
   }
+  if (request.method === "GET" && path === "/api/admin/access-links")
+    return listAccessLinks(request, env);
+  if (request.method === "POST" && path === "/api/admin/access-links")
+    return createAccessLink(request, env, verifiedAdminEmail);
+  const accessLinkMatch = path.match(/^\/api\/admin\/access-links\/([^/]+)$/);
+  const accessLinkActionMatch = path.match(
+    /^\/api\/admin\/access-links\/([^/]+)\/(reset-sessions|rotate|revoke|test)$/,
+  );
+  if (request.method === "PUT" && accessLinkMatch)
+    return updateAccessLink(
+      request,
+      env,
+      decodeURIComponent(accessLinkMatch[1]),
+      verifiedAdminEmail,
+    );
+  if (request.method === "DELETE" && accessLinkMatch)
+    return deleteAccessLink(
+      request,
+      env,
+      decodeURIComponent(accessLinkMatch[1]),
+      verifiedAdminEmail,
+    );
+  if (request.method === "POST" && accessLinkActionMatch) {
+    const accessLinkId = decodeURIComponent(accessLinkActionMatch[1]);
+    const action = accessLinkActionMatch[2];
+    if (action === "reset-sessions")
+      return resetAccessLinkSessions(
+        request,
+        env,
+        accessLinkId,
+        verifiedAdminEmail,
+      );
+    if (action === "rotate")
+      return rotateAccessLink(request, env, accessLinkId, verifiedAdminEmail);
+    if (action === "revoke")
+      return revokeAccessLink(request, env, accessLinkId, verifiedAdminEmail);
+    return testAccessLink(request, env, accessLinkId);
+  }
+  if (request.method === "GET" && path === "/api/admin/settings")
+    return getStorefrontSettings(env);
+  if (request.method === "PUT" && path === "/api/admin/settings")
+    return saveStorefrontSettings(request, env);
+  if (request.method === "GET" && path === "/api/admin/settings/storefront")
+    return getStorefrontSettings(env);
+  if (request.method === "PUT" && path === "/api/admin/settings/storefront")
+    return saveStorefrontSettings(request, env);
   if (request.method === "GET" && path === "/api/admin/products")
     return listProducts(request, env, true);
   const productMatch = path.match(/^\/api\/admin\/products\/([^/]+)$/);
@@ -1520,10 +1619,51 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
-      if (url.pathname.startsWith("/api/"))
-        return await handleApi(request, env, ctx);
+      if (isAccessEndpointPath(url.pathname))
+        return await handleAccessRequest(request, env);
+      if (url.pathname.startsWith("/api/")) {
+        let adminAuthorization: AdminAuthorization | undefined;
+        if (url.pathname.startsWith("/api/admin/")) {
+          adminAuthorization = await authorizeAdminRequest(request, env);
+          if (!adminAuthorization.authorized)
+            return adminAuthorizationError(adminAuthorization);
+        }
+        if (isStorefrontProtectedApiPath(url.pathname) &&
+            isStorefrontAccessGateEnabled(env)) {
+          if (!env.STOREFRONT_ACCESS_SECRET?.trim())
+            return storefrontGateMisconfiguredResponse();
+          const authorization = await authorizeStorefrontSession(request, env);
+          if (!authorization.valid) {
+            if (authorization.reason === "MISSING_SECRET")
+              return storefrontGateMisconfiguredResponse();
+            return storefrontSessionRequiredResponse();
+          }
+        }
+        const response = await handleApi(
+          request,
+          env,
+          ctx,
+          adminAuthorization,
+        );
+        return adminAuthorization?.authorized
+          ? await addAdminAnalyticsExemption(response, request, env)
+          : response;
+      }
       if (url.pathname.startsWith("/media/"))
         return await handleMedia(url.pathname, env);
+      const protectedHtml =
+        isStorefrontProtectedHtmlPath(url.pathname) &&
+        isStorefrontAccessGateEnabled(env);
+      if (protectedHtml) {
+        if (!env.STOREFRONT_ACCESS_SECRET?.trim())
+          return storefrontGateMisconfiguredResponse();
+        const authorization = await authorizeStorefrontSession(request, env);
+        if (!authorization.valid) {
+          if (authorization.reason === "MISSING_SECRET")
+            return storefrontGateMisconfiguredResponse();
+          return storefrontAccessRequiredRedirect(request, true);
+        }
+      }
       const response = await requestHandler(request);
       if (/^\/c\/[^/]+$/.test(url.pathname)) {
         const headers = new Headers(response.headers);
@@ -1536,13 +1676,22 @@ export default {
           headers,
         });
       }
+      if (protectedHtml) {
+        const headers = new Headers(response.headers);
+        headers.set("cache-control", "private, no-store");
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
       return response;
     } catch (caught) {
       console.error(
         JSON.stringify({
           message: "unexpected route error",
-          path: url.pathname,
-          error: caught instanceof Error ? caught.message : String(caught),
+          path: redactPathForLog(url.pathname),
+          errorType: caught instanceof Error ? caught.name : "UNKNOWN",
         }),
       );
       if (url.pathname.startsWith("/api/"))

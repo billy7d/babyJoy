@@ -1,9 +1,12 @@
+import { useEffect, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/site";
 import { CartProvider } from "../lib/cart";
 import { CatalogProvider } from "../lib/catalog-context";
+import { AccessRequiredPage } from "../components/access-required";
 import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
+import { AdminAccessLinksPage } from "../components/admin-access-links";
 
 export function meta({ location }: Route.MetaArgs) {
   const path = location.pathname;
@@ -17,6 +20,7 @@ function RoutedContent() {
   const { pathname } = useLocation();
   const params = useParams();
   if (pathname === "/") return <HomePage />;
+  if (pathname === "/access-required") return <AccessRequiredPage />;
   if (pathname === "/shop") return <ProductListPage />;
   if (pathname === "/search") return <ProductListPage searchMode />;
   if (pathname === "/categories") return <CategoriesPage />;
@@ -33,6 +37,7 @@ function RoutedContent() {
   if (pathname === "/admin/tags") return <AdminTaxonomyPage type="tags" />;
   if (pathname === "/admin/cart-requests") return <AdminCartRequestsPage />;
   if (/^\/admin\/cart-requests\/[^/]+$/.test(pathname)) return <AdminCartRequestDetailPage />;
+  if (pathname === "/admin/access-links") return <AdminAccessLinksPage />;
   if (pathname === "/admin/settings") return <AdminSettingsPage />;
   return <PublicNotFound />;
 }
@@ -41,6 +46,43 @@ function PublicNotFound() {
   return <main className="not-found"><h1>Không tìm thấy trang</h1><a href="/">Về trang chủ</a></main>;
 }
 
-export default function SiteRoute() {
+function ProtectedStorefrontApp() {
+  const { pathname } = useLocation();
+  const [allowed, setAllowed] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const response = await fetch("/api/storefront/session", {
+          headers: { accept: "application/json" },
+        });
+        if (!cancelled && !response.ok)
+          setAllowed(false);
+      } catch {
+        // The server-side route gate remains authoritative during a transient
+        // client check failure.
+      }
+    };
+    void check();
+    const onFocus = () => void check();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [pathname]);
+
+  if (!allowed) return <AccessRequiredPage />;
   return <CatalogProvider><CartProvider><RoutedContent /></CartProvider></CatalogProvider>;
+}
+
+export default function SiteRoute() {
+  const pathname = useLocation().pathname;
+  const noCatalogProvider =
+    pathname.startsWith("/admin") ||
+    pathname === "/access-required" ||
+    /^\/c\/[^/]+$/.test(pathname);
+  if (noCatalogProvider) return <RoutedContent />;
+  return <ProtectedStorefrontApp />;
 }
