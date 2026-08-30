@@ -180,8 +180,7 @@ jobs:
           const fs = require('fs');
           const path = 'wrangler.jsonc';
           let content = fs.readFileSync(path, 'utf8');
-          const matches = content.match(/"STOREFRONT_ACCESS_GATE_ENABLED": "false"/g) ?? [];
-          if (matches.length < 1) {
+          if (!content.includes('"STOREFRONT_ACCESS_GATE_ENABLED": "false"')) {
             throw new Error('Could not locate STOREFRONT_ACCESS_GATE_ENABLED=false in wrangler.jsonc');
           }
           content = content.replaceAll(
@@ -190,6 +189,22 @@ jobs:
           );
           fs.writeFileSync(path, content);
           NODE
+
+      - name: Rebuild redirected Wrangler deployment config
+        shell: bash
+        env:
+          ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
+        run: |
+          set -euo pipefail
+          # React Router deploys with build/server/wrangler.json rather than
+          # wrangler.jsonc directly. Rebuild after toggling the flag so the
+          # generated deployment config carries the intended value.
+          npm run build
+          if [ "$ROLLOUT_MODE" = "prepare" ]; then
+            grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "false"' build/server/wrangler.json
+          else
+            grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "true"' build/server/wrangler.json
+          fi
 
       - name: Deploy production Worker
         run: npx wrangler deploy --env production
@@ -238,13 +253,10 @@ jobs:
 
           retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
           grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products.json
-
           retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
-
           curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ > /tmp/admin-status.txt || true
           if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null; then
             echo "Admin route was incorrectly captured by storefront gating." >&2
             exit 1
           fi
-
           echo "Gate-enabled smoke passed: public catalog API is gated and access-required remains reachable."
