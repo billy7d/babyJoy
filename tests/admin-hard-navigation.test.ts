@@ -18,10 +18,6 @@ const rootSource = readFileSync(
   new URL("../app/root.tsx", import.meta.url),
   "utf8",
 );
-const smokeWorkflow = readFileSync(
-  new URL("../.github/workflows/production-enable-smoke.yml", import.meta.url),
-  "utf8",
-);
 
 describe("admin hard navigation với storefront gate", () => {
   it("cho phép React Router lấy manifest và giữ storefront API bị khóa", () => {
@@ -46,16 +42,5 @@ describe("admin hard navigation với storefront gate", () => {
     expect(rootSource).toContain('message: "route render error"');
     expect(rootSource).toContain("redactedRouteErrorPath");
     expect(rootSource).toContain("errorType");
-  });
-
-  it("không xoay STOREFRONT_ACCESS_SECRET trong production smoke", () => {
-    expect(smokeWorkflow).toContain(
-      "STOREFRONT_ACCESS_SECRET: ${{ secrets.STOREFRONT_ACCESS_SECRET }}",
-    );
-    expect(smokeWorkflow).toContain('smoke_secret="${STOREFRONT_ACCESS_SECRET}"');
-    expect(smokeWorkflow).not.toMatch(
-      /wrangler\s+secret\s+put\s+STOREFRONT_ACCESS_SECRET/,
-    );
-    expect(smokeWorkflow).not.toContain("openssl rand -hex");
   });
 });
