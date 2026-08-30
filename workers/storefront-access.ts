@@ -1,5 +1,6 @@
 const ACCESS_CREDENTIAL_PREFIX = "storefront-access:v1";
 const ADMIN_ANALYTICS_PREFIX = "storefront-admin-analytics:v1";
+const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
 
 export const DEFAULT_STOREFRONT_SESSION_TTL_SECONDS = 15 * 24 * 60 * 60;
 export const MIN_STOREFRONT_SESSION_TTL_SECONDS = 60 * 60;
@@ -612,12 +613,11 @@ async function loadGroups(env: Env, accessLinkId: string) {
 }
 
 function windowStart(now: Date, days: number) {
-  if (days === 1) {
-    const start = new Date(now);
-    start.setUTCHours(0, 0, 0, 0);
-    return start.toISOString();
-  }
-  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  const calendarDays = Math.max(1, Math.floor(days));
+  const vietnamTime = new Date(now.getTime() + VIETNAM_UTC_OFFSET_MS);
+  vietnamTime.setUTCHours(0, 0, 0, 0);
+  vietnamTime.setUTCDate(vietnamTime.getUTCDate() - (calendarDays - 1));
+  return new Date(vietnamTime.getTime() - VIETNAM_UTC_OFFSET_MS).toISOString();
 }
 
 export async function getAccessLinkStats(
@@ -1315,6 +1315,20 @@ async function handleValidAccessLink(
   return response;
 }
 
+async function invalidAccessCredentialResponse(
+  request: Request,
+  env: Env,
+  now: Date,
+) {
+  const currentAuthorization = await authorizeStorefrontSession(request, env, now);
+  if (currentAuthorization.valid && currentAuthorization.session) {
+    const headers = responseHeaders();
+    headers.set("location", "/");
+    return new Response(null, { status: 303, headers });
+  }
+  return storefrontAccessRequiredRedirect(request, true);
+}
+
 export async function handleAccessRequest(
   request: Request,
   env: Env,
@@ -1331,7 +1345,8 @@ export async function handleAccessRequest(
     "/access/".length,
   );
   const credential = parseAccessCredential(credentialValue);
-  if (!credential) return storefrontAccessRequiredRedirect(request, true);
+  if (!credential)
+    return invalidAccessCredentialResponse(request, env, now);
   const link = await loadAccessLink(env, credential.linkId);
   if (
     !link ||
@@ -1344,7 +1359,7 @@ export async function handleAccessRequest(
       credential.signature,
     ))
   )
-    return storefrontAccessRequiredRedirect(request, true);
+    return invalidAccessCredentialResponse(request, env, now);
   return handleValidAccessLink(request, env, link, secret, now);
 }
 
