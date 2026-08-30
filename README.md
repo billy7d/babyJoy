@@ -46,6 +46,10 @@ Storefront access gate:
   deploying the migration and secret, then enable it after smoke tests.
 - STOREFRONT_ACCESS_SECRET is required in production. Never put this secret,
   a raw access credential, or a raw session token in source or logs.
+- The `production-enable-smoke.yml` workflow also requires the same value as
+  the masked `STOREFRONT_ACCESS_SECRET` secret in the GitHub `production`
+  environment; the smoke workflow reads it only to sign a temporary link and
+  never overwrites the Worker secret.
 
 Các biến không phải secret trong `wrangler.jsonc`:
 

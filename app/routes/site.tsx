@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, useLocation, useParams } from "react-router";
+import { redirect, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/site";
 import { CartProvider } from "../lib/cart";
 import { CatalogProvider } from "../lib/catalog-context";
@@ -7,6 +7,12 @@ import { AccessRequiredPage } from "../components/access-required";
 import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 import { AdminAccessLinksPage } from "../components/admin-access-links";
+
+export function loader({ request }: Route.LoaderArgs) {
+  return new URL(request.url).pathname === "/admin"
+    ? redirect("/admin/products")
+    : null;
+}
 
 export function meta({ location }: Route.MetaArgs) {
   const path = location.pathname;
@@ -30,7 +36,6 @@ function RoutedContent() {
   if (/^\/c\/[^/]+$/.test(pathname)) return <PublicCartSharePage />;
   if (pathname.startsWith("/cart/guide/")) return <CartShareGuidePage />;
   if (pathname.startsWith("/cart/success/")) return <SuccessPage />;
-  if (pathname === "/admin") return <Navigate to="/admin/products" replace />;
   if (pathname === "/admin/products") return <AdminProductsPage />;
   if (pathname === "/admin/products/new" || /^\/admin\/products\/[^/]+\/edit$/.test(pathname)) return <ProductEditorPage />;
   if (pathname === "/admin/categories") return <AdminTaxonomyPage type="categories" />;

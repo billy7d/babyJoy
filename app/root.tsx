@@ -35,7 +35,39 @@ export default function App() {
   return <Outlet />;
 }
 
+function routeErrorPath() {
+  const candidate = (globalThis as { location?: { pathname?: unknown } })
+    .location?.pathname;
+  return typeof candidate === "string" && candidate ? candidate : "unknown";
+}
+
+function redactedRouteErrorPath(path: string) {
+  if (path.startsWith("/access/")) return "/access/[REDACTED]";
+  return path.slice(0, 200);
+}
+
+function reportRouteError(error: unknown) {
+  const routeError = isRouteErrorResponse(error);
+  const rawType = routeError
+    ? "ROUTE_ERROR"
+    : error instanceof Error
+      ? error.name
+      : "UNKNOWN";
+  const errorType = /^[A-Za-z0-9_.-]{1,64}$/.test(rawType)
+    ? rawType
+    : "UNKNOWN";
+  console.error(
+    JSON.stringify({
+      message: "route render error",
+      path: redactedRouteErrorPath(routeErrorPath()),
+      errorType,
+      errorCode: routeError ? `HTTP_${error.status}` : undefined,
+    }),
+  );
+}
+
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  reportRouteError(error);
   let message = "Đã có lỗi xảy ra";
   let details = "Ứng dụng chưa thể tải nội dung này.";
   let stack: string | undefined;
