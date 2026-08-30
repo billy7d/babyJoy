@@ -31,6 +31,8 @@ jobs:
     environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # Optional. If omitted, the workflow resolves the account from the token
+      # when the token can see exactly one Cloudflare account.
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
     steps:
@@ -43,16 +45,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Validate rollout credentials
+      - name: Validate Cloudflare API token
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
             echo "Missing GitHub environment secret: CLOUDFLARE_API_TOKEN" >&2
-            exit 1
-          fi
-          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "Missing GitHub environment secret: CLOUDFLARE_ACCOUNT_ID" >&2
             exit 1
           fi
 
@@ -71,6 +69,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve Cloudflare account
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Using configured CLOUDFLARE_ACCOUNT_ID."
+            exit 0
+          fi
+
+          npx wrangler whoami --json > /tmp/cloudflare-whoami.json
+          node <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/cloudflare-whoami.json', 'utf8'));
+          const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+          if (accounts.length !== 1 || !accounts[0]?.id) {
+            console.error(
+              `The API token can see ${accounts.length} Cloudflare accounts. ` +
+              'Add the optional GitHub production secret CLOUDFLARE_ACCOUNT_ID to select one explicitly.',
+            );
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_ACCOUNT_ID=${accounts[0].id}\n`);
+          NODE
+          rm -f /tmp/cloudflare-whoami.json
+          echo "Cloudflare account resolved from API token."
+
       - name: Run quality checks
         shell: bash
         run: |
@@ -88,7 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler secret list --env production > /tmp/worker-secrets.json
+          npx wrangler secret list --env production --format json > /tmp/worker-secrets.json
           if node -e '
             const fs = require("fs");
             const rows = JSON.parse(fs.readFileSync("/tmp/worker-secrets.json", "utf8"));
