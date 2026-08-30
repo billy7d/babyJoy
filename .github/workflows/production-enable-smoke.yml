@@ -138,11 +138,15 @@ jobs:
           );
           fs.writeFileSync(path, content);
           NODE
-          # React Router redirects Wrangler to build/server/wrangler.json.
-          # Rebuild after changing wrangler.jsonc so the generated deploy config
-          # carries the gate=true value.
           npm run build
-          grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "true"' build/server/wrangler.json
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('build/server/wrangler.json', 'utf8'));
+          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED
+            ?? config.env?.production?.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
+          console.log(`Generated deployment gate flag: ${value}`);
+          if (value !== 'true') process.exit(1);
+          NODE
 
       - name: Deploy production Worker with gate enabled
         run: npx wrangler deploy --env production
@@ -222,5 +226,12 @@ jobs:
           fs.writeFileSync(path, content);
           NODE
           npm run build
-          grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "false"' build/server/wrangler.json
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('build/server/wrangler.json', 'utf8'));
+          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED
+            ?? config.env?.production?.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
+          console.log(`Generated rollback gate flag: ${value}`);
+          if (value !== 'false') process.exit(1);
+          NODE
           npx wrangler deploy --env production
