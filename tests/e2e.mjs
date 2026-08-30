@@ -3,6 +3,22 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
+let catalogIsEmpty = false;
+try {
+  const catalogProbe = await fetch(`${baseUrl}/api/products?limit=1`);
+  const catalogBody = await catalogProbe.json();
+  catalogIsEmpty =
+    catalogProbe.ok &&
+    Array.isArray(catalogBody.data) &&
+    catalogBody.data.length === 0;
+} catch {
+  // Để browser E2E báo lỗi kết nối nếu dev server chưa sẵn sàng.
+}
+if (catalogIsEmpty) {
+  // Sau cleanup, dùng smoke chuyên biệt thay vì tạo lại seed/test product.
+  await import("./empty-catalog.e2e.mjs");
+  process.exit(0);
+}
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
 await mkdir(outputDir, { recursive: true });
 

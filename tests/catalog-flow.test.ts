@@ -73,6 +73,52 @@ describe("D1 catalog flow", () => {
   });
 });
 
+describe("catalog cleanup empty state", () => {
+  it("success với products [] không khôi phục static catalog", () => {
+    const source = readFileSync("app/lib/catalog-context.tsx", "utf8");
+
+    expect(source).toContain("products: productsBody.data.map(mapApiProduct)");
+    expect(source).not.toContain(
+      "Array.isArray(productsBody.data) && productsBody.data.length",
+    );
+    expect(source).toContain("setCatalogProducts(catalog.products)");
+  });
+
+  it("success với taxonomy [] vẫn là authoritative", () => {
+    const source = readFileSync("app/lib/catalog-context.tsx", "utf8");
+
+    expect(source).toContain("categories: categoriesBody.data.map(mapApiCategory)");
+    expect(source).toContain("tags: [...new Set(tagsBody.data.map");
+    expect(
+      applyFilters([], categories, new URLSearchParams("category=trai-cay-nghien")),
+    ).toEqual([]);
+    expect(
+      applyFilters([], categories, new URLSearchParams("tag=H%E1%BB%AFu%20c%C6%A1")),
+    ).toEqual([]);
+  });
+
+  it("giữ nguyên access redirect và error boundary của remote", () => {
+    const source = readFileSync("app/lib/catalog-context.tsx", "utf8");
+
+    expect(source).toContain(
+      "(response) => response.status === 401 || response.status === 503",
+    );
+    expect(source).toContain('window.location.assign(path)');
+    expect(source).toContain('throw new Error("CATALOG_LOAD_FAILED")');
+    expect(source).toContain('throw new Error("CATALOG_INVALID_RESPONSE")');
+  });
+
+  it("không thay đổi behavior non-empty của storefront và admin", () => {
+    const publicSource = readFileSync("app/components/public-pages.tsx", "utf8");
+    const adminSource = readFileSync("app/components/admin-pages.tsx", "utf8");
+
+    expect(publicSource).toContain("featured.map((product) =>");
+    expect(publicSource).toContain("if (!product)");
+    expect(adminSource).toContain("filteredProducts.map((product) =>");
+    expect(adminSource).toContain("products.length");
+  });
+});
+
 describe("admin product listing", () => {
   it("dùng URL admin có pagination và không cắt còn bốn dòng", () => {
     expect(buildAdminProductsUrl(2, "  Gerber ")).toBe(

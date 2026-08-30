@@ -58,6 +58,17 @@ type ApiTag = {
   sortOrder?: number;
   isActive?: number | boolean;
 };
+type CatalogLoadResult = {
+  products: Product[];
+  categories: Category[];
+  brands: Brand[];
+  tags: string[];
+};
+type CatalogFetcher = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+type AccessRedirect = (path: string) => void;
 type CatalogContextValue = {
   products: Product[];
   categories: Category[];
@@ -147,6 +158,65 @@ function mapApiCategory(row: ApiCategory): Category {
   };
 }
 
+export async function loadCatalogData(
+  fetcher: CatalogFetcher = fetch,
+  onAccessRequired?: AccessRedirect,
+): Promise<CatalogLoadResult> {
+  const [productsResponse, categoriesResponse, brandsResponse, tagsResponse] =
+    await Promise.all([
+      fetcher("/api/products?limit=24", {
+        headers: { accept: "application/json" },
+      }),
+      fetcher("/api/categories", { headers: { accept: "application/json" } }),
+      fetcher("/api/brands", { headers: { accept: "application/json" } }),
+      fetcher("/api/tags", { headers: { accept: "application/json" } }),
+    ]);
+  if (
+    [productsResponse, categoriesResponse, brandsResponse, tagsResponse].some(
+      (response) => response.status === 401 || response.status === 503,
+    )
+  ) {
+    const redirect =
+      onAccessRequired ??
+      ((path: string) => {
+        if (typeof window !== "undefined") window.location.assign(path);
+      });
+    redirect("/access-required");
+  }
+  if (
+    !productsResponse.ok ||
+    !categoriesResponse.ok ||
+    !brandsResponse.ok ||
+    !tagsResponse.ok
+  )
+    throw new Error("CATALOG_LOAD_FAILED");
+  const productsBody = (await productsResponse.json()) as {
+    data?: ApiProduct[];
+  };
+  const categoriesBody = (await categoriesResponse.json()) as {
+    data?: ApiCategory[];
+  };
+  const brandsBody = (await brandsResponse.json()) as { data?: ApiBrand[] };
+  const tagsBody = (await tagsResponse.json()) as { data?: ApiTag[] };
+  if (
+    !Array.isArray(productsBody.data) ||
+    !Array.isArray(categoriesBody.data) ||
+    !Array.isArray(brandsBody.data) ||
+    !Array.isArray(tagsBody.data)
+  )
+    throw new Error("CATALOG_INVALID_RESPONSE");
+  // Chỉ commit toàn bộ snapshot khi bốn API đều thành công và trả đúng mảng dữ liệu.
+  return {
+    products: productsBody.data.map(mapApiProduct),
+    categories: categoriesBody.data.map(mapApiCategory),
+    brands: brandsBody.data.map((brand) => ({
+      ...brand,
+      isActive: brand.isActive === undefined ? true : Boolean(brand.isActive),
+    })),
+    tags: [...new Set(tagsBody.data.map((tag) => tag.name).filter(Boolean))],
+  };
+}
+
 export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [catalogProducts, setCatalogProducts] =
     useState<Product[]>(fallbackProducts);
@@ -159,53 +229,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [productsResponse, categoriesResponse, brandsResponse, tagsResponse] = await Promise.all([
-        fetch("/api/products?limit=24", {
-          headers: { accept: "application/json" },
-        }),
-        fetch("/api/categories", { headers: { accept: "application/json" } }),
-        fetch("/api/brands", { headers: { accept: "application/json" } }),
-        fetch("/api/tags", { headers: { accept: "application/json" } }),
-      ]);
-      if (
-        [productsResponse, categoriesResponse, brandsResponse, tagsResponse].some(
-          (response) => response.status === 401 || response.status === 503,
-        ) &&
-        typeof window !== "undefined"
-      ) {
-        window.location.assign("/access-required");
-      }
-      if (
-        !productsResponse.ok ||
-        !categoriesResponse.ok ||
-        !brandsResponse.ok ||
-        !tagsResponse.ok
-      )
-        throw new Error("CATALOG_LOAD_FAILED");
-      const productsBody = (await productsResponse.json()) as {
-        data?: ApiProduct[];
-      };
-      const categoriesBody = (await categoriesResponse.json()) as {
-        data?: ApiCategory[];
-      };
-      const brandsBody = (await brandsResponse.json()) as { data?: ApiBrand[] };
-      const tagsBody = (await tagsResponse.json()) as { data?: ApiTag[] };
-      if (Array.isArray(productsBody.data) && productsBody.data.length)
-        setCatalogProducts(productsBody.data.map(mapApiProduct));
-      // API thành công với zero category là trạng thái hợp lệ sau khi xóa category cuối.
-      if (Array.isArray(categoriesBody.data))
-        setCatalogCategories(categoriesBody.data.map(mapApiCategory));
-      if (Array.isArray(brandsBody.data))
-        setCatalogBrands(
-          brandsBody.data.map((brand) => ({
-            ...brand,
-            isActive: brand.isActive === undefined ? true : Boolean(brand.isActive),
-          })),
-        );
-      if (Array.isArray(tagsBody.data))
-        setCatalogTags(
-          [...new Set(tagsBody.data.map((tag) => tag.name).filter(Boolean))],
-        );
+      const catalog = await loadCatalogData();
+      setCatalogProducts(catalog.products);
+      setCatalogCategories(catalog.categories);
+      setCatalogBrands(catalog.brands);
+      setCatalogTags(catalog.tags);
     } catch {
       // Giữ catalog tĩnh làm fallback tạm thời cho tới khi D1/product_images được backfill đầy đủ.
     } finally {

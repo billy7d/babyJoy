@@ -181,47 +181,67 @@ export function AdminProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map((product) => {
-                const variant = getDisplayVariant(product);
-                return (
-                  <tr key={product.id}>
-                    <td>
-                      <img className="table-thumb" src={product.image} alt="" />
-                    </td>
-                    <td>
-                      <b>{product.name}</b>
-                      <small>
-                        {variant?.name ?? "Chưa có phân loại"}, {product.shortDescription}
-                      </small>
-                    </td>
-                    <td>
-                      <Tag tone="neutral">
-                        {(product.categories ?? [product.category])
-                          .map((slug) => categories.find((item) => item.slug === slug)?.name)
-                          .filter(Boolean)
-                          .join(", ") || "Chưa phân loại"}
-                      </Tag>
-                    </td>
-                    <td>{product.variants.length} vị</td>
-                    <td>
-                      <Price value={variant?.priceVnd ?? 0} />
-                    </td>
-                    <td>
-                      <StatusBadge status={product.adminStatus} />
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <Link
-                          to={`/admin/products/${product.id}/edit`}
-                          aria-label="Sửa"
-                        >
-                          <Icon>edit</Icon>
-                        </Link>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {filteredProducts.length
+                ? filteredProducts.map((product) => {
+                    const variant = getDisplayVariant(product);
+                    return (
+                      <tr key={product.id}>
+                        <td>
+                          <img className="table-thumb" src={product.image} alt="" />
+                        </td>
+                        <td>
+                          <b>{product.name}</b>
+                          <small>
+                            {variant?.name ?? "Chưa có phân loại"}, {product.shortDescription}
+                          </small>
+                        </td>
+                        <td>
+                          <Tag tone="neutral">
+                            {(product.categories ?? [product.category])
+                              .map((slug) => categories.find((item) => item.slug === slug)?.name)
+                              .filter(Boolean)
+                              .join(", ") || "Chưa phân loại"}
+                          </Tag>
+                        </td>
+                        <td>{product.variants.length} vị</td>
+                        <td>
+                          <Price value={variant?.priceVnd ?? 0} />
+                        </td>
+                        <td>
+                          <StatusBadge status={product.adminStatus} />
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <Link
+                              to={`/admin/products/${product.id}/edit`}
+                              aria-label="Sửa"
+                            >
+                              <Icon>edit</Icon>
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                : !loading && !loadError && (
+                    <tr>
+                      <td colSpan={7}>
+                        <div className="empty-state">
+                          <Icon>inventory_2</Icon>
+                          <h2>
+                            {products.length
+                              ? "Không có sản phẩm phù hợp"
+                              : "Chưa có sản phẩm"}
+                          </h2>
+                          <p>
+                            {products.length
+                              ? "Hãy đổi bộ lọc hoặc từ khóa tìm kiếm."
+                              : "Thêm sản phẩm thật đầu tiên cho catalog BabyJoy."}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
             </tbody>
           </table>
         </div>

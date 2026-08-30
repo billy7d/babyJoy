@@ -154,9 +154,20 @@ export function HomePage() {
           </Link>
         </div>
         <div className="product-grid">
-          {featured.map((product) => (
-            <ProductCard key={product.id} product={product} compact />
-          ))}
+          {products.length === 0 ? (
+            <div className="empty-state product-empty-state">
+              <Icon>inventory_2</Icon>
+              <h2>Chưa có sản phẩm</h2>
+              <p>BabyJoy đang chuẩn bị danh sách sản phẩm mới.</p>
+              <Link className="btn primary" to="/shop">
+                Xem cửa hàng
+              </Link>
+            </div>
+          ) : (
+            featured.map((product) => (
+              <ProductCard key={product.id} product={product} compact />
+            ))
+          )}
         </div>
       </section>
     </PublicShell>
@@ -409,10 +420,14 @@ export function ProductListPage({
                 ))}
               </div>
             ) : (
-              <div className="empty-state">
-                <Icon>search_off</Icon>
-                <h2>Chưa tìm thấy sản phẩm</h2>
-                <p>Hãy thử từ khóa hoặc bộ lọc khác.</p>
+              <div className="empty-state product-empty-state">
+                <Icon>{products.length ? "search_off" : "inventory_2"}</Icon>
+                <h2>{products.length ? "Chưa tìm thấy sản phẩm" : "Chưa có sản phẩm"}</h2>
+                <p>
+                  {products.length
+                    ? "Hãy thử từ khóa hoặc bộ lọc khác."
+                    : "BabyJoy đang chuẩn bị danh sách sản phẩm mới."}
+                </p>
               </div>
             )}
             <nav className="pagination" aria-label="Phân trang">
@@ -478,24 +493,43 @@ export function CategoriesPage() {
 
 export function ProductDetailPage() {
   const { products } = useCatalog();
+  const location = useLocation();
   const slug = decodeURIComponent(
-    useLocation().pathname.split("/").filter(Boolean).at(-1) ?? "",
+    location.pathname.split("/").filter(Boolean).at(-1) ?? "",
   );
   const product = products.find((item) => item.slug === slug) ?? products[0];
   const [variantId, setVariantId] = useState(
-    () => getDefaultVariant(product)?.id ?? "",
+    () => (product ? getDefaultVariant(product)?.id ?? "" : ""),
   );
   const [quantity, setQuantity] = useState(1);
   const [toast, setToast] = useState(false);
   const [selectedImage, setSelectedImage] = useState(0);
   const { addItem } = useCart();
   useEffect(() => {
+    if (!product) {
+      setVariantId("");
+      return;
+    }
     setVariantId((current) =>
       product.variants.some((item) => item.id === current)
         ? current
         : (getDefaultVariant(product)?.id ?? ""),
     );
   }, [product]);
+  if (!product) {
+    return (
+      <PublicShell hideMobileNav>
+        <section className="empty-state">
+          <Icon>inventory_2</Icon>
+          <h1>Chưa có sản phẩm</h1>
+          <p>BabyJoy đang chuẩn bị danh sách sản phẩm mới.</p>
+          <Link className="btn primary" to="/shop">
+            Về cửa hàng
+          </Link>
+        </section>
+      </PublicShell>
+    );
+  }
   const variant =
     product.variants.find((item) => item.id === variantId) ??
     getDefaultVariant(product);
