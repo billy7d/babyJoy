@@ -1,0 +1,196 @@
+name: Production Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Rollout step to run"
+        required: true
+        default: prepare
+        type: choice
+        options:
+          - prepare
+          - enable_gate
+      confirm_enable_gate:
+        description: "Type ENABLE when mode=enable_gate"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: production-rollout
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollout:
+    name: Production rollout
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate rollout credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "Missing GitHub environment secret: CLOUDFLARE_API_TOKEN" >&2
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Missing GitHub environment secret: CLOUDFLARE_ACCOUNT_ID" >&2
+            exit 1
+          fi
+
+      - name: Validate enable confirmation
+        if: ${{ inputs.mode == 'enable_gate' }}
+        shell: bash
+        env:
+          CONFIRM_ENABLE_GATE: ${{ inputs.confirm_enable_gate }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_ENABLE_GATE" != "ENABLE" ]; then
+            echo "To enable the production storefront gate, set confirm_enable_gate to ENABLE." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run quality checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: Apply production D1 migrations
+        if: ${{ inputs.mode == 'prepare' }}
+        run: npx wrangler d1 migrations apply babyjoy-db --remote --env production
+
+      - name: Initialize storefront access secret if missing
+        if: ${{ inputs.mode == 'prepare' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler secret list --env production > /tmp/worker-secrets.json
+          if node -e '
+            const fs = require("fs");
+            const rows = JSON.parse(fs.readFileSync("/tmp/worker-secrets.json", "utf8"));
+            process.exit(Array.isArray(rows) && rows.some((row) => row.name === "STOREFRONT_ACCESS_SECRET") ? 0 : 1);
+          '; then
+            echo "STOREFRONT_ACCESS_SECRET already exists; leaving it unchanged."
+          else
+            echo "STOREFRONT_ACCESS_SECRET is missing; generating it once."
+            openssl rand -hex 32 | npx wrangler secret put STOREFRONT_ACCESS_SECRET --env production
+          fi
+          rm -f /tmp/worker-secrets.json
+
+      - name: Force gate disabled for prepare deploy
+        if: ${{ inputs.mode == 'prepare' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'wrangler.jsonc';
+          let content = fs.readFileSync(path, 'utf8');
+          content = content.replaceAll(
+            '"STOREFRONT_ACCESS_GATE_ENABLED": "true"',
+            '"STOREFRONT_ACCESS_GATE_ENABLED": "false"',
+          );
+          fs.writeFileSync(path, content);
+          NODE
+
+      - name: Enable gate in deployment config
+        if: ${{ inputs.mode == 'enable_gate' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'wrangler.jsonc';
+          let content = fs.readFileSync(path, 'utf8');
+          const matches = content.match(/"STOREFRONT_ACCESS_GATE_ENABLED": "false"/g) ?? [];
+          if (matches.length < 1) {
+            throw new Error('Could not locate STOREFRONT_ACCESS_GATE_ENABLED=false in wrangler.jsonc');
+          }
+          content = content.replaceAll(
+            '"STOREFRONT_ACCESS_GATE_ENABLED": "false"',
+            '"STOREFRONT_ACCESS_GATE_ENABLED": "true"',
+          );
+          fs.writeFileSync(path, content);
+          NODE
+
+      - name: Deploy production Worker
+        run: npx wrangler deploy --env production
+
+      - name: Smoke test gate disabled
+        if: ${{ inputs.mode == 'prepare' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          retry bash -c 'status=$(curl -sS -o /tmp/home.html -w "%{http_code}" https://metraphuong.com/); test "$status" = "200"'
+          retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "200"'
+
+          if grep -q "STOREFRONT_SESSION_REQUIRED" /tmp/products.json; then
+            echo "Public catalog API unexpectedly requires a storefront session while gate should be disabled." >&2
+            exit 1
+          fi
+
+          echo "Prepare smoke passed: homepage and public products API are reachable with gate disabled."
+
+      - name: Smoke test gate enabled
+        if: ${{ inputs.mode == 'enable_gate' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
+          grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products.json
+
+          retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
+
+          status=$(curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ || true)
+          if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null; then
+            echo "Admin route was incorrectly captured by storefront gating." >&2
+            exit 1
+          fi
+
+          echo "Gate-enabled smoke passed: public catalog API is gated and access-required remains reachable."
