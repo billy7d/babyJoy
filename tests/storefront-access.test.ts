@@ -159,32 +159,39 @@ async function createLink(
   return body.data;
 }
 
-function tamperLastChar(value: string) {
+function tamperBase64Url(value: string) {
   if (!value) throw new Error("Cannot tamper empty value");
-  return value.slice(0, -1) + (value.endsWith("a") ? "b" : "a");
+  return (value.startsWith("a") ? "b" : "a") + value.slice(1);
 }
 
 describe("storefront access credentials", () => {
   it("ký và verify theo link/version, chống tamper và marker giả", async () => {
     const secret = "secret-for-storefront-access";
     const credential = await generateAccessCredential(secret, "link-a", 7);
+    const signature = credential.split(".")[1];
     expect(credential).toMatch(/^link-a\.[A-Za-z0-9_-]{43}$/);
     expect(
-      await verifyAccessCredential(secret, "link-a", 7, credential.split(".")[1]),
+      await verifyAccessCredential(secret, "link-a", 7, signature),
     ).toBe(true);
     expect(
-      await verifyAccessCredential(secret, "link-a", 8, credential.split(".")[1]),
+      await verifyAccessCredential(secret, "link-a", 8, signature),
     ).toBe(false);
     expect(
       await verifyAccessCredential(
         secret,
         "link-a",
         7,
-        tamperLastChar(credential),
+        tamperBase64Url(signature),
       ),
     ).toBe(false);
 
     const marker = await createAdminAnalyticsMarker(secret, new Date("2026-08-30T00:00:00Z"));
+    const markerParts = marker.split(".");
+    const tamperedMarker = [
+      markerParts[0],
+      markerParts[1],
+      tamperBase64Url(markerParts[2]),
+    ].join(".");
     expect(
       await verifyAdminAnalyticsMarker(
         marker,
@@ -194,7 +201,7 @@ describe("storefront access credentials", () => {
     ).toBe(true);
     expect(
       await verifyAdminAnalyticsMarker(
-        tamperLastChar(marker),
+        tamperedMarker,
         secret,
         new Date("2026-08-30T00:30:00Z"),
       ),
