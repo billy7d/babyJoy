@@ -159,6 +159,11 @@ async function createLink(
   return body.data;
 }
 
+function tamperLastChar(value: string) {
+  if (!value) throw new Error("Cannot tamper empty value");
+  return value.slice(0, -1) + (value.endsWith("a") ? "b" : "a");
+}
+
 describe("storefront access credentials", () => {
   it("ký và verify theo link/version, chống tamper và marker giả", async () => {
     const secret = "secret-for-storefront-access";
@@ -175,7 +180,7 @@ describe("storefront access credentials", () => {
         secret,
         "link-a",
         7,
-        credential.slice(0, -1) + "a",
+        tamperLastChar(credential),
       ),
     ).toBe(false);
 
@@ -189,7 +194,7 @@ describe("storefront access credentials", () => {
     ).toBe(true);
     expect(
       await verifyAdminAnalyticsMarker(
-        marker.replace(/.$/, "a"),
+        tamperLastChar(marker),
         secret,
         new Date("2026-08-30T00:30:00Z"),
       ),
