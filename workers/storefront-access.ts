@@ -334,6 +334,10 @@ export function isAccessEndpointPath(path: string) {
   return /^\/access\/[^/]+$/.test(path);
 }
 
+export function isAdminHtmlPath(path: string) {
+  return path === "/admin" || path.startsWith("/admin/");
+}
+
 export function isStorefrontProtectedApiPath(path: string) {
   if (!path.startsWith("/api/")) return false;
   if (path.startsWith("/api/admin/")) return false;
@@ -365,9 +369,22 @@ function isStaticPath(path: string) {
   );
 }
 
+function isReactRouterInternalPath(path: string) {
+  // React Router uses this endpoint for route discovery during client
+  // navigation. It must receive its JSON response even when the storefront
+  // access gate is enabled.
+  return path === "/__manifest";
+}
+
 export function isStorefrontProtectedHtmlPath(path: string) {
-  if (!path || path.startsWith("/api/") || isStaticPath(path)) return false;
-  const isAdminPath = path === "/admin" || path.startsWith("/admin/");
+  if (
+    !path ||
+    path.startsWith("/api/") ||
+    isStaticPath(path) ||
+    isReactRouterInternalPath(path)
+  )
+    return false;
+  const isAdminPath = isAdminHtmlPath(path);
   const isAccessPath = path === "/access" || path.startsWith("/access/");
   if (
     isAdminPath ||

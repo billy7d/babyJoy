@@ -26,6 +26,47 @@ async function openPage(path, viewport, fileName) {
   await context.close();
 }
 
+async function assertAdminHardNavigation(path) {
+  const assertPage = async (page, label, navigate) => {
+    const publicCatalogRequests = [];
+    const onRequest = (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (/^\/api\/(products|categories|brands)(?:\/|$)/.test(pathname))
+        publicCatalogRequests.push(pathname);
+    };
+    page.on("request", onRequest);
+    const response = await navigate();
+    await page.waitForTimeout(600);
+    const body = await page.locator("body").innerText();
+    if (!response || response.status() >= 500)
+      throw new Error(`Admin ${path} ${label} trả về HTTP lỗi`);
+    if (body.includes("Đã có lỗi xảy ra") || body.includes("Ứng dụng chưa thể tải nội dung này."))
+      throw new Error(`Admin ${path} ${label} rơi vào root ErrorBoundary`);
+    if (await page.locator(".admin-shell").count() !== 1)
+      throw new Error(`Admin ${path} ${label} không render AdminShell`);
+    if (publicCatalogRequests.length)
+      throw new Error(`Admin ${path} ${label} gọi public catalog API: ${publicCatalogRequests.join(", ")}`);
+    page.off("request", onRequest);
+  };
+
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "vi-VN" });
+  const page = await context.newPage();
+  try {
+    await assertPage(page, "direct", () => page.goto(`${baseUrl}${path}`, { waitUntil: "domcontentloaded" }));
+    await assertPage(page, "reload", () => page.reload({ waitUntil: "domcontentloaded" }));
+  } finally {
+    await context.close();
+  }
+
+  const freshContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "vi-VN" });
+  const freshPage = await freshContext.newPage();
+  try {
+    await assertPage(freshPage, "new-context", () => freshPage.goto(`${baseUrl}${path}`, { waitUntil: "domcontentloaded" }));
+  } finally {
+    await freshContext.close();
+  }
+}
+
 const visualRoutes = [
   ["/", "home"], ["/shop", "shop"], ["/product/little-sprouts-ca-rot-tao-huu-co", "product"],
   ["/cart", "cart"], ["/cart/success/GH-260825-X7K2", "success"],
@@ -42,6 +83,8 @@ await openPage("/admin/products", { width: 1440, height: 1000 }, "admin-products
 await openPage("/admin/products/new", { width: 1440, height: 1000 }, "admin-product-new.png");
 await openPage("/admin/cart-requests", { width: 1440, height: 1000 }, "admin-cart-requests.png");
 await openPage("/admin/cart-requests/request-canonical", { width: 1440, height: 1000 }, "admin-cart-request-detail.png");
+for (const path of ["/admin", "/admin/products", "/admin/access-links", "/admin/settings"])
+  await assertAdminHardNavigation(path);
 
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "vi-VN" });
 const page = await context.newPage();
@@ -220,4 +263,4 @@ try {
 }
 
 await browser.close();
-console.log(`E2E_OK routes=${visualRoutes.length * 2 + 6} viewports=390,768,1024,1440 cart-persistence=pass filter-url=pass multi-variant-admin-cart=pass`);
+console.log(`E2E_OK routes=${visualRoutes.length * 2 + 6} viewports=390,768,1024,1440 cart-persistence=pass filter-url=pass admin-hard-navigation=pass multi-variant-admin-cart=pass`);

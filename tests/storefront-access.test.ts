@@ -13,6 +13,7 @@ import {
   hashSessionToken,
   authorizeStorefrontSession,
   isAccessEndpointPath,
+  isAdminHtmlPath,
   isStorefrontProtectedApiPath,
   isStorefrontProtectedHtmlPath,
   resetAccessLinkSessions,
@@ -232,7 +233,12 @@ describe("storefront access credentials", () => {
   it("giữ đúng hợp đồng route gate và lỗi API không redirect HTML", async () => {
     expect(isAccessEndpointPath("/access/link.sig")).toBe(true);
     expect(isAccessEndpointPath("/access/link.sig/extra")).toBe(false);
+    expect(isAdminHtmlPath("/admin")).toBe(true);
+    expect(isAdminHtmlPath("/admin/access-links")).toBe(true);
+    expect(isAdminHtmlPath("/administrator")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/")).toBe(true);
+    expect(isStorefrontProtectedHtmlPath("/__manifest")).toBe(false);
+    expect(isStorefrontProtectedHtmlPath("/__manifest/extra")).toBe(true);
     expect(isStorefrontProtectedHtmlPath("/admin/access-links")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/access-required")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/c/share-token")).toBe(false);

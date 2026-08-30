@@ -39,6 +39,7 @@ import {
   getStorefrontSettings,
   handleAccessRequest,
   isAccessEndpointPath,
+  isAdminHtmlPath,
   isStorefrontAccessGateEnabled,
   isStorefrontProtectedApiPath,
   isStorefrontProtectedHtmlPath,
@@ -66,6 +67,20 @@ const jsonHeaders = {
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: jsonHeaders });
+}
+
+function cloneResponseWithHeaders(response: Response, headers: Headers) {
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function privateNoStoreResponse(response: Response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "private, no-store");
+  return cloneResponseWithHeaders(response, headers);
 }
 
 function error(
@@ -1670,21 +1685,10 @@ export default {
         headers.set("x-robots-tag", "noindex, nofollow, noarchive");
         headers.set("referrer-policy", "no-referrer");
         headers.set("cache-control", "private, no-store");
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-        });
+        return cloneResponseWithHeaders(response, headers);
       }
-      if (protectedHtml) {
-        const headers = new Headers(response.headers);
-        headers.set("cache-control", "private, no-store");
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-        });
-      }
+      if (isAdminHtmlPath(url.pathname) || protectedHtml)
+        return privateNoStoreResponse(response);
       return response;
     } catch (caught) {
       console.error(
