@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyFilters } from "../app/components/public-pages";
 import { cartShareFingerprint } from "../app/lib/cart-share";
+import { mapApiProduct } from "../app/lib/catalog-context";
 import type { Product } from "../app/lib/catalog";
 
 const baseProduct: Product = {
@@ -93,5 +94,18 @@ describe("BabyJoy product taxonomy v1", () => {
     expect(appSource).toContain("archived_at IS NULL");
     expect(appSource).toContain("UPDATE products SET status = 'HIDDEN'");
     expect(cartShareSource).toContain("product_name_snapshot AS productName");
+  });
+
+  it("không khôi phục category hoặc tag fallback khi API trả mảng rỗng", () => {
+    const mapped = mapApiProduct({
+      id: "prod-gerber",
+      slug: "bot-an-dam-gerber-organic-yen-mach-chuoi",
+      name: "Bột ăn dặm Gerber Organic Yến mạch & Chuối",
+      categorySlugs: [],
+      tagNames: [],
+    });
+    expect(mapped.category).toBe("");
+    expect(mapped.categories).toEqual([]);
+    expect(mapped.tags).toEqual([]);
   });
 });

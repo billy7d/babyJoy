@@ -1405,6 +1405,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   const [editing, setEditing] = useState<TaxonomyRow | null>(null);
   const [categoryProducts, setCategoryProducts] = useState<CategoryProduct[]>([]);
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const loadRows = async () => {
     const response = await fetch(`/api/admin/${type}`);
     if (!response.ok) throw new Error("TAXONOMY_LOAD_FAILED");
@@ -1423,48 +1424,99 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   };
   const saveTaxonomyRow = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
     const form = new FormData(event.currentTarget);
-    const response = await fetch(
-      editing ? `/api/admin/${type}/${editing.id}` : `/api/admin/${type}`,
-      {
-        method: editing ? "PUT" : "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name: form.get("name"),
-          slug: form.get("slug"),
-          description: form.get("description"),
-          imageKey: form.get("imageKey") || null,
-          sortOrder: Number(form.get("sortOrder")),
-          isActive: form.get("isActive") === "on",
-          groupType: form.get("groupType") || null,
-        }),
-      },
-    );
-    const body = (await response.json()) as { id?: string; error?: { message?: string } };
-    if (!response.ok) {
-      setMessage(body.error?.message ?? "Chưa thể lưu phân loại.");
-      return;
-    }
-    if (isCategories && editing) {
-      const relationResponse = await fetch(
-        `/api/admin/categories/${editing.id}/products`,
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(
+        editing ? `/api/admin/${type}/${editing.id}` : `/api/admin/${type}`,
         {
-          method: "PUT",
+          method: editing ? "PUT" : "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            productIds: categoryProducts.filter((item) => item.selected).map((item) => item.id),
+            name: form.get("name"),
+            slug: form.get("slug"),
+            description: form.get("description"),
+            imageKey: form.get("imageKey") || null,
+            sortOrder: Number(form.get("sortOrder")),
+            isActive: form.get("isActive") === "on",
+            groupType: form.get("groupType") || null,
           }),
         },
       );
-      if (!relationResponse.ok) {
-        setMessage("Đã lưu nhóm nhưng chưa thể cập nhật danh sách sản phẩm.");
+      const body = (await response.json().catch(() => ({}))) as {
+        id?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? "Chưa thể lưu phân loại.");
         return;
       }
+      if (isCategories && editing) {
+        const relationResponse = await fetch(
+          `/api/admin/categories/${editing.id}/products`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              productIds: categoryProducts.filter((item) => item.selected).map((item) => item.id),
+            }),
+          },
+        );
+        if (!relationResponse.ok) {
+          setMessage("Đã lưu nhóm nhưng chưa thể cập nhật danh sách sản phẩm.");
+          return;
+        }
+      }
+      setMessage("Đã lưu phân loại và quan hệ sản phẩm.");
+      setEditing(null);
+      setCategoryProducts([]);
+      await loadRows();
+    } catch {
+      setMessage("Chưa thể lưu phân loại. Vui lòng thử lại.");
+    } finally {
+      setBusy(false);
     }
-    setMessage("Đã lưu phân loại và quan hệ sản phẩm.");
-    setEditing(null);
-    setCategoryProducts([]);
-    await loadRows();
+  };
+  const deleteTaxonomyRow = async () => {
+    if (!editing || busy) return;
+    const label = isCategories ? "danh mục" : "tag";
+    const confirmation = isCategories
+      ? `Xóa vĩnh viễn danh mục "${editing.name}"? Sản phẩm thuộc danh mục này sẽ không bị xóa. Hành động này không thể hoàn tác.`
+      : `Xóa vĩnh viễn tag "${editing.name}"? Sản phẩm sử dụng tag này sẽ không bị xóa. Hành động này không thể hoàn tác.`;
+    if (!window.confirm(confirmation)) return;
+
+    setBusy(true);
+    setMessage("Đang xóa vĩnh viễn...");
+    try {
+      const response = await fetch(
+        `/api/admin/${type}/${editing.id}/permanent`,
+        { method: "DELETE" },
+      );
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? `Chưa thể xóa ${label}.`);
+        return;
+      }
+
+      // Xóa row tại chỗ để UI không giữ taxonomy đã bị xóa trong lúc refetch.
+      setRows((current) => current.filter((row) => row.id !== editing.id));
+      setEditing(null);
+      setCategoryProducts([]);
+      try {
+        await loadRows();
+        setMessage(`Đã xóa ${label} vĩnh viễn.`);
+      } catch {
+        setMessage(`Đã xóa ${label}; danh sách sẽ được làm mới ở lần tải sau.`);
+      }
+    } catch {
+      setMessage(`Chưa thể xóa ${label}. Vui lòng thử lại.`);
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <AdminShell title={isCategories ? "Danh Mục" : "Tags"}>
@@ -1564,18 +1616,48 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
             {isCategories && editing?.isActive ? (
               <button
                 type="button"
+                disabled={busy}
                 onClick={async () => {
+                  if (busy) return;
                   if (!window.confirm(`Ẩn nhóm "${editing.name}"? Quan hệ sản phẩm sẽ được giữ nguyên.`)) return;
-                  await fetch(`/api/admin/categories/${editing.id}`, { method: "DELETE" });
-                  setEditing(null);
-                  setCategoryProducts([]);
-                  await loadRows();
+                  setBusy(true);
+                  setMessage("Đang ẩn danh mục...");
+                  try {
+                    const response = await fetch(`/api/admin/categories/${editing.id}`, { method: "DELETE" });
+                    if (!response.ok) {
+                      const body = (await response.json().catch(() => ({}))) as {
+                        error?: { message?: string };
+                      };
+                      setMessage(body.error?.message ?? "Chưa thể ẩn danh mục.");
+                      return;
+                    }
+                    setEditing(null);
+                    setCategoryProducts([]);
+                    await loadRows();
+                    setMessage("Đã ẩn danh mục.");
+                  } catch {
+                    setMessage("Chưa thể ẩn danh mục. Vui lòng thử lại.");
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               >
-                ẨN NHÓM
+                ẨN DANH MỤC
               </button>
             ) : null}
-            <button className="btn primary" type="submit"><Icon>save</Icon> LƯU</button>
+            {editing ? (
+              <button
+                className="taxonomy-delete-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => void deleteTaxonomyRow()}
+              >
+                <Icon>delete</Icon> XÓA VĨNH VIỄN
+              </button>
+            ) : null}
+            <button className="btn primary" type="submit" disabled={busy}>
+              <Icon>save</Icon> {busy ? "ĐANG XỬ LÝ..." : "LƯU"}
+            </button>
           </div>
         </div>
       </form>

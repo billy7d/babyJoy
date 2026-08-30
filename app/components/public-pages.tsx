@@ -226,7 +226,7 @@ export function ProductListPage({
   searchMode?: boolean;
   categorySlug?: string;
 }) {
-  const { products, categories, brands } = useCatalog();
+  const { products, categories, brands, tags } = useCatalog();
   const [params, setParams] = useSearchParams();
   const [mobileFilters, setMobileFilters] = useState(false);
   const filtered = useMemo(
@@ -306,12 +306,8 @@ export function ProductListPage({
       </label>
       <h3>Đặc tính</h3>
       <div className="filter-tags">
-        {[
-          "Hữu cơ",
-          "Không chứa sữa",
-          "Không thêm đường",
-          "Không biến đổi gen",
-        ].map((item) => (
+        {/* Chỉ hiển thị tag active do D1 trả về để tag đã xóa không còn trong filter. */}
+        {tags.map((item) => (
           <button
             className={params.get("tag") === item ? "active" : ""}
             key={item}

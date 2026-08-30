@@ -184,4 +184,162 @@ describe("Product Taxonomy API", () => {
     };
     expect(publicCategories.data.some((category) => category.id === "cat-puree")).toBe(false);
   });
+
+  it("xóa vĩnh viễn category chưa dùng khỏi D1", async () => {
+    const { env, database } = createEnv();
+    const response = await api(env, "/api/admin/categories/cat-pudding-custard-nutrition-jar/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      id: "cat-pudding-custard-nutrition-jar",
+      deleted: true,
+    });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM categories WHERE id = ?").get("cat-pudding-custard-nutrition-jar"),
+    ).toEqual({ count: 0 });
+  });
+
+  it("xóa category đang dùng, cascade chỉ dọn junction và giữ product", async () => {
+    const { env, database } = createEnv();
+    const before = database
+      .prepare("SELECT name, slug, brand, status FROM products WHERE id = 'prod-little-sprouts'")
+      .get();
+    database
+      .prepare("UPDATE categories SET is_active = 0 WHERE id = 'cat-puree'")
+      .run();
+
+    const response = await api(env, "/api/admin/categories/cat-puree/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(200);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM categories WHERE id = 'cat-puree'").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM product_categories WHERE category_id = 'cat-puree'").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT name, slug, brand, status FROM products WHERE id = 'prod-little-sprouts'").get(),
+    ).toEqual(before);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM product_categories WHERE product_id = 'prod-little-sprouts'").get(),
+    ).toEqual({ count: 0 });
+    expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect((await api(env, "/api/admin/products/prod-little-sprouts")).status).toBe(200);
+    const publicProducts = (await (await api(env, "/api/products?q=Little%20Sprouts")).json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(publicProducts.data.some((product) => product.id === "prod-little-sprouts")).toBe(true);
+  });
+
+  it("xóa một trong nhiều category, giữ các category còn lại", async () => {
+    const { env, database } = createEnv();
+    database
+      .prepare("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)")
+      .run("prod-gerber", "cat-food-jar");
+
+    const response = await api(env, "/api/admin/categories/cat-food-jar/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(200);
+    expect(
+      database.prepare("SELECT category_id FROM product_categories WHERE product_id = 'prod-gerber' ORDER BY category_id").all(),
+    ).toEqual([{ category_id: "cat-cereal" }]);
+    expect(database.prepare("SELECT id FROM products WHERE id = 'prod-gerber'").get()).toEqual({ id: "prod-gerber" });
+  });
+
+  it("từ chối xóa category có child mà không đụng dữ liệu", async () => {
+    const { env, database } = createEnv();
+    database
+      .prepare("INSERT INTO categories (id, parent_id, name, slug) VALUES (?, ?, ?, ?)")
+      .run("cat-child", "cat-cereal", "Danh mục con", "danh-muc-con");
+
+    const response = await api(env, "/api/admin/categories/cat-cereal/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "CATEGORY_HAS_CHILDREN" },
+    });
+    expect(database.prepare("SELECT id FROM categories WHERE id IN ('cat-cereal', 'cat-child') ORDER BY id").all()).toEqual([
+      { id: "cat-cereal" },
+      { id: "cat-child" },
+    ]);
+  });
+
+  it("xóa category không tồn tại trả 404 và không gây 500", async () => {
+    const { env } = createEnv();
+    const response = await api(env, "/api/admin/categories/missing-category/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(404);
+    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "CATEGORY_NOT_FOUND" },
+    });
+  });
+
+  it("xóa tag đang dùng chỉ dọn association và giữ các tag khác", async () => {
+    const { env, database } = createEnv();
+    const before = database
+      .prepare("SELECT name, slug, brand, status FROM products WHERE id = 'prod-gerber'")
+      .get();
+    database
+      .prepare("INSERT INTO product_tags (product_id, tag_id) VALUES (?, ?), (?, ?)")
+      .run("prod-gerber", "tag-organic", "prod-gerber", "tag-no-sugar");
+
+    const response = await api(env, "/api/admin/tags/tag-organic/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(200);
+    expect(database.prepare("SELECT id FROM tags WHERE id = 'tag-organic'").get()).toBeUndefined();
+    expect(
+      database.prepare("SELECT tag_id FROM product_tags WHERE product_id = 'prod-gerber'").all(),
+    ).toEqual([{ tag_id: "tag-no-sugar" }]);
+    expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      database.prepare("SELECT name, slug, brand, status FROM products WHERE id = 'prod-gerber'").get(),
+    ).toEqual(before);
+    const publicTags = (await (await api(env, "/api/tags")).json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(publicTags.data.some((tag) => tag.id === "tag-organic")).toBe(false);
+    const publicProducts = (await (await api(env, "/api/products?q=Gerber")).json()) as {
+      data: Array<{ id: string; tagNames?: string[] }>;
+    };
+    expect(publicProducts.data.find((product) => product.id === "prod-gerber")?.tagNames).toEqual([
+      "Không thêm đường",
+    ]);
+  });
+
+  it("xóa tag hidden vẫn hoạt động và tag không tồn tại trả 404", async () => {
+    const { env, database } = createEnv();
+    database.prepare("UPDATE tags SET is_active = 0 WHERE id = 'tag-dairy-free'").run();
+    expect((await api(env, "/api/admin/tags/tag-dairy-free/permanent", { method: "DELETE" })).status).toBe(200);
+
+    const missing = await api(env, "/api/admin/tags/missing-tag/permanent", { method: "DELETE" });
+    expect(missing.status).toBe(404);
+    expect((await missing.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "TAG_NOT_FOUND" },
+    });
+    expect(database.prepare("SELECT id FROM tags WHERE id = 'tag-dairy-free'").get()).toBeUndefined();
+  });
+
+  it("delete taxonomy vẫn nằm sau admin authorization boundary", async () => {
+    const { env } = createEnv();
+    const productionEnv = {
+      ...env,
+      ENVIRONMENT: "production",
+      ACCESS_TEAM_DOMAIN: "metraphuong.cloudflareaccess.com",
+      ACCESS_AUD: "test-audience",
+    } as Env;
+    const response = await api(productionEnv, "/api/admin/tags/tag-organic/permanent", {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(401);
+    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "UNAUTHORIZED" },
+    });
+  });
 });

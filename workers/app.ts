@@ -120,6 +120,17 @@ async function listBrands(env: Env, includeInactive = false) {
   return json({ data: result.results });
 }
 
+async function listTags(env: Env) {
+  const result = await env.DB.prepare(
+    `SELECT id, name, slug, group_type AS groupType, sort_order AS sortOrder,
+      is_active AS isActive
+     FROM tags
+     WHERE is_active = 1
+     ORDER BY sort_order, name`,
+  ).all();
+  return json({ data: result.results });
+}
+
 type ProductRow = {
   id: string;
   name: string;
@@ -1301,6 +1312,63 @@ async function deactivateAdminCategory(id: string, env: Env) {
   return json({ success: true, id, deactivated: true });
 }
 
+type TaxonomyKind = "categories" | "tags";
+
+async function deleteTaxonomy(id: string, env: Env, kind: TaxonomyKind) {
+  if (kind === "categories") {
+    const category = await env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+      .bind(id)
+      .first<{ id: string }>();
+    if (!category)
+      return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+
+    const child = await env.DB.prepare(
+      "SELECT id FROM categories WHERE parent_id = ? LIMIT 1",
+    )
+      .bind(id)
+      .first<{ id: string }>();
+    if (child)
+      return error(
+        "CATEGORY_HAS_CHILDREN",
+        "Không thể xóa danh mục đang có danh mục con. Hãy chuyển hoặc xóa danh mục con trước.",
+        409,
+        { childId: child.id },
+      );
+
+    // FK product_categories chỉ cascade các dòng quan hệ, không cascade sang products.
+    const result = await env.DB.prepare(
+      "DELETE FROM categories WHERE id = ? AND NOT EXISTS (SELECT 1 FROM categories WHERE parent_id = ?)",
+    )
+      .bind(id, id)
+      .run();
+    if (!result.meta.changes) {
+      const concurrentChild = await env.DB.prepare(
+        "SELECT id FROM categories WHERE parent_id = ? LIMIT 1",
+      )
+        .bind(id)
+        .first<{ id: string }>();
+      if (concurrentChild)
+        return error(
+          "CATEGORY_HAS_CHILDREN",
+          "Không thể xóa danh mục đang có danh mục con. Hãy chuyển hoặc xóa danh mục con trước.",
+          409,
+          { childId: concurrentChild.id },
+        );
+      return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+    }
+    return json({ success: true, id, deleted: true });
+  }
+
+  const result = await env.DB.prepare("DELETE FROM tags WHERE id = ?")
+    .bind(id)
+    .run();
+  if (!result.meta.changes)
+    return error("TAG_NOT_FOUND", "Không tìm thấy tag.", 404);
+
+  // FK product_tags dọn association trong cùng thao tác và giữ nguyên product.
+  return json({ success: true, id, deleted: true });
+}
+
 async function saveTaxonomy(
   request: Request,
   env: Env,
@@ -1443,6 +1511,8 @@ async function handleApi(
   }
   if (request.method === "GET" && path === "/api/categories")
     return listCategories(env);
+  if (request.method === "GET" && path === "/api/tags")
+    return listTags(env);
   if (request.method === "GET" && path === "/api/brands")
     return listBrands(env);
   if (
@@ -1564,6 +1634,9 @@ async function handleApi(
     /^\/api\/admin\/categories\/([^/]+)\/products\/([^/]+)$/,
   );
   const tagMatch = path.match(/^\/api\/admin\/tags\/([^/]+)$/);
+  const permanentTaxonomyMatch = path.match(
+    /^\/api\/admin\/(categories|tags)\/([^/]+)\/permanent$/,
+  );
   if (request.method === "POST" && path === "/api/admin/categories")
     return saveTaxonomy(request, env, "categories");
   if (request.method === "GET" && categoryProductsMatch)
@@ -1575,6 +1648,12 @@ async function handleApi(
       categoryProductMatch[1],
       categoryProductMatch[2],
       env,
+    );
+  if (request.method === "DELETE" && permanentTaxonomyMatch)
+    return deleteTaxonomy(
+      permanentTaxonomyMatch[2],
+      env,
+      permanentTaxonomyMatch[1] === "categories" ? "categories" : "tags",
     );
   if (request.method === "GET" && categoryMatch)
     return getAdminCategory(categoryMatch[1], env);

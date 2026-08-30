@@ -127,3 +127,9 @@
 .access-link-actions button:last-child{color:var(--error)}
 .storefront-settings-card{margin-top:24px}
 @media(max-width:639px){.access-required-card{padding:36px 22px}.access-required-card h1{font-size:28px}.access-link-group-row{grid-template-columns:1fr 40px}.access-link-group-row label:nth-child(2){grid-column:1}.access-link-group-row>button{grid-column:2;grid-row:1 / span 2}.access-link-status-filter{justify-content:space-between}.access-link-form-actions>div{width:100%;justify-content:flex-end}.access-link-form-actions .btn{min-width:0}.access-link-info{font-size:13px}.access-links-table{min-width:1080px}}
+/* Nút destructive phải tách biệt rõ với thao tác ẩn/hiện taxonomy. */
+.taxonomy-delete-btn{min-height:48px;padding:12px 18px;border:1px solid var(--error);border-radius:999px;display:inline-flex;align-items:center;gap:8px;background:var(--error-container);color:var(--error);cursor:pointer;font-family:"Quicksand",sans-serif;font-weight:700}
+.taxonomy-delete-btn:hover:not(:disabled){background:var(--error);color:#fff}
+.taxonomy-delete-btn:disabled{opacity:.55;cursor:not-allowed}
+/* Trên màn hình hẹp, các action không bị ép chồng hoặc tràn ngang. */
+@media(max-width:639px){.taxonomy-editor .editor-heading>div:last-child{flex-wrap:wrap;gap:10px}.taxonomy-delete-btn{padding-inline:14px;font-size:13px}}

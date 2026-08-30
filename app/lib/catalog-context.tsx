@@ -50,13 +50,30 @@ type ApiBrand = {
   sortOrder?: number;
   isActive?: number | boolean;
 };
+type ApiTag = {
+  id: string;
+  name: string;
+  slug: string;
+  groupType?: string | null;
+  sortOrder?: number;
+  isActive?: number | boolean;
+};
 type CatalogContextValue = {
   products: Product[];
   categories: Category[];
   brands: Brand[];
+  tags: string[];
   loading: boolean;
   refresh: () => Promise<void>;
 };
+
+// Giữ bộ lọc tĩnh khi chạy offline; khi API trả về mảng rỗng thì phải tin dữ liệu D1.
+const fallbackTagNames = [
+  "Hữu cơ",
+  "Không chứa sữa",
+  "Không thêm đường",
+  "Không biến đổi gen",
+];
 
 const CatalogContext = createContext<CatalogContextValue | null>(null);
 
@@ -64,6 +81,15 @@ export function mapApiProduct(row: ApiProduct): Product {
   const fallback = fallbackProducts.find(
     (product) => product.id === row.id || product.slug === row.slug,
   );
+  const apiCategories = Array.isArray(row.categorySlugs)
+    ? row.categorySlugs
+    : row.categorySlug !== undefined
+      ? [row.categorySlug].filter((slug): slug is string => Boolean(slug))
+      : null;
+  const mappedCategories =
+    apiCategories ??
+    fallback?.categories ??
+    [fallback?.category ?? ""].filter(Boolean);
   const images = Array.isArray(row.images)
     ? [...row.images].sort((a, b) => a.sortOrder - b.sortOrder)
     : [];
@@ -79,11 +105,11 @@ export function mapApiProduct(row: ApiProduct): Product {
     image: images[0]?.url ?? fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER,
     imageKey: images[0]?.r2Key ?? null,
     images,
-    category: row.categorySlug ?? fallback?.category ?? "",
-    categories:
-      row.categorySlugs?.length
-        ? row.categorySlugs
-        : [row.categorySlug ?? fallback?.category ?? ""].filter(Boolean),
+    category:
+      apiCategories !== null
+        ? apiCategories[0] ?? ""
+        : row.categorySlug ?? fallback?.category ?? "",
+    categories: mappedCategories,
     categoryIds: row.categoryIds ?? [],
     minAgeMonths: row.minAgeMonths ?? null,
     age:
@@ -93,7 +119,8 @@ export function mapApiProduct(row: ApiProduct): Product {
     isBestSeller: Boolean(row.isBestSeller),
     bestSellerRank: row.bestSellerRank ?? null,
     archivedAt: row.archivedAt ?? null,
-    tags: row.tagNames?.length ? row.tagNames : (fallback?.tags ?? []),
+    // Mảng rỗng từ API nghĩa là taxonomy đã bị xóa, không được khôi phục fallback cũ.
+    tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
     featured: Boolean(row.featured),
     variants:
       Array.isArray(row.variants) && row.variants.length
@@ -126,27 +153,34 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [catalogCategories, setCatalogCategories] =
     useState<Category[]>(fallbackCategories);
   const [catalogBrands, setCatalogBrands] = useState<Brand[]>([]);
+  const [catalogTags, setCatalogTags] = useState<string[]>(fallbackTagNames);
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [productsResponse, categoriesResponse, brandsResponse] = await Promise.all([
+      const [productsResponse, categoriesResponse, brandsResponse, tagsResponse] = await Promise.all([
         fetch("/api/products?limit=24", {
           headers: { accept: "application/json" },
         }),
         fetch("/api/categories", { headers: { accept: "application/json" } }),
         fetch("/api/brands", { headers: { accept: "application/json" } }),
+        fetch("/api/tags", { headers: { accept: "application/json" } }),
       ]);
       if (
-        [productsResponse, categoriesResponse, brandsResponse].some(
+        [productsResponse, categoriesResponse, brandsResponse, tagsResponse].some(
           (response) => response.status === 401 || response.status === 503,
         ) &&
         typeof window !== "undefined"
       ) {
         window.location.assign("/access-required");
       }
-      if (!productsResponse.ok || !categoriesResponse.ok || !brandsResponse.ok)
+      if (
+        !productsResponse.ok ||
+        !categoriesResponse.ok ||
+        !brandsResponse.ok ||
+        !tagsResponse.ok
+      )
         throw new Error("CATALOG_LOAD_FAILED");
       const productsBody = (await productsResponse.json()) as {
         data?: ApiProduct[];
@@ -155,9 +189,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         data?: ApiCategory[];
       };
       const brandsBody = (await brandsResponse.json()) as { data?: ApiBrand[] };
+      const tagsBody = (await tagsResponse.json()) as { data?: ApiTag[] };
       if (Array.isArray(productsBody.data) && productsBody.data.length)
         setCatalogProducts(productsBody.data.map(mapApiProduct));
-      if (Array.isArray(categoriesBody.data) && categoriesBody.data.length)
+      // API thành công với zero category là trạng thái hợp lệ sau khi xóa category cuối.
+      if (Array.isArray(categoriesBody.data))
         setCatalogCategories(categoriesBody.data.map(mapApiCategory));
       if (Array.isArray(brandsBody.data))
         setCatalogBrands(
@@ -165,6 +201,10 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             ...brand,
             isActive: brand.isActive === undefined ? true : Boolean(brand.isActive),
           })),
+        );
+      if (Array.isArray(tagsBody.data))
+        setCatalogTags(
+          [...new Set(tagsBody.data.map((tag) => tag.name).filter(Boolean))],
         );
     } catch {
       // Giữ catalog tĩnh làm fallback tạm thời cho tới khi D1/product_images được backfill đầy đủ.
@@ -181,10 +221,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       products: catalogProducts,
       categories: catalogCategories,
       brands: catalogBrands,
+      tags: catalogTags,
       loading,
       refresh,
     }),
-    [catalogProducts, catalogCategories, catalogBrands, loading],
+    [catalogProducts, catalogCategories, catalogBrands, catalogTags, loading],
   );
   return (
     <CatalogContext.Provider value={value}>{children}</CatalogContext.Provider>
