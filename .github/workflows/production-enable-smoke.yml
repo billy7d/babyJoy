@@ -35,10 +35,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
             echo "Missing GitHub environment secret: CLOUDFLARE_API_TOKEN" >&2
             exit 1
-          fi
+          }
 
       - name: Install dependencies
         run: npm ci
@@ -48,20 +48,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "Using configured CLOUDFLARE_ACCOUNT_ID."
             exit 0
           fi
-
           npx wrangler whoami --json > /tmp/cloudflare-whoami.json
           node <<'NODE'
           const fs = require('fs');
           const data = JSON.parse(fs.readFileSync('/tmp/cloudflare-whoami.json', 'utf8'));
           const accounts = Array.isArray(data.accounts) ? data.accounts : [];
           if (accounts.length !== 1 || !accounts[0]?.id) {
-            console.error(
-              `The API token can see ${accounts.length} Cloudflare accounts. ` +
-              'Add CLOUDFLARE_ACCOUNT_ID to the production environment secrets.',
-            );
+            console.error(`Expected exactly one Cloudflare account, found ${accounts.length}.`);
             process.exit(1);
           }
           fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_ACCOUNT_ID=${accounts[0].id}\n`);
@@ -83,28 +78,19 @@ jobs:
           npx wrangler d1 execute babyjoy-db --remote --env production \
             --command "SELECT (SELECT COUNT(*) FROM access_links) AS links, (SELECT COUNT(*) FROM access_sessions) AS sessions;" \
             --json > /tmp/access-counts.json
-
           node <<'NODE'
           const fs = require('fs');
           const payload = JSON.parse(fs.readFileSync('/tmp/access-counts.json', 'utf8'));
-          const rows = Array.isArray(payload)
-            ? payload.flatMap((entry) => entry?.results ?? [])
-            : [];
-          const row = rows.find(
-            (value) =>
-              Number.isFinite(Number(value?.links)) &&
-              Number.isFinite(Number(value?.sessions)),
-          );
+          const rows = Array.isArray(payload) ? payload.flatMap((entry) => entry?.results ?? []) : [];
+          const row = rows.find((value) => Number.isFinite(Number(value?.links)) && Number.isFinite(Number(value?.sessions)));
           if (!row) {
-            console.error('Could not read access-link/session counts from Wrangler output.');
+            console.error('Could not read production access table counts.');
             process.exit(1);
           }
           const links = Number(row.links);
           const sessions = Number(row.sessions);
           if (links !== 0 || sessions !== 0) {
-            console.error(
-              `Refusing automated secret bootstrap: found ${links} access links and ${sessions} sessions.`,
-            );
+            console.error(`Refusing bootstrap: found ${links} links and ${sessions} sessions.`);
             process.exit(1);
           }
           NODE
@@ -114,7 +100,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           smoke_secret="$(openssl rand -hex 32)"
           echo "::add-mask::$smoke_secret"
           smoke_link_id="$(node -e "console.log(require('crypto').randomUUID())")"
@@ -122,28 +107,20 @@ jobs:
             SMOKE_SECRET="$smoke_secret" SMOKE_LINK_ID="$smoke_link_id" node <<'NODE'
           const crypto = require('crypto');
           const input = `storefront-access:v1:${process.env.SMOKE_LINK_ID}:1`;
-          process.stdout.write(
-            crypto
-              .createHmac('sha256', process.env.SMOKE_SECRET)
-              .update(input)
-              .digest('base64url'),
-          );
+          process.stdout.write(crypto.createHmac('sha256', process.env.SMOKE_SECRET).update(input).digest('base64url'));
           NODE
           )"
           smoke_credential="${smoke_link_id}.${smoke_signature}"
           echo "::add-mask::$smoke_credential"
 
-          printf '%s' "$smoke_secret" | \
-            npx wrangler secret put STOREFRONT_ACCESS_SECRET --env production
-
+          printf '%s' "$smoke_secret" | npx wrangler secret put STOREFRONT_ACCESS_SECRET --env production
           now="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
           npx wrangler d1 execute babyjoy-db --remote --env production \
             --command "INSERT INTO access_links (id, name, notes, status, version, session_ttl_seconds, created_by_email, updated_by_email, created_at, updated_at) VALUES ('$smoke_link_id', '__production_smoke__', 'Automated production rollout smoke', 'ACTIVE', 1, 3600, 'github-actions@metraphuong.com', 'github-actions@metraphuong.com', '$now', '$now');"
-
           echo "SMOKE_LINK_ID=$smoke_link_id" >> "$GITHUB_ENV"
           echo "SMOKE_ACCESS_CREDENTIAL=$smoke_credential" >> "$GITHUB_ENV"
 
-      - name: Enable gate in deployment config
+      - name: Enable gate and rebuild deployment config
         id: enable_config
         shell: bash
         run: |
@@ -152,9 +129,8 @@ jobs:
           const fs = require('fs');
           const path = 'wrangler.jsonc';
           let content = fs.readFileSync(path, 'utf8');
-          const matches = content.match(/"STOREFRONT_ACCESS_GATE_ENABLED": "false"/g) ?? [];
-          if (matches.length < 1) {
-            throw new Error('Could not locate STOREFRONT_ACCESS_GATE_ENABLED=false in wrangler.jsonc');
+          if (!content.includes('"STOREFRONT_ACCESS_GATE_ENABLED": "false"')) {
+            throw new Error('Could not locate storefront gate=false in wrangler.jsonc');
           }
           content = content.replaceAll(
             '"STOREFRONT_ACCESS_GATE_ENABLED": "false"',
@@ -162,6 +138,11 @@ jobs:
           );
           fs.writeFileSync(path, content);
           NODE
+          # React Router redirects Wrangler to build/server/wrangler.json.
+          # Rebuild after changing wrangler.jsonc so the generated deploy config
+          # carries the gate=true value.
+          npm run build
+          grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "true"' build/server/wrangler.json
 
       - name: Deploy production Worker with gate enabled
         run: npx wrangler deploy --env production
@@ -174,9 +155,7 @@ jobs:
             local attempts=0
             until "$@"; do
               attempts=$((attempts + 1))
-              if [ "$attempts" -ge 12 ]; then
-                return 1
-              fi
+              [ "$attempts" -lt 12 ] || return 1
               sleep 5
             done
           }
@@ -184,50 +163,24 @@ jobs:
           retry bash -c 'status=$(curl -sS -o /tmp/products-no-session.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
           grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products-no-session.json
 
-          status="$(
-            curl -sS \
-              -D /tmp/access.headers \
-              -o /tmp/access.body \
-              -c /tmp/access.cookies \
-              -w "%{http_code}" \
-              "https://metraphuong.com/access/${SMOKE_ACCESS_CREDENTIAL}"
-          )"
+          status="$(curl -sS -D /tmp/access.headers -o /tmp/access.body -c /tmp/access.cookies -w "%{http_code}" "https://metraphuong.com/access/${SMOKE_ACCESS_CREDENTIAL}")"
           test "$status" = "303"
           tr -d '\r' < /tmp/access.headers | grep -qi '^location: /$'
 
           retry bash -c 'status=$(curl -sS -b /tmp/access.cookies -o /tmp/products-with-session.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "200"'
-          if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products-with-session.json; then
-            echo "Valid access link did not grant a usable storefront session." >&2
-            exit 1
-          fi
+          ! grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products-with-session.json
 
           status="$(curl -sS -D /tmp/home.headers -o /tmp/home-gated.html -w "%{http_code}" https://metraphuong.com/)"
           test "$status" = "303"
           tr -d '\r' < /tmp/home.headers | grep -qi '^location: /access-required$'
-
           retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
 
-          curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ > /tmp/admin-status.txt || true
-          if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null; then
-            echo "Admin route was incorrectly captured by storefront gating." >&2
-            exit 1
-          fi
-
-          curl -sS -o /tmp/webhook.html -w "%{http_code}" \
-            "https://metraphuong.com/api/meta/messenger/webhook?hub.mode=subscribe&hub.verify_token=invalid&hub.challenge=smoke" \
-            > /tmp/webhook-status.txt || true
-          if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/webhook.html 2>/dev/null; then
-            echo "Meta webhook was incorrectly captured by storefront gating." >&2
-            exit 1
-          fi
-
-          curl -sS -o /tmp/cart-share.html -w "%{http_code}" \
-            https://metraphuong.com/c/nonexistent-production-smoke \
-            > /tmp/cart-share-status.txt || true
-          if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/cart-share.html 2>/dev/null; then
-            echo "Public cart-share route was incorrectly captured by storefront gating." >&2
-            exit 1
-          fi
+          curl -sS -o /tmp/admin.html https://metraphuong.com/admin/ || true
+          ! grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null
+          curl -sS -o /tmp/webhook.html "https://metraphuong.com/api/meta/messenger/webhook?hub.mode=subscribe&hub.verify_token=invalid&hub.challenge=smoke" || true
+          ! grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/webhook.html 2>/dev/null
+          curl -sS -o /tmp/cart-share.html https://metraphuong.com/c/nonexistent-production-smoke || true
+          ! grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/cart-share.html 2>/dev/null
 
           echo "Production access smoke passed."
 
@@ -237,36 +190,27 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${SMOKE_LINK_ID:-}" ]; then
-            echo "No temporary access data to clean up."
             exit 0
           fi
-
           npx wrangler d1 execute babyjoy-db --remote --env production \
             --command "DELETE FROM access_link_events WHERE access_link_id = '$SMOKE_LINK_ID'; DELETE FROM access_sessions WHERE access_link_id = '$SMOKE_LINK_ID'; DELETE FROM access_link_groups WHERE access_link_id = '$SMOKE_LINK_ID'; DELETE FROM access_links WHERE id = '$SMOKE_LINK_ID';"
-
           npx wrangler d1 execute babyjoy-db --remote --env production \
             --command "SELECT COUNT(*) AS remaining FROM access_links WHERE id = '$SMOKE_LINK_ID';" \
             --json > /tmp/smoke-cleanup.json
           node <<'NODE'
           const fs = require('fs');
           const payload = JSON.parse(fs.readFileSync('/tmp/smoke-cleanup.json', 'utf8'));
-          const rows = Array.isArray(payload)
-            ? payload.flatMap((entry) => entry?.results ?? [])
-            : [];
+          const rows = Array.isArray(payload) ? payload.flatMap((entry) => entry?.results ?? []) : [];
           const row = rows.find((value) => Number.isFinite(Number(value?.remaining)));
-          if (!row || Number(row.remaining) !== 0) {
-            console.error('Temporary production access data cleanup failed.');
-            process.exit(1);
-          }
+          if (!row || Number(row.remaining) !== 0) process.exit(1);
           NODE
-          rm -f /tmp/smoke-cleanup.json
 
       - name: Roll back gate after any enable failure
         if: ${{ failure() && steps.enable_config.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          echo "Enable smoke failed; redeploying production with storefront gate OFF."
+          echo "Enable smoke failed; rebuilding and redeploying with gate OFF."
           node <<'NODE'
           const fs = require('fs');
           const path = 'wrangler.jsonc';
@@ -277,4 +221,6 @@ jobs:
           );
           fs.writeFileSync(path, content);
           NODE
+          npm run build
+          grep -q '"STOREFRONT_ACCESS_GATE_ENABLED": "false"' build/server/wrangler.json
           npx wrangler deploy --env production
