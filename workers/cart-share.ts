@@ -10,6 +10,14 @@ import {
   PromotionCartError,
   type AuthoritativeCartEvaluation,
 } from "./promotions";
+import {
+  buildInventoryReservationStatements,
+  buildPromotionReservationStatements,
+  cleanupExpiredReservations,
+  getCheckoutReservationConfig,
+  hasInventorySchema,
+  mapInventoryError,
+} from "./inventory";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -42,6 +50,8 @@ export type CartSharePrepareBody = {
   items: Array<{ variantId: string; quantity: number; displayedPrice?: number }>;
 };
 
+export type CartShareActivateBody = CartSharePrepareBody;
+
 type ShareRequestRow = {
   id: string;
   publicCode: string;
@@ -51,6 +61,10 @@ type ShareRequestRow = {
   subtotalVnd: number;
   createdAt: string;
   contactChannel: string;
+  checkoutState?: string;
+  reservationStartedAt?: string | null;
+  reservationExpiresAt?: string | null;
+  reservationDurationMinutes?: number | null;
 };
 
 type ShareLinkRow = {
@@ -60,6 +74,7 @@ type ShareLinkRow = {
 };
 
 type SnapshotRow = {
+  variantId?: string | null;
   productName: string;
   variantName: string;
   imageKey: string | null;
@@ -193,6 +208,7 @@ export function composeCartShareText(input: {
   finalTotalVnd?: number;
   promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
   gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
+  reservationExpiresAt?: string | null;
 }) {
   const maximumLines = Math.min(input.items.length, 8);
   const build = (count: number) => {
@@ -231,6 +247,9 @@ export function composeCartShareText(input: {
         : []),
       ...(input.finalTotalVnd !== undefined
         ? [`Tổng thanh toán: ${formatVnd(input.finalTotalVnd)}`]
+        : []),
+      ...(input.reservationExpiresAt
+        ? [`Hàng và ưu đãi được giữ đến ${new Date(input.reservationExpiresAt).toLocaleString("vi-VN")}.`]
         : []),
       "",
       "Xem chi tiết:",
@@ -284,10 +303,12 @@ async function readSellerContact(env: Env): Promise<SellerContact | null> {
 
 export async function checkoutConfigResponse(env: Env) {
   const seller = await readSellerContact(env);
+  const reservation = await getCheckoutReservationConfig(env);
   return json({
     mode: "DIRECT_SELLER_SHARE",
     enabled: isDirectSellerShareEnabled(env) && Boolean(seller),
     seller,
+    reservationMinutes: reservation.reservationMinutes,
     webShareAvailableServerHint: true,
     // Trường legacy giữ storefront cũ hoạt động khi flag cutover còn tắt.
     messengerCheckoutEnabled:
@@ -297,11 +318,14 @@ export async function checkoutConfigResponse(env: Env) {
 }
 
 async function findShareRequest(submissionToken: string, env: Env) {
+  const inventorySchema = await hasInventorySchema(env);
   return env.DB.prepare(
     `SELECT id, public_code AS publicCode, submission_token AS submissionToken,
       item_line_count AS itemLineCount, total_quantity AS totalQuantity,
       subtotal_vnd AS subtotalVnd, created_at AS createdAt,
-      contact_channel AS contactChannel
+      contact_channel AS contactChannel${inventorySchema
+        ? ", checkout_state AS checkoutState, reservation_started_at AS reservationStartedAt, reservation_expires_at AS reservationExpiresAt, reservation_duration_minutes AS reservationDurationMinutes"
+        : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes"}
      FROM cart_requests WHERE submission_token = ?`,
   )
     .bind(submissionToken)
@@ -318,7 +342,7 @@ async function loadLink(cartRequestId: string, env: Env) {
 
 async function loadSnapshots(cartRequestId: string, env: Env) {
   const rows = await env.DB.prepare(
-    `SELECT product_name_snapshot AS productName,
+    `SELECT variant_id AS variantId, product_name_snapshot AS productName,
       variant_name_snapshot AS variantName, image_key_snapshot AS imageKey,
       unit_price_vnd AS unitPriceVnd, quantity, line_total_vnd AS lineTotalVnd
      FROM cart_request_items WHERE cart_request_id = ? ORDER BY created_at, id`,
@@ -334,6 +358,7 @@ async function buildPreparedResponse(
   rawToken: string,
   seller: SellerContact,
   env: Env,
+  serverNow = new Date().toISOString(),
 ) {
   const expectedHash = await hashShareToken(rawToken);
   if (expectedHash !== link.tokenHash || link.revokedAt)
@@ -361,6 +386,7 @@ async function buildPreparedResponse(
       discountAmountVnd: promotion.discountAmountVnd,
     })),
     gifts: history.gifts,
+    reservationExpiresAt: row.reservationExpiresAt,
   });
   return {
     success: true,
@@ -372,6 +398,10 @@ async function buildPreparedResponse(
       promotionDiscountVnd,
       finalTotalVnd,
       createdAt: row.createdAt,
+      checkoutState: row.checkoutState ?? "LEGACY",
+      reservationStartedAt: row.reservationStartedAt ?? null,
+      reservationExpiresAt: row.reservationExpiresAt ?? null,
+      reservationDurationMinutes: row.reservationDurationMinutes ?? null,
     },
     share: {
       title: `Giỏ hàng ${STORE_BRAND} ${row.publicCode}`,
@@ -383,8 +413,11 @@ async function buildPreparedResponse(
       gifts: history.gifts,
     },
     seller,
+    serverNow,
   };
 }
+
+export const validateCartShareActivate = validateCartSharePrepare;
 
 export async function prepareCartShare(request: Request, env: Env) {
   const startedAt = Date.now();
@@ -410,6 +443,8 @@ export async function prepareCartShare(request: Request, env: Env) {
   const secret = getCartShareSecret(env);
   if (!secret || secret.length < 32)
     return failure("CART_SHARE_NOT_CONFIGURED", "Chia sẻ giỏ hàng chưa được cấu hình.", 503);
+  const inventorySchema = await hasInventorySchema(env);
+  await cleanupExpiredReservations(env);
 
   const existing = await findShareRequest(body.submissionToken, env);
   if (existing) {
@@ -464,19 +499,20 @@ export async function prepareCartShare(request: Request, env: Env) {
     id,
     createdAt,
     loaded,
+    { consumeUsage: !inventorySchema },
   );
   const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
   const statements: D1PreparedStatement[] = [
     ...promotionStatements.usage,
-    loaded.promotionSchema
+    inventorySchema
       ? env.DB.prepare(
           `INSERT INTO cart_requests (
             id, public_code, submission_token, customer_name, customer_phone,
             item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
             final_total_vnd, status, telegram_status, contact_channel,
-            messenger_delivery_status, created_at, updated_at
+            messenger_delivery_status, checkout_state, created_at, updated_at
           ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
-            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)`,
+            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', 'READY_TO_SEND', ?, ?)`,
         ).bind(
           id,
           publicCode,
@@ -489,7 +525,28 @@ export async function prepareCartShare(request: Request, env: Env) {
           createdAt,
           createdAt,
         )
-      : env.DB.prepare(
+      : loaded.promotionSchema
+        ? env.DB.prepare(
+            `INSERT INTO cart_requests (
+              id, public_code, submission_token, customer_name, customer_phone,
+              item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
+              final_total_vnd, status, telegram_status, contact_channel,
+              messenger_delivery_status, created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
+              'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)` ,
+          ).bind(
+            id,
+            publicCode,
+            body.submissionToken,
+            itemLineCount,
+            totalQuantity,
+            subtotalVnd,
+            loaded.evaluation.discountTotalVnd,
+            loaded.evaluation.finalTotalVnd,
+            createdAt,
+            createdAt,
+          )
+        : env.DB.prepare(
           `INSERT INTO cart_requests (
             id, public_code, submission_token, customer_name, customer_phone,
             item_line_count, total_quantity, subtotal_vnd, status,
@@ -583,6 +640,10 @@ export async function prepareCartShare(request: Request, env: Env) {
     subtotalVnd,
     createdAt,
     contactChannel: "SHARE",
+    checkoutState: inventorySchema ? "READY_TO_SEND" : "LEGACY",
+    reservationStartedAt: null,
+    reservationExpiresAt: null,
+    reservationDurationMinutes: null,
   };
   console.info(
     JSON.stringify({
@@ -605,6 +666,294 @@ export async function prepareCartShare(request: Request, env: Env) {
   );
 }
 
+function sameCartItems(
+  snapshots: SnapshotRow[],
+  items: CartShareActivateBody["items"],
+) {
+  const current = new Map(
+    items.map((item) => [item.variantId, item.quantity]),
+  );
+  if (snapshots.length !== current.size) return false;
+  return snapshots.every(
+    (snapshot) =>
+      snapshot.variantId && current.get(snapshot.variantId) === snapshot.quantity,
+  );
+}
+
+function promotionEvaluationChanged(
+  history: Awaited<ReturnType<typeof loadPromotionHistory>>,
+  loaded: AuthoritativeCartEvaluation,
+) {
+  const currentPromotions = loaded.evaluation.appliedPromotions
+    .map((promotion) => `${promotion.promotionId}:${promotion.discountAmountVnd}`)
+    .sort();
+  const previousPromotions = history.promotions
+    .map((promotion) => `${promotion.promotionId ?? ""}:${promotion.discountAmountVnd}`)
+    .sort();
+  if (currentPromotions.join("|") !== previousPromotions.join("|")) return true;
+  if (history.discountAmountVnd !== loaded.evaluation.discountTotalVnd) return true;
+  const currentGifts = loaded.evaluation.gifts
+    .map((gift) => `${gift.promotionId}:${gift.productId}:${gift.variantId}:${gift.quantity}`)
+    .sort();
+  const previousGifts = history.gifts
+    .map((gift) => `${gift.promotionId ?? ""}:${gift.productId}:${gift.variantId}:${gift.quantity}`)
+    .sort();
+  return currentGifts.join("|") !== previousGifts.join("|");
+}
+
+export async function activateCartShare(request: Request, env: Env) {
+  const startedAt = Date.now();
+  if (!isDirectSellerShareEnabled(env))
+    return failure("FEATURE_DISABLED", "Tính năng gửi giỏ hàng chưa được bật.", 404);
+  if (!(await hasInventorySchema(env)))
+    return failure("FEATURE_NOT_READY", "Reservation inventory chưa được cài đặt.", 503);
+  try {
+    await consumeRateLimit(env, request, "cart-share-activate", 10);
+  } catch (caught) {
+    if (caught instanceof RateLimitError)
+      return failure(caught.code, caught.message, caught.status);
+    throw caught;
+  }
+  const seller = await readSellerContact(env);
+  if (!seller)
+    return failure("SELLER_NOT_CONFIGURED", "Người bán chưa được cấu hình.", 503);
+  let body: CartShareActivateBody;
+  try {
+    body = validateCartShareActivate(await readBoundedJson(request));
+  } catch {
+    return failure("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+  }
+  const secret = getCartShareSecret(env);
+  if (!secret || secret.length < 32)
+    return failure("CART_SHARE_NOT_CONFIGURED", "Chia sẻ giỏ hàng chưa được cấu hình.", 503);
+
+  await cleanupExpiredReservations(env);
+  const existing = await findShareRequest(body.submissionToken, env);
+  if (!existing)
+    return failure("ORDER_NOT_FOUND", "Không tìm thấy giỏ hàng đã chốt.", 404);
+  if (existing.contactChannel !== "SHARE")
+    return failure("SUBMISSION_CONFLICT", "Mã gửi đã được sử dụng.", 409);
+  const link = await loadLink(existing.id, env);
+  if (!link || link.revokedAt)
+    return failure("SHARE_LINK_MISSING", "Chưa thể khôi phục liên kết giỏ hàng.", 500);
+  if (existing.checkoutState === "WAITING_SELLER_CONFIRM") {
+    const rawToken = await deriveShareToken(secret, existing.id, body.submissionToken);
+    return json(await buildPreparedResponse(existing, link, rawToken, seller, env));
+  }
+  if (existing.checkoutState === "CONFIRMED")
+    return failure("ORDER_ALREADY_CONFIRMED", "Đơn hàng đã được xác nhận.", 409);
+  const retryAfterExpiry = existing.checkoutState === "EXPIRED";
+  if (existing.checkoutState === "CANCELLED")
+    return failure("ORDER_CANCELLED", "Đơn hàng đã bị hủy. Vui lòng chốt lại giỏ hàng.", 409);
+  if (existing.checkoutState !== "READY_TO_SEND" && !retryAfterExpiry)
+    return failure("INVALID_ORDER_TRANSITION", "Giỏ hàng chưa sẵn sàng để gửi.", 409);
+
+  const snapshots = await loadSnapshots(existing.id, env);
+  if (!sameCartItems(snapshots, body.items))
+    return failure(
+      "INVENTORY_CONFLICT",
+      "Giỏ hàng đã thay đổi. Vui lòng quay lại chốt lại giỏ hàng.",
+      409,
+    );
+  if (snapshots.some((snapshot) => !snapshot.variantId))
+    return failure(
+      "INVENTORY_CONFLICT",
+      "Giỏ hàng không còn đủ thông tin để giữ hàng. Vui lòng chốt lại.",
+      409,
+    );
+  const activationItems = snapshots.map((snapshot) => ({
+    variantId: snapshot.variantId as string,
+    quantity: snapshot.quantity,
+    displayedPrice: snapshot.unitPriceVnd,
+  }));
+  let loaded: AuthoritativeCartEvaluation;
+  try {
+    loaded = await evaluateAuthoritativeCart(activationItems, env);
+  } catch (caught) {
+    if (caught instanceof PromotionCartError)
+      return failure(caught.code, caught.message, caught.status, {
+        variantIds: caught.variantIds,
+      });
+    throw caught;
+  }
+  if (loaded.unavailable.length)
+    return failure(
+      "VARIANT_UNAVAILABLE",
+      "Một số sản phẩm hiện không còn sẵn sàng.",
+      409,
+      { variantIds: loaded.unavailable },
+    );
+  if (loaded.changed.length && !body.acceptCurrentPrices)
+    return failure(
+      "PRICE_CHANGED",
+      "Giá của một số sản phẩm vừa thay đổi.",
+      409,
+      {
+        items: loaded.changed,
+        subtotalVnd: loaded.evaluation.subtotalVnd,
+        discountTotalVnd: loaded.evaluation.discountTotalVnd,
+        finalTotalVnd: loaded.evaluation.finalTotalVnd,
+        gifts: loaded.evaluation.gifts,
+      },
+    );
+  if (loaded.insufficientStock.length)
+    return failure(
+      "INSUFFICIENT_STOCK",
+      "Một số sản phẩm vừa hết hàng. Vui lòng kiểm tra lại giỏ hàng.",
+      409,
+      { variantIds: loaded.insufficientStock },
+    );
+  const history = await loadPromotionHistory(existing.id, env);
+  if (
+    loaded.promotionSchema &&
+    promotionEvaluationChanged(history, loaded) &&
+    !body.acceptCurrentPrices
+  )
+    return failure(
+      "PROMOTION_CHANGED",
+      "Khuyến mãi hoặc quà tặng vừa thay đổi. Vui lòng kiểm tra và chốt lại.",
+      409,
+      {
+        subtotalVnd: loaded.evaluation.subtotalVnd,
+        discountTotalVnd: loaded.evaluation.discountTotalVnd,
+        finalTotalVnd: loaded.evaluation.finalTotalVnd,
+        gifts: loaded.evaluation.gifts,
+      },
+    );
+
+  // Một lần resolve config tạo ra cả duration snapshot và deadline, không đọc lại setting giữa chừng.
+  const reservation = await getCheckoutReservationConfig(env);
+  const reservationStartedAt = new Date().toISOString();
+  const reservationExpiresAt = new Date(
+    Date.parse(reservationStartedAt) + reservation.durationMs,
+  ).toISOString();
+  const promotionStatements = buildPromotionPersistenceStatements(
+    (sql) => env.DB.prepare(sql),
+    existing.id,
+    reservationStartedAt,
+    loaded,
+    { consumeUsage: false },
+  );
+  const inventoryStatements = buildInventoryReservationStatements(
+    (sql) => env.DB.prepare(sql),
+    existing.id,
+    reservationStartedAt,
+    reservationExpiresAt,
+    loaded.pricedItems,
+    loaded.evaluation.gifts,
+  );
+  const promotionReservationStatements = buildPromotionReservationStatements(
+    (sql) => env.DB.prepare(sql),
+    existing.id,
+    reservationStartedAt,
+    reservationExpiresAt,
+    loaded.evaluation.appliedPromotions.map((promotion) => promotion.promotionId),
+  );
+  const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `UPDATE cart_requests SET
+        item_line_count = ?, total_quantity = ?, subtotal_vnd = ?,
+        promotion_discount_vnd = ?, final_total_vnd = ?, status = 'CONTACTED',
+        checkout_state = 'WAITING_SELLER_CONFIRM',
+        reservation_started_at = ?, reservation_expires_at = ?,
+        reservation_duration_minutes = ?, updated_at = ?
+       WHERE id = ? AND checkout_state IN ('READY_TO_SEND', 'EXPIRED')`,
+    ).bind(
+      itemLineCount,
+      loaded.evaluation.totalQuantity,
+      loaded.evaluation.subtotalVnd,
+      loaded.evaluation.discountTotalVnd,
+      loaded.evaluation.finalTotalVnd,
+      reservationStartedAt,
+      reservationExpiresAt,
+      reservation.reservationMinutes,
+      reservationStartedAt,
+      existing.id,
+    ),
+    env.DB.prepare("DELETE FROM cart_request_items WHERE cart_request_id = ?").bind(existing.id),
+    env.DB.prepare("DELETE FROM cart_request_promotions WHERE cart_request_id = ?").bind(existing.id),
+    env.DB.prepare("DELETE FROM cart_request_promotion_gifts WHERE cart_request_id = ?").bind(existing.id),
+  ];
+  loaded.pricedItems.forEach((item) =>
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO cart_request_items (
+          id, cart_request_id, product_id, variant_id, product_name_snapshot,
+          variant_name_snapshot, sku_snapshot, image_key_snapshot,
+          unit_price_vnd, quantity, line_total_vnd, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        existing.id,
+        item.productId,
+        item.variantId,
+        item.productName,
+        item.variantName,
+        item.sku,
+        item.imageKey,
+        item.priceVnd,
+        item.quantity,
+        item.lineTotalVnd,
+        reservationStartedAt,
+      ),
+    ),
+  );
+  statements.push(
+    ...promotionStatements.snapshots,
+    ...promotionStatements.gifts,
+    ...inventoryStatements,
+    ...promotionReservationStatements,
+  );
+  try {
+    await env.DB.batch(statements);
+  } catch (caught) {
+    const duplicate = await findShareRequest(body.submissionToken, env);
+    if (duplicate?.checkoutState === "WAITING_SELLER_CONFIRM") {
+      const duplicateLink = await loadLink(duplicate.id, env);
+      if (duplicateLink) {
+        const duplicateToken = await deriveShareToken(
+          secret,
+          duplicate.id,
+          body.submissionToken,
+        );
+        return json(
+          await buildPreparedResponse(
+            duplicate,
+            duplicateLink,
+            duplicateToken,
+            seller,
+            env,
+          ),
+        );
+      }
+    }
+    return mapInventoryError(caught) ?? failure("ACTIVATION_FAILED", "Chưa thể giữ hàng. Vui lòng thử lại.", 500);
+  }
+  const persisted = await findShareRequest(body.submissionToken, env);
+  if (!persisted) return failure("ACTIVATION_FAILED", "Chưa thể đọc lại đơn hàng sau khi giữ hàng.", 500);
+  const rawToken = await deriveShareToken(secret, persisted.id, body.submissionToken);
+  console.info(
+    JSON.stringify({
+      event: "cart_share_activation_success",
+      cartRequestId: persisted.id,
+      publicCode: persisted.publicCode,
+      reservationDurationMinutes: reservation.reservationMinutes,
+      durationMs: Date.now() - startedAt,
+    }),
+  );
+  return json(
+    await buildPreparedResponse(
+      persisted,
+      link,
+      rawToken,
+      seller,
+      env,
+      reservationStartedAt,
+    ),
+  );
+}
+
 export async function getPublicCartShare(rawToken: string, env: Env) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(rawToken))
     return json(
@@ -618,12 +967,16 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       404,
       publicShareHeaders,
     );
+  await cleanupExpiredReservations(env);
   const tokenHash = await hashShareToken(rawToken);
+  const inventorySchema = await hasInventorySchema(env);
   const row = await env.DB.prepare(
     `SELECT c.id, c.public_code AS code, c.created_at AS createdAt,
       c.item_line_count AS itemLineCount, c.total_quantity AS totalQuantity,
       c.subtotal_vnd AS subtotalVnd, l.expires_at AS expiresAt,
-      l.revoked_at AS revokedAt
+      l.revoked_at AS revokedAt${inventorySchema
+        ? ", c.checkout_state AS checkoutState, c.reservation_started_at AS reservationStartedAt, c.reservation_expires_at AS reservationExpiresAt, c.reservation_duration_minutes AS reservationDurationMinutes"
+        : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes"}
      FROM cart_share_links l JOIN cart_requests c ON c.id = l.cart_request_id
      WHERE l.token_hash = ? AND c.contact_channel = 'SHARE'`,
   )
@@ -637,6 +990,10 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       subtotalVnd: number;
       expiresAt: string;
       revokedAt: string | null;
+      checkoutState: string;
+      reservationStartedAt: string | null;
+      reservationExpiresAt: string | null;
+      reservationDurationMinutes: number | null;
     }>();
   if (!row || row.revokedAt || Date.parse(row.expiresAt) <= Date.now())
     return json(
@@ -668,6 +1025,15 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       itemLineCount: row.itemLineCount,
       totalQuantity: row.totalQuantity,
       subtotalVnd: row.subtotalVnd,
+      checkoutState: row.checkoutState,
+      reservationStartedAt: row.reservationStartedAt,
+      reservationExpiresAt: row.reservationExpiresAt,
+      reservationDurationMinutes: row.reservationDurationMinutes,
+      orderExpired: row.checkoutState === "EXPIRED",
+      reservationMessage:
+        row.checkoutState === "EXPIRED"
+          ? "Đơn này đã hết thời gian giữ hàng."
+          : undefined,
       promotionDiscountVnd: history.discountAmountVnd,
       finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),

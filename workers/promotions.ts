@@ -11,6 +11,7 @@ import {
 } from "../shared/promotions";
 import type { PricedItem } from "./services";
 import { getPublicImageUrl } from "../shared/images";
+import { hasInventorySchema } from "./inventory";
 
 export type PromotionCartRequestItem = {
   variantId: string;
@@ -22,6 +23,11 @@ export type AuthoritativePricedItem = PricedItem & {
   originalLineTotalVnd: number;
   discountAmountVnd: number;
   categoryIds: string[];
+  trackInventory?: boolean;
+  stockOnHand?: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+  inventoryAvailability?: "AVAILABLE" | "OUT_OF_STOCK";
 };
 
 export type PromotionSnapshot = {
@@ -54,6 +60,7 @@ export type AuthoritativeCartEvaluation = {
     displayedPrice: number;
     currentPrice: number;
   }>;
+  insufficientStock: string[];
   promotionSchema: boolean;
 };
 
@@ -99,6 +106,9 @@ type CanonicalVariantRow = {
   productStatus: string;
   archivedAt: string | null;
   imageKey: string | null;
+  trackInventory: number;
+  stockOnHand: number;
+  reservedQuantity: number;
 };
 
 type CategoryRow = { productId: string; categoryId: string };
@@ -191,15 +201,21 @@ async function loadCanonicalLines(
       lines: [] as PromotionCartLine[],
       unavailable: [] as string[],
       changed: [] as AuthoritativeCartEvaluation["changed"],
+      insufficientStock: [] as string[],
     };
   const placeholders = items.map(() => "?").join(",");
+  const inventorySchema = await hasInventorySchema(env);
   const archivedAtSelect = (await hasProductArchiveColumn(env))
     ? "p.archived_at AS archivedAt"
     : "NULL AS archivedAt";
+  const inventorySelect = inventorySchema
+    ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
+    : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
   const rows = await env.DB.prepare(
     `SELECT v.id AS variantId, v.name AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability, p.id AS productId,
       p.name AS productName, p.status AS productStatus, ${archivedAtSelect},
+      ${inventorySelect},
       (SELECT r2_key FROM product_images
        WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey
      FROM product_variants v
@@ -237,6 +253,7 @@ async function loadCanonicalLines(
   });
   const unavailable: string[] = [];
   const changed: AuthoritativeCartEvaluation["changed"] = [];
+  const insufficientStock: string[] = [];
   const lines = items.map((item) => {
     const row = byId.get(item.variantId)!;
     if (
@@ -245,6 +262,12 @@ async function loadCanonicalLines(
       row.availability !== "AVAILABLE"
     )
       unavailable.push(item.variantId);
+    const availableQuantity = Math.max(
+      0,
+      Number(row.stockOnHand ?? 0) - Number(row.reservedQuantity ?? 0),
+    );
+    if (row.trackInventory && availableQuantity < item.quantity)
+      insufficientStock.push(item.variantId);
     if (item.displayedPrice !== undefined && item.displayedPrice !== row.priceVnd)
       changed.push({
         variantId: item.variantId,
@@ -261,9 +284,19 @@ async function loadCanonicalLines(
       priceVnd: row.priceVnd,
       quantity: item.quantity,
       categoryIds: categoryMap.get(row.productId) ?? [],
+      ...(inventorySchema
+        ? {
+            trackInventory: Boolean(row.trackInventory),
+            stockOnHand: row.stockOnHand,
+            reservedQuantity: row.reservedQuantity,
+            availableQuantity,
+            inventoryAvailability:
+              availableQuantity > 0 ? ("AVAILABLE" as const) : ("OUT_OF_STOCK" as const),
+          }
+        : {}),
     } satisfies PromotionCartLine;
   });
-  return { lines, unavailable, changed };
+  return { lines, unavailable, changed, insufficientStock };
 }
 
 function promotionGiftProductIds(promotions: PromotionDefinition[]) {
@@ -284,11 +317,15 @@ async function loadGiftCatalog(
   const archivedAtSelect = (await hasProductArchiveColumn(env))
     ? "p.archived_at AS archivedAt"
     : "NULL AS archivedAt";
+  const inventorySchema = await hasInventorySchema(env);
   const rows = await env.DB.prepare(
     `SELECT p.id AS productId, p.name AS productName, p.status AS productStatus,
       ${archivedAtSelect},
       v.id AS variantId, v.name AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability,
+      ${inventorySchema
+        ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
+        : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"},
       (SELECT r2_key FROM product_images
        WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey,
       v.sort_order AS sortOrder
@@ -303,12 +340,17 @@ async function loadGiftCatalog(
     .all<PromotionCatalogProduct & { sortOrder: number | null; archivedAt: string | null }>();
   const selected = new Map<string, PromotionCatalogProduct>();
   rows.results.forEach((row) => {
+    const availableQuantity = Math.max(
+      0,
+      Number(row.stockOnHand ?? 0) - Number(row.reservedQuantity ?? 0),
+    );
     if (
       !selected.has(row.productId) &&
       row.variantId &&
       row.productStatus === "AVAILABLE" &&
       !row.archivedAt &&
-      row.availability === "AVAILABLE"
+      row.availability === "AVAILABLE" &&
+      (!row.trackInventory || availableQuantity > 0)
     )
       selected.set(row.productId, {
         productId: row.productId,
@@ -320,6 +362,16 @@ async function loadGiftCatalog(
         priceVnd: row.priceVnd ?? 0,
         availability: row.availability ?? "HIDDEN",
         productStatus: row.productStatus,
+        ...(row.trackInventory
+          ? {
+              trackInventory: true,
+              stockOnHand: row.stockOnHand,
+              reservedQuantity: row.reservedQuantity,
+              availableQuantity,
+              inventoryAvailability:
+                availableQuantity > 0 ? ("AVAILABLE" as const) : ("OUT_OF_STOCK" as const),
+            }
+          : {}),
       });
   });
   return [...selected.values()];
@@ -353,6 +405,11 @@ export async function evaluateAuthoritativeCart(
     originalLineTotalVnd: item.originalLineTotalVnd,
     discountAmountVnd: item.discountAmountVnd,
     categoryIds: item.categoryIds,
+    trackInventory: item.trackInventory,
+    stockOnHand: item.stockOnHand,
+    reservedQuantity: item.reservedQuantity,
+    availableQuantity: item.availableQuantity,
+    inventoryAvailability: item.inventoryAvailability,
   }));
   return {
     lines: canonical.lines,
@@ -361,6 +418,7 @@ export async function evaluateAuthoritativeCart(
     evaluation,
     unavailable: canonical.unavailable,
     changed: canonical.changed,
+    insufficientStock: canonical.insufficientStock,
     promotionSchema: schema,
   };
 }
@@ -377,6 +435,7 @@ export function buildPromotionPersistenceStatements(
   cartRequestId: string,
   createdAt: string,
   result: AuthoritativeCartEvaluation,
+  options: { consumeUsage?: boolean } = {},
 ): PromotionPersistenceStatements {
   const empty: PromotionPersistenceStatements = {
     usage: [],
@@ -389,13 +448,14 @@ export function buildPromotionPersistenceStatements(
   result.evaluation.appliedPromotions.forEach((applied) => {
     const definition = byId.get(applied.promotionId);
     if (!definition) return;
-    empty.usage.push(
-      prepare(
-        `UPDATE promotions
-         SET usage_count_total = usage_count_total + 1, updated_at = ?
-         WHERE id = ?`,
-      ).bind(createdAt, definition.id),
-    );
+    if (options.consumeUsage !== false)
+      empty.usage.push(
+        prepare(
+          `UPDATE promotions
+           SET usage_count_total = usage_count_total + 1, updated_at = ?
+           WHERE id = ?`,
+        ).bind(createdAt, definition.id),
+      );
     empty.snapshots.push(
       prepare(
         `INSERT INTO cart_request_promotions (
@@ -436,7 +496,7 @@ export function buildPromotionPersistenceStatements(
         ),
       );
     });
-    empty.redemptions.push(
+    if (options.consumeUsage !== false) empty.redemptions.push(
       prepare(
         `INSERT INTO promotion_redemptions (
           id, promotion_id, cart_request_id, customer_key, created_at

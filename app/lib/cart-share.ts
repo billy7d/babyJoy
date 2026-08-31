@@ -14,6 +14,7 @@ export type SellerContact = {
 
 export type PreparedCartShare = {
   fingerprint: string;
+  submissionToken?: string;
   clipboardStatus?: "COPIED" | "FAILED";
   cartRequest: {
     code: string;
@@ -23,6 +24,10 @@ export type PreparedCartShare = {
     promotionDiscountVnd?: number;
     finalTotalVnd?: number;
     createdAt: string;
+    checkoutState?: string;
+    reservationStartedAt?: string | null;
+    reservationExpiresAt?: string | null;
+    reservationDurationMinutes?: number | null;
   };
   share: {
     title: string;
@@ -42,6 +47,7 @@ export type PreparedCartShare = {
     }>;
   };
   seller: SellerContact;
+  serverNow?: string;
 };
 
 export async function copyCartText(

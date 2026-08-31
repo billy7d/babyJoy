@@ -17,6 +17,7 @@ try {
 if (catalogIsEmpty) {
   // Sau cleanup, dùng smoke chuyên biệt thay vì tạo lại seed/test product.
   await import("./empty-catalog.e2e.mjs");
+  await import("./inventory-reservation.e2e.mjs");
   process.exit(0);
 }
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
@@ -145,6 +146,7 @@ try {
     await row.locator("input").nth(1).fill(sku);
     await row.locator("input").nth(2).fill(String(price));
     await row.locator("select").selectOption(availability);
+    await row.getByLabel("Tồn kho thực tế").fill("10");
   };
   await fillVariant(0, "50g", e2eSkus.fifty, 150000, "OUT_OF_STOCK");
   await addVariant.click();
@@ -278,5 +280,6 @@ try {
   await adminContext.close();
 }
 
+await import("./inventory-reservation.e2e.mjs");
 await browser.close();
 console.log(`E2E_OK routes=${visualRoutes.length * 2 + 6} viewports=390,768,1024,1440 cart-persistence=pass filter-url=pass admin-hard-navigation=pass multi-variant-admin-cart=pass`);

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import {
+  findVariantInProducts,
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  getVariantAvailableQuantity,
+  isVariantPurchasable,
   type Category,
   type Product,
 } from "../lib/catalog";
@@ -42,6 +45,10 @@ import {
 import { searchCatalog } from "../lib/search";
 import { STORE_BRAND } from "../../shared/branding";
 import { getPaginationItems } from "../../shared/pagination";
+import {
+  DEFAULT_CHECKOUT_RESERVATION_MINUTES,
+  formatReservationDuration,
+} from "../../shared/reservation";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -684,6 +691,7 @@ export function ProductDetailPage() {
   const variant =
     product.variants.find((item) => item.id === variantId) ??
     getDefaultVariant(product);
+  const variantPurchasable = Boolean(variant && isVariantPurchasable(variant));
   const productImages = product.images?.length
     ? product.images
     : [
@@ -702,7 +710,7 @@ export function ProductDetailPage() {
         },
       ];
   const add = () => {
-    if (!variant || variant.availability !== "AVAILABLE") return;
+    if (!variant || !isVariantPurchasable(variant)) return;
     addItem(variant.id, quantity, product);
     setToast(true);
     window.setTimeout(() => setToast(false), 2200);
@@ -776,20 +784,23 @@ export function ProductDetailPage() {
               value={quantity}
               onChange={setQuantity}
               availability={variant?.availability}
+              maxQuantity={variant ? getVariantAvailableQuantity(variant) : null}
             />
             <small>
-              {variant?.availability === "AVAILABLE"
+              {variantPurchasable
                 ? "Còn hàng"
                 : variant?.availability === "OUT_OF_STOCK"
                   ? "Tạm hết hàng"
-                  : "Không bán"
+                  : variant
+                    ? "Tạm hết hàng"
+                    : "Không bán"
               }
             </small>
           </div>
           <button
             className="btn primary add-cart"
             onClick={add}
-            disabled={!variant || variant.availability !== "AVAILABLE"}
+            disabled={!variantPurchasable}
           >
             <Icon>shopping_bag</Icon> THÊM VÀO GIỎ
           </button>
@@ -843,14 +854,15 @@ export function ProductDetailPage() {
       </article>
       <div className="mobile-add-bar">
         <QuantityStepper
-          value={quantity}
-          onChange={setQuantity}
-          availability={variant?.availability}
+            value={quantity}
+            onChange={setQuantity}
+            availability={variant?.availability}
+            maxQuantity={variant ? getVariantAvailableQuantity(variant) : null}
         />
         <button
           className="btn primary"
           onClick={add}
-          disabled={!variant || variant.availability !== "AVAILABLE"}
+          disabled={!variantPurchasable}
         >
           <Icon>shopping_bag</Icon> THÊM VÀO GIỎ
         </button>
@@ -935,6 +947,7 @@ export function CartPage() {
                       variantId={variant.id}
                       value={quantity}
                       availability={variant.availability}
+                      maxQuantity={getVariantAvailableQuantity(variant)}
                     />
                     <div className="line-total">
                       <span>Thành tiền</span>
@@ -1040,7 +1053,11 @@ function CartSummary({
         </div>
       ) : null}
       {checkoutConfig?.enabled === true ? (
-        <DirectSellerShareControls lines={lines} seller={checkoutConfig.seller} />
+        <DirectSellerShareControls
+          lines={lines}
+          seller={checkoutConfig.seller}
+          reservationMinutes={checkoutConfig.reservationMinutes}
+        />
       ) : checkoutConfig?.messengerCheckoutEnabled === true ? (
         <MessengerCheckoutControls lines={lines} />
       ) : checkoutConfig ? (
@@ -1064,6 +1081,7 @@ type CheckoutConfig = {
   mode: "DIRECT_SELLER_SHARE";
   enabled: boolean;
   seller: SellerContact | null;
+  reservationMinutes: number;
   messengerCheckoutEnabled?: boolean;
 };
 
@@ -1085,6 +1103,7 @@ function useCheckoutConfig() {
             mode: "DIRECT_SELLER_SHARE",
             enabled: false,
             seller: null,
+            reservationMinutes: DEFAULT_CHECKOUT_RESERVATION_MINUTES,
             messengerCheckoutEnabled: false,
           });
       });
@@ -1101,12 +1120,22 @@ type PriceChange = {
   currentPrice: number;
 };
 
+function findCurrentCartPrice(
+  variantId: string,
+  products: Product[],
+  fallback?: number,
+) {
+  return findVariantInProducts(products, variantId)?.variant.priceVnd ?? fallback;
+}
+
 function DirectSellerShareControls({
   lines,
   seller,
+  reservationMinutes,
 }: {
   lines: ReturnType<typeof cartDetails>;
   seller: SellerContact | null;
+  reservationMinutes: number;
 }) {
   const cart = useCart();
   const navigate = useNavigate();
@@ -1175,9 +1204,11 @@ function DirectSellerShareControls({
       }
       const value: PreparedCartShare = {
         fingerprint,
+        submissionToken,
         cartRequest: body.cartRequest,
         share: body.share,
         seller: body.seller,
+        serverNow: body.serverNow,
       };
       writePreparedCartShare(value);
       await showGuide(value);
@@ -1193,6 +1224,10 @@ function DirectSellerShareControls({
   if (!prepared || stale || hasUnavailable) {
     return (
       <div className="direct-share-checkout">
+        <p className="direct-share-help">
+          Sản phẩm và ưu đãi chưa được giữ ở bước này. Sau khi gửi giỏ hàng qua Messenger,
+          sản phẩm và ưu đãi sẽ được giữ tối đa {formatReservationDuration(reservationMinutes)} để shop xác nhận.
+        </p>
         {stale && (
           <p className="share-warning" role="alert">
             Giỏ hàng đã thay đổi. Vui lòng chốt lại trước khi gửi.
@@ -1241,7 +1276,12 @@ function DirectSellerShareControls({
 
   return (
     <div className="prepared-share" role="status">
-      <p>Giỏ hàng này đã được chốt và sẵn sàng gửi cho {prepared.seller.displayName}.</p>
+      <p>
+        Giỏ hàng này đã được chốt và sẵn sàng gửi cho {prepared.seller.displayName}.
+        {prepared.cartRequest.checkoutState === "WAITING_SELLER_CONFIRM"
+          ? ` Hàng và ưu đãi đang được giữ đến ${prepared.cartRequest.reservationExpiresAt ? new Date(prepared.cartRequest.reservationExpiresAt).toLocaleString("vi-VN") : "khi shop xác nhận"}.`
+          : " Sản phẩm và ưu đãi chưa được giữ ở bước này; sau khi gửi, thời gian giữ sẽ theo cấu hình hiện tại của shop."}
+      </p>
       <button className="btn primary messenger-primary" disabled={busy} onClick={() => void showGuide(prepared)}>
         <Icon>arrow_forward</Icon> TIẾP TỤC GỬI GIỎ HÀNG
       </button>
@@ -1467,6 +1507,12 @@ type PublicCartShareDto = {
   subtotalVnd: number;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
+  checkoutState?: string;
+  reservationStartedAt?: string | null;
+  reservationExpiresAt?: string | null;
+  reservationDurationMinutes?: number | null;
+  orderExpired?: boolean;
+  reservationMessage?: string;
   promotions?: Array<{
     promotionName: string;
     discountAmountVnd: number;
@@ -1481,6 +1527,23 @@ type PublicCartShareDto = {
     isPromotionGift?: boolean;
     promotionId?: string;
   }>;
+};
+
+type ActivationGiftChange = {
+  productName?: string;
+  variantName?: string;
+  quantity: number;
+};
+
+type ActivationIssue = {
+  code?: string;
+  message?: string;
+  items?: PriceChange[];
+  variantIds?: string[];
+  subtotalVnd?: number;
+  discountTotalVnd?: number;
+  finalTotalVnd?: number;
+  gifts?: ActivationGiftChange[];
 };
 
 export function PublicCartSharePage() {
@@ -1528,6 +1591,13 @@ export function PublicCartSharePage() {
             <span>GIỎ HÀNG</span>
             <h1>{data.code}</h1>
             <small>{new Date(data.createdAt).toLocaleString("vi-VN")}</small>
+            {data.orderExpired ? (
+              <p className="share-warning">{data.reservationMessage || "Đơn này đã hết thời gian giữ hàng."}</p>
+            ) : data.reservationExpiresAt ? (
+              <p className="reservation-active-note">
+                Hàng và ưu đãi được giữ đến {new Date(data.reservationExpiresAt).toLocaleString("vi-VN")}.
+              </p>
+            ) : null}
           </header>
           <div className="public-share-items">
             {data.items.map((item, index) => (
@@ -1581,6 +1651,10 @@ export function CartShareGuidePage() {
   const [copyStatus, setCopyStatus] = useState<"COPIED" | "FAILED">("FAILED");
   const [copyFeedback, setCopyFeedback] = useState("");
   const [clickGuardStale, setClickGuardStale] = useState(false);
+  const [activationBusy, setActivationBusy] = useState(false);
+  const [activationError, setActivationError] = useState("");
+  const [activationIssue, setActivationIssue] = useState<ActivationIssue | null>(null);
+  const checkoutConfig = useCheckoutConfig();
   const manualTextRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -1660,22 +1734,102 @@ export function CartShareGuidePage() {
     );
   }
 
-  const openMessenger = () => {
+  const activateAndOpenMessenger = async (acceptCurrentPrices = false) => {
+    if (activationBusy || !prepared) return;
+    setActivationError("");
+    setActivationIssue(null);
     // Đọc lại localStorage tại thời điểm click để chặn thay đổi từ tab khác.
     const latestItems = parseStoredCart(window.localStorage.getItem(cartStorageKey));
-    const allowed = runWithCurrentPreparedCartShare(prepared, latestItems, () => {
-      recordSellerMessengerOpened(prepared.cartRequest.code);
-      console.info(
-        JSON.stringify({
-          event: "checkout_messenger_click",
-          publicCode: prepared.cartRequest.code,
+    const allowed = runWithCurrentPreparedCartShare(prepared, latestItems,
+      () => undefined,
+      () => !cartDetails(latestItems, products).some((line) => line.unavailable),
+    );
+    if (!allowed) {
+      setClickGuardStale(true);
+      return;
+    }
+    setActivationBusy(true);
+    try {
+      const submissionToken =
+        prepared.submissionToken ?? getCartShareSubmissionToken(prepared.fingerprint);
+      const response = await fetch("/api/cart/share/activate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          submissionToken,
+          acceptCurrentPrices,
+          items: latestItems.map((item) => ({
+            variantId: item.variantId,
+            quantity: item.quantity,
+            displayedPrice: findCurrentCartPrice(item.variantId, products, item.priceVnd),
+          })),
         }),
+      });
+      const body = (await response.json()) as
+        | (Omit<PreparedCartShare, "fingerprint"> & { success: true })
+        | { error?: ActivationIssue };
+      if (!response.ok || !("success" in body)) {
+        const issue = "error" in body ? body.error : undefined;
+        setActivationIssue(issue ?? null);
+        setActivationError(issue?.message || "Chưa thể giữ hàng trước khi mở Messenger.");
+        return;
+      }
+      const next: PreparedCartShare = {
+        fingerprint: cartShareFingerprint(latestItems),
+        submissionToken,
+        cartRequest: body.cartRequest,
+        share: body.share,
+        seller: body.seller,
+        serverNow: body.serverNow,
+      };
+      setPrepared(next);
+      writePreparedCartShare(next);
+      const copied = await copyCartText(next.share.copyText);
+      const copyState = copied ? "COPIED" : "FAILED";
+      setCopyStatus(copyState);
+      writePreparedCartShare({ ...next, clipboardStatus: copyState });
+      if (!copied) {
+        setActivationError("Chưa thể sao chép tự động. Hãy sao chép nội dung bên dưới trước khi mở Messenger.");
+        window.setTimeout(() => {
+          manualTextRef.current?.focus();
+          manualTextRef.current?.select();
+        });
+        return;
+      }
+      // Kiểm tra fingerprint lần cuối ngay trước các side effect analytics/navigation.
+      const latestBeforeNavigation = parseStoredCart(
+        window.localStorage.getItem(cartStorageKey),
       );
-      window.location.assign(prepared.seller.messengerUrl);
-    }, () => !cartDetails(latestItems, products).some((line) => line.unavailable));
-    if (!allowed) setClickGuardStale(true);
+      const allowed = runWithCurrentPreparedCartShare(
+        next,
+        latestBeforeNavigation,
+        () => {
+          recordSellerMessengerOpened(next.cartRequest.code);
+          console.info(
+            JSON.stringify({
+              event: "checkout_messenger_click",
+              publicCode: next.cartRequest.code,
+            }),
+          );
+          const messengerUrl = next.seller.messengerUrl || prepared.seller.messengerUrl;
+          window.location.assign(messengerUrl);
+        },
+        () => !cartDetails(latestBeforeNavigation, products).some((line) => line.unavailable),
+      );
+      if (!allowed) setClickGuardStale(true);
+    } catch (caught) {
+      setActivationError(
+        caught instanceof Error ? caught.message : "Chưa thể giữ hàng trước khi mở Messenger.",
+      );
+    } finally {
+      setActivationBusy(false);
+    }
   };
   const copied = copyStatus === "COPIED";
+  const reservationMinutes =
+    prepared.cartRequest.reservationDurationMinutes ??
+    checkoutConfig?.reservationMinutes ??
+    DEFAULT_CHECKOUT_RESERVATION_MINUTES;
   return (
     <main className="cart-guide-page">
       <header className="cart-guide-mobile-header">
@@ -1695,6 +1849,15 @@ export function CartShareGuidePage() {
               {copied ? "Chỉ còn 2 bước để gửi đơn cho " : "Hãy sao chép lại giỏ hàng trước khi mở Messenger của "}
               <strong>{prepared.seller.displayName}</strong>
             </p>
+            {prepared.cartRequest.checkoutState === "WAITING_SELLER_CONFIRM" ? (
+              <p className="reservation-active-note">
+                Đã giữ hàng trong {formatReservationDuration(reservationMinutes)}; hạn xác nhận: {prepared.cartRequest.reservationExpiresAt ? new Date(prepared.cartRequest.reservationExpiresAt).toLocaleString("vi-VN") : "đang cập nhật"}.
+              </p>
+            ) : (
+              <p className="reservation-pending-note">
+                Sản phẩm và ưu đãi chưa được giữ ở bước này. Sau khi bạn bấm gửi, hệ thống sẽ giữ tối đa {formatReservationDuration(reservationMinutes)} để shop xác nhận.
+              </p>
+            )}
             <span className="cart-guide-mnemonic">Mở → Dán → Gửi</span>
           </div>
           <div className="cart-guide-steps">
@@ -1723,7 +1886,13 @@ export function CartShareGuidePage() {
             copied={copied}
             feedback={copyFeedback}
             onCopy={() => void copyAgain()}
-            onMessenger={openMessenger}
+           onMessenger={() => void activateAndOpenMessenger()}
+            onConfirmChanges={() => void activateAndOpenMessenger(true)}
+            busy={activationBusy}
+            error={activationError}
+            issue={activationIssue}
+            products={products}
+            reservationMinutes={reservationMinutes}
           />
         </section>
         <MessengerGuideIllustration seller={prepared.seller} />
@@ -1733,7 +1902,13 @@ export function CartShareGuidePage() {
           copied={copied}
           feedback={copyFeedback}
           onCopy={() => void copyAgain()}
-          onMessenger={openMessenger}
+           onMessenger={() => void activateAndOpenMessenger()}
+           onConfirmChanges={() => void activateAndOpenMessenger(true)}
+           busy={activationBusy}
+           error={activationError}
+           issue={activationIssue}
+           products={products}
+           reservationMinutes={reservationMinutes}
         />
       </div>
     </main>
@@ -1745,18 +1920,82 @@ function GuideActions({
   feedback,
   onCopy,
   onMessenger,
+  onConfirmChanges,
+  busy,
+  error,
+  issue,
+  products,
+  reservationMinutes,
 }: {
   copied: boolean;
   feedback: string;
   onCopy: () => void;
   onMessenger: () => void;
+  onConfirmChanges: () => void;
+  busy: boolean;
+  error: string;
+  issue: ActivationIssue | null;
+  products: Product[];
+  reservationMinutes: number;
 }) {
+  const changedPrices =
+    issue?.items?.map((change) => ({
+      ...change,
+      productName:
+        findVariantInProducts(products, change.variantId)?.product.name ?? change.variantId,
+    })) ?? [];
+  const unavailableVariants =
+    issue?.variantIds?.map(
+      (variantId) => findVariantInProducts(products, variantId)?.product.name ?? variantId,
+    ) ?? [];
+  const hasActivationChange =
+    issue?.code === "PRICE_CHANGED" || issue?.code === "PROMOTION_CHANGED";
   return (
     <div className="cart-guide-actions">
       <span>Mở Messenger → Dán → Gửi</span>
-      <button type="button" className="btn primary" onClick={onMessenger}>
-        <Icon>chat_bubble</Icon> Nhắn shop trên Messenger
+      <button type="button" className="btn primary" disabled={busy} onClick={onMessenger}>
+        <Icon>chat_bubble</Icon> {busy ? "ĐANG GIỮ HÀNG..." : `Gửi ngay để giữ hàng & ưu đãi ${formatReservationDuration(reservationMinutes)}`}
       </button>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {hasActivationChange && (
+        <div className="activation-change-card" role="alert">
+          <b>Giỏ hàng vừa có thay đổi</b>
+          {changedPrices.map((change) => (
+            <p key={change.variantId}>
+              <span>{change.productName}</span>
+              <span>{formatVnd(change.displayedPrice)} → {formatVnd(change.currentPrice)}</span>
+            </p>
+          ))}
+          {issue?.discountTotalVnd !== undefined && (
+            <p>
+              <span>Khuyến mãi hiện tại</span>
+              <span>-{formatVnd(issue.discountTotalVnd)}</span>
+            </p>
+          )}
+          {issue?.finalTotalVnd !== undefined && (
+            <p>
+              <span>Tổng hiện tại</span>
+              <b>{formatVnd(issue.finalTotalVnd)}</b>
+            </p>
+          )}
+          {issue?.gifts?.length ? (
+            <p>
+              <span>Quà tặng hiện tại</span>
+              <span>{issue.gifts.map((gift) => `${gift.productName ?? "Quà tặng"} × ${gift.quantity}`).join(", ")}</span>
+            </p>
+          ) : null}
+          <button type="button" className="btn secondary-btn" disabled={busy} onClick={onConfirmChanges}>
+            XÁC NHẬN THAY ĐỔI &amp; GIỮ HÀNG
+          </button>
+        </div>
+      )}
+      {issue?.code === "INSUFFICIENT_STOCK" && unavailableVariants.length > 0 && (
+        <div className="activation-change-card" role="alert">
+          <b>Một số sản phẩm vừa hết hàng hoặc không còn đủ số lượng</b>
+          <p>{unavailableVariants.join(", ")}</p>
+          <span>Vui lòng quay lại giỏ hàng để giảm số lượng hoặc xóa sản phẩm trước khi gửi.</span>
+        </div>
+      )}
       <p className={copied ? "copy-ready" : "copy-warning"} role="status">
         <Icon>{copied ? "check_circle" : "error"}</Icon>
         {copied ? "Giỏ hàng đã được sao chép sẵn" : "Giỏ hàng chưa được sao chép"}

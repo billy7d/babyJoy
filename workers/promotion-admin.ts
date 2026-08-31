@@ -367,7 +367,18 @@ export async function deleteAdminPromotion(id: string, env: Env) {
   )
     .bind(id)
     .first<{ count: number }>();
-  if ((usage?.count ?? 0) > 0) {
+  let reservationHistory: { count: number } | null = null;
+  try {
+    reservationHistory = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM promotion_reservations WHERE promotion_id = ?",
+    )
+      .bind(id)
+      .first<{ count: number }>();
+  } catch {
+    // DB chưa có migration reservation thì giữ nguyên hành vi delete legacy.
+    reservationHistory = { count: 0 };
+  }
+  if ((usage?.count ?? 0) > 0 || (reservationHistory?.count ?? 0) > 0) {
     const now = new Date().toISOString();
     await env.DB.prepare(
       "UPDATE promotions SET status = 'ARCHIVED', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ?",
