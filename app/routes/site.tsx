@@ -7,6 +7,7 @@ import { AccessRequiredPage } from "../components/access-required";
 import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 import { AdminAccessLinksPage } from "../components/admin-access-links";
+import { AdminPromotionsPage, PromotionEditorPage } from "../components/promotion-pages";
 import { STORE_BRAND } from "../../shared/branding";
 
 export function loader({ request }: Route.LoaderArgs) {
@@ -39,6 +40,8 @@ function RoutedContent() {
   if (pathname.startsWith("/cart/success/")) return <SuccessPage />;
   if (pathname === "/admin/products") return <AdminProductsPage />;
   if (pathname === "/admin/products/new" || /^\/admin\/products\/[^/]+\/edit$/.test(pathname)) return <ProductEditorPage />;
+  if (pathname === "/admin/promotions") return <AdminPromotionsPage />;
+  if (pathname === "/admin/promotions/new" || /^\/admin\/promotions\/[^/]+\/edit$/.test(pathname)) return <PromotionEditorPage />;
   if (pathname === "/admin/categories") return <AdminTaxonomyPage type="categories" />;
   if (pathname === "/admin/tags") return <AdminTaxonomyPage type="tags" />;
   if (pathname === "/admin/cart-requests") return <AdminCartRequestsPage />;

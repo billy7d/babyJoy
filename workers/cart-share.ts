@@ -2,6 +2,14 @@ import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import { STORE_BRAND } from "../shared/branding";
+import {
+  buildPromotionPersistenceStatements,
+  evaluateAuthoritativeCart,
+  hasPromotionSchema,
+  loadPromotionHistory,
+  PromotionCartError,
+  type AuthoritativeCartEvaluation,
+} from "./promotions";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -181,6 +189,10 @@ export function composeCartShareText(input: {
   items: Array<Pick<PricedItem, "productName" | "variantName" | "quantity" | "lineTotalVnd">>;
   subtotalVnd: number;
   url: string;
+  promotionDiscountVnd?: number;
+  finalTotalVnd?: number;
+  promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
+  gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
 }) {
   const maximumLines = Math.min(input.items.length, 8);
   const build = (count: number) => {
@@ -194,8 +206,32 @@ export function composeCartShareText(input: {
     });
     if (input.items.length > count)
       lines.push(`+ ${input.items.length - count} sản phẩm khác`, "");
+    if (input.gifts?.length) {
+      input.gifts.forEach((gift) =>
+        lines.push(
+          `🎁 ${gift.productName} — ${gift.variantName} × ${gift.quantity}`,
+          "  Quà tặng khuyến mãi · 0 ₫",
+          "",
+        ),
+      );
+    }
+    if (input.promotions?.length) {
+      input.promotions.forEach((promotion) => {
+        if (promotion.discountAmountVnd > 0)
+          lines.push(
+            `Khuyến mãi ${promotion.promotionName}: -${formatVnd(promotion.discountAmountVnd)}`,
+          );
+      });
+      lines.push("");
+    }
     lines.push(
       `Tạm tính: ${formatVnd(input.subtotalVnd)}`,
+      ...(input.promotionDiscountVnd
+        ? [`Khuyến mãi: -${formatVnd(input.promotionDiscountVnd)}`]
+        : []),
+      ...(input.finalTotalVnd !== undefined
+        ? [`Tổng thanh toán: ${formatVnd(input.finalTotalVnd)}`]
+        : []),
       "",
       "Xem chi tiết:",
       input.url,
@@ -260,61 +296,6 @@ export async function checkoutConfigResponse(env: Env) {
   });
 }
 
-async function loadPricedItems(body: CartSharePrepareBody, env: Env) {
-  const placeholders = body.items.map(() => "?").join(",");
-  const rows = await env.DB.prepare(
-    `SELECT v.id AS variantId, v.name AS variantName, v.sku,
-      v.price_vnd AS priceVnd, v.availability, p.id AS productId,
-      p.name AS productName, p.status AS productStatus,
-      (SELECT r2_key FROM product_images WHERE product_id = p.id ORDER BY sort_order, created_at LIMIT 1) AS imageKey
-     FROM product_variants v JOIN products p ON p.id = v.product_id
-     WHERE v.id IN (${placeholders})`,
-  )
-    .bind(...body.items.map((item) => item.variantId))
-    .all<{
-      variantId: string;
-      variantName: string;
-      sku: string | null;
-      priceVnd: number;
-      availability: string;
-      productId: string;
-      productName: string;
-      productStatus: string;
-      imageKey: string | null;
-    }>();
-  const byId = new Map(rows.results.map((row) => [row.variantId, row]));
-  const unavailable: string[] = [];
-  const changed: Array<{
-    variantId: string;
-    displayedPrice: number;
-    currentPrice: number;
-  }> = [];
-  const pricedItems = body.items.map((item) => {
-    const row = byId.get(item.variantId);
-    if (!row) throw new Error("VARIANT_NOT_FOUND");
-    if (row.productStatus !== "AVAILABLE" || row.availability !== "AVAILABLE")
-      unavailable.push(item.variantId);
-    if (item.displayedPrice !== undefined && item.displayedPrice !== row.priceVnd)
-      changed.push({
-        variantId: item.variantId,
-        displayedPrice: item.displayedPrice,
-        currentPrice: row.priceVnd,
-      });
-    return {
-      productId: row.productId,
-      variantId: row.variantId,
-      productName: row.productName,
-      variantName: row.variantName,
-      sku: row.sku,
-      imageKey: row.imageKey,
-      priceVnd: row.priceVnd,
-      quantity: item.quantity,
-      lineTotalVnd: row.priceVnd * item.quantity,
-    } satisfies PricedItem;
-  });
-  return { pricedItems, unavailable, changed };
-}
-
 async function findShareRequest(submissionToken: string, env: Env) {
   return env.DB.prepare(
     `SELECT id, public_code AS publicCode, submission_token AS submissionToken,
@@ -358,6 +339,10 @@ async function buildPreparedResponse(
   if (expectedHash !== link.tokenHash || link.revokedAt)
     throw new Error("SHARE_LINK_RECOVERY_FAILED");
   const items = await loadSnapshots(row.id, env);
+  const schema = await hasPromotionSchema(env);
+  const history = await loadPromotionHistory(row.id, env);
+  const promotionDiscountVnd = schema ? history.discountAmountVnd : 0;
+  const finalTotalVnd = schema ? history.finalTotalVnd : row.subtotalVnd;
   const url = `https://metraphuong.com/c/${rawToken}`;
   const text = composeCartShareText({
     code: row.publicCode,
@@ -369,6 +354,13 @@ async function buildPreparedResponse(
     })),
     subtotalVnd: row.subtotalVnd,
     url,
+    promotionDiscountVnd,
+    finalTotalVnd,
+    promotions: history.promotions.map((promotion) => ({
+      promotionName: promotion.promotionName,
+      discountAmountVnd: promotion.discountAmountVnd,
+    })),
+    gifts: history.gifts,
   });
   return {
     success: true,
@@ -377,6 +369,8 @@ async function buildPreparedResponse(
       itemLineCount: row.itemLineCount,
       totalQuantity: row.totalQuantity,
       subtotalVnd: row.subtotalVnd,
+      promotionDiscountVnd,
+      finalTotalVnd,
       createdAt: row.createdAt,
     },
     share: {
@@ -385,6 +379,8 @@ async function buildPreparedResponse(
       url,
       copyText: text,
       expiresAt: link.expiresAt,
+      promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
+      gifts: history.gifts,
     },
     seller,
   };
@@ -430,11 +426,15 @@ export async function prepareCartShare(request: Request, env: Env) {
     }
   }
 
-  let loaded: Awaited<ReturnType<typeof loadPricedItems>>;
+  let loaded: AuthoritativeCartEvaluation;
   try {
-    loaded = await loadPricedItems(body, env);
-  } catch {
-    return failure("VARIANT_NOT_FOUND", "Một phân loại sản phẩm không còn tồn tại.", 404);
+    loaded = await evaluateAuthoritativeCart(body.items, env);
+  } catch (caught) {
+    if (caught instanceof PromotionCartError)
+      return failure(caught.code, caught.message, caught.status, {
+        variantIds: caught.variantIds,
+      });
+    throw caught;
   }
   if (loaded.unavailable.length)
     return failure(
@@ -443,14 +443,8 @@ export async function prepareCartShare(request: Request, env: Env) {
       409,
       { variantIds: loaded.unavailable },
     );
-  const subtotalVnd = loaded.pricedItems.reduce(
-    (sum, item) => sum + item.lineTotalVnd,
-    0,
-  );
-  const totalQuantity = loaded.pricedItems.reduce(
-    (sum, item) => sum + item.quantity,
-    0,
-  );
+  const subtotalVnd = loaded.evaluation.subtotalVnd;
+  const totalQuantity = loaded.evaluation.totalQuantity;
   if (loaded.changed.length && !body.acceptCurrentPrices)
     return failure(
       "PRICE_CHANGED",
@@ -465,25 +459,54 @@ export async function prepareCartShare(request: Request, env: Env) {
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const rawToken = await deriveShareToken(secret, id, body.submissionToken);
   const tokenHash = await hashShareToken(rawToken);
-  const statements = [
-    env.DB.prepare(
-      `INSERT INTO cart_requests (
-        id, public_code, submission_token, customer_name, customer_phone,
-        item_line_count, total_quantity, subtotal_vnd, status,
-        telegram_status, contact_channel, messenger_delivery_status,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'SUBMITTED',
-        'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)`,
-    ).bind(
-      id,
-      publicCode,
-      body.submissionToken,
-      loaded.pricedItems.length,
-      totalQuantity,
-      subtotalVnd,
-      createdAt,
-      createdAt,
-    ),
+  const promotionStatements = buildPromotionPersistenceStatements(
+    (sql) => env.DB.prepare(sql),
+    id,
+    createdAt,
+    loaded,
+  );
+  const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
+  const statements: D1PreparedStatement[] = [
+    ...promotionStatements.usage,
+    loaded.promotionSchema
+      ? env.DB.prepare(
+          `INSERT INTO cart_requests (
+            id, public_code, submission_token, customer_name, customer_phone,
+            item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
+            final_total_vnd, status, telegram_status, contact_channel,
+            messenger_delivery_status, created_at, updated_at
+          ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
+            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)`,
+        ).bind(
+          id,
+          publicCode,
+          body.submissionToken,
+          itemLineCount,
+          totalQuantity,
+          subtotalVnd,
+          loaded.evaluation.discountTotalVnd,
+          loaded.evaluation.finalTotalVnd,
+          createdAt,
+          createdAt,
+        )
+      : env.DB.prepare(
+          `INSERT INTO cart_requests (
+            id, public_code, submission_token, customer_name, customer_phone,
+            item_line_count, total_quantity, subtotal_vnd, status,
+            telegram_status, contact_channel, messenger_delivery_status,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'SUBMITTED',
+            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)`,
+        ).bind(
+          id,
+          publicCode,
+          body.submissionToken,
+          itemLineCount,
+          totalQuantity,
+          subtotalVnd,
+          createdAt,
+          createdAt,
+        ),
   ];
   loaded.pricedItems.forEach((item) => {
     statements.push(
@@ -510,6 +533,11 @@ export async function prepareCartShare(request: Request, env: Env) {
     );
   });
   statements.push(
+    ...promotionStatements.snapshots,
+    ...promotionStatements.gifts,
+    ...promotionStatements.redemptions,
+  );
+  statements.push(
     env.DB.prepare(
       "INSERT INTO cart_share_links (id, cart_request_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
     ).bind(crypto.randomUUID(), id, tokenHash, expiresAt, createdAt),
@@ -531,6 +559,12 @@ export async function prepareCartShare(request: Request, env: Env) {
         );
       }
     }
+    if (caught instanceof Error && caught.message.includes("PROMOTION_USAGE_LIMIT"))
+      return failure(
+        "PROMOTION_USAGE_LIMIT",
+        "Một chương trình khuyến mãi vừa hết lượt áp dụng. Vui lòng thử lại.",
+        409,
+      );
     console.error(
       JSON.stringify({
         event: "cart_share_prepare_failed",
@@ -544,7 +578,7 @@ export async function prepareCartShare(request: Request, env: Env) {
     id,
     publicCode,
     submissionToken: body.submissionToken,
-    itemLineCount: loaded.pricedItems.length,
+    itemLineCount,
     totalQuantity,
     subtotalVnd,
     createdAt,
@@ -617,6 +651,8 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       publicShareHeaders,
     );
   const items = await loadSnapshots(row.id, env);
+  const schema = await hasPromotionSchema(env);
+  const history = await loadPromotionHistory(row.id, env);
   console.info(
     JSON.stringify({
       event: "cart_share_public_view",
@@ -632,6 +668,9 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       itemLineCount: row.itemLineCount,
       totalQuantity: row.totalQuantity,
       subtotalVnd: row.subtotalVnd,
+      promotionDiscountVnd: history.discountAmountVnd,
+      finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
+      promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
       items: items.map((item) => ({
         productName: item.productName,
         variantName: item.variantName,
@@ -639,7 +678,18 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
         unitPriceVnd: item.unitPriceVnd,
         quantity: item.quantity,
         lineTotalVnd: item.lineTotalVnd,
-      })),
+      })).concat(
+        history.gifts.map((gift) => ({
+          productName: gift.productName,
+          variantName: gift.variantName,
+          imageUrl: gift.imageUrl,
+          unitPriceVnd: 0,
+          quantity: gift.quantity,
+          lineTotalVnd: 0,
+          isPromotionGift: true,
+          promotionId: gift.promotionId,
+        })),
+      ),
     },
     200,
     publicShareHeaders,

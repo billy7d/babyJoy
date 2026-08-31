@@ -351,6 +351,7 @@ export function isStorefrontProtectedApiPath(path: string) {
     path.startsWith("/api/products/") ||
     path === "/api/search" ||
     path === "/api/checkout-config" ||
+    path === "/api/cart/evaluate" ||
     path === "/api/cart/share/prepare" ||
     path === "/api/cart/messenger/start"
   );
