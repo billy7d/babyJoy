@@ -97,11 +97,11 @@ CREATE TRIGGER inventory_reservations_validate_insert
 BEFORE INSERT ON inventory_reservations
 WHEN NEW.status = 'ACTIVE'
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  SELECT (CASE WHEN NOT EXISTS (
     SELECT 1 FROM product_variants
     WHERE id = NEW.variant_id AND track_inventory = 1
-  ) THEN RAISE(ABORT, 'INVENTORY_NOT_TRACKED') END;
-  SELECT CASE WHEN NOT EXISTS (
+  ) THEN RAISE(ABORT, 'INVENTORY_NOT_TRACKED') END);
+  SELECT (CASE WHEN NOT EXISTS (
     SELECT 1
     FROM product_variants v
     JOIN products p ON p.id = v.product_id
@@ -109,7 +109,7 @@ BEGIN
       AND v.availability = 'AVAILABLE'
       AND p.status = 'AVAILABLE'
       AND p.archived_at IS NULL
-  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END;
+  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END);
 END;
 
 CREATE TRIGGER inventory_reservations_apply_insert
@@ -121,7 +121,7 @@ BEGIN
   WHERE id = NEW.variant_id
     AND track_inventory = 1
     AND stock_on_hand - reserved_quantity >= NEW.quantity;
-  SELECT CASE WHEN changes() != 1 THEN RAISE(ABORT, 'INSUFFICIENT_STOCK') END;
+  SELECT (CASE WHEN changes() != 1 THEN RAISE(ABORT, 'INSUFFICIENT_STOCK') END);
 END;
 
 CREATE TRIGGER inventory_reservations_immutable_fields
@@ -148,14 +148,14 @@ CREATE TRIGGER inventory_reservations_validate_release
 BEFORE UPDATE OF status ON inventory_reservations
 WHEN OLD.status = 'ACTIVE' AND NEW.status IN ('RELEASED', 'CONSUMED')
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  SELECT (CASE WHEN NOT EXISTS (
     SELECT 1 FROM product_variants
     WHERE id = OLD.variant_id AND reserved_quantity >= OLD.quantity
-  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END;
-  SELECT CASE WHEN NEW.status = 'CONSUMED' AND NOT EXISTS (
+  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END);
+  SELECT (CASE WHEN NEW.status = 'CONSUMED' AND NOT EXISTS (
     SELECT 1 FROM product_variants
     WHERE id = OLD.variant_id AND stock_on_hand >= OLD.quantity
-  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END;
+  ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END);
 END;
 
 CREATE TRIGGER inventory_reservations_apply_release
@@ -189,14 +189,14 @@ END;
 CREATE TRIGGER inventory_reservations_guard_variant_update
 BEFORE UPDATE OF track_inventory, stock_on_hand ON product_variants
 BEGIN
-  SELECT CASE WHEN NEW.stock_on_hand < NEW.reserved_quantity
-    THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END;
-  SELECT CASE WHEN OLD.track_inventory = 1
+  SELECT (CASE WHEN NEW.stock_on_hand < NEW.reserved_quantity
+    THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END);
+  SELECT (CASE WHEN OLD.track_inventory = 1
     AND NEW.track_inventory = 0
     AND EXISTS (
       SELECT 1 FROM inventory_reservations
       WHERE variant_id = OLD.id AND status = 'ACTIVE'
-    ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END;
+    ) THEN RAISE(ABORT, 'INVENTORY_CONFLICT') END);
 END;
 
 CREATE TRIGGER inventory_reservations_guard_variant_delete
@@ -214,7 +214,7 @@ CREATE TRIGGER promotion_reservations_validate_insert
 BEFORE INSERT ON promotion_reservations
 WHEN NEW.status = 'ACTIVE'
 BEGIN
-  SELECT CASE WHEN EXISTS (
+  SELECT (CASE WHEN EXISTS (
     SELECT 1 FROM promotions p
     WHERE p.id = NEW.promotion_id
       AND p.usage_limit_total IS NOT NULL
@@ -224,7 +224,7 @@ BEGIN
           AND pr.status = 'ACTIVE'
           AND julianday(pr.expires_at) > julianday('now')
       ) >= p.usage_limit_total
-  ) THEN RAISE(ABORT, 'PROMOTION_USAGE_LIMIT') END;
+  ) THEN RAISE(ABORT, 'PROMOTION_USAGE_LIMIT') END);
 END;
 
 CREATE TRIGGER promotion_reservations_immutable_fields
@@ -263,16 +263,16 @@ CREATE TRIGGER cart_requests_guard_checkout_transition
 BEFORE UPDATE OF checkout_state ON cart_requests
 WHEN NEW.checkout_state != OLD.checkout_state
 BEGIN
-  SELECT CASE WHEN NEW.checkout_state = 'CONFIRMED'
+  SELECT (CASE WHEN NEW.checkout_state = 'CONFIRMED'
     AND OLD.checkout_state != 'WAITING_SELLER_CONFIRM'
-    THEN RAISE(ABORT, 'INVALID_ORDER_TRANSITION') END;
-  SELECT CASE WHEN NEW.checkout_state = 'CONFIRMED'
+    THEN RAISE(ABORT, 'INVALID_ORDER_TRANSITION') END);
+  SELECT (CASE WHEN NEW.checkout_state = 'CONFIRMED'
     AND (NEW.reservation_expires_at IS NULL OR julianday(NEW.reservation_expires_at) <= julianday('now'))
-    THEN RAISE(ABORT, 'ORDER_EXPIRED') END;
-  SELECT CASE WHEN NEW.checkout_state = 'WAITING_SELLER_CONFIRM'
+    THEN RAISE(ABORT, 'ORDER_EXPIRED') END);
+  SELECT (CASE WHEN NEW.checkout_state = 'WAITING_SELLER_CONFIRM'
     AND (NEW.reservation_started_at IS NULL OR NEW.reservation_expires_at IS NULL
       OR NEW.reservation_duration_minutes IS NULL)
-    THEN RAISE(ABORT, 'INVALID_ORDER_TRANSITION') END;
+    THEN RAISE(ABORT, 'INVALID_ORDER_TRANSITION') END);
 END;
 
 CREATE TRIGGER cart_requests_guard_reservation_snapshot
