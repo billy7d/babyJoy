@@ -30,6 +30,7 @@ import {
   type SellerContact,
 } from "../lib/cart-share";
 import { searchCatalog } from "../lib/search";
+import { STORE_BRAND } from "../../shared/branding";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -70,7 +71,7 @@ export function HomePage() {
             mẹ an tâm
           </h1>
           <p className="hero-desktop-copy">
-            Khám phá thế giới dinh dưỡng sạch, an toàn và đa dạng. Cùng BabyJoy
+            Khám phá thế giới dinh dưỡng sạch, an toàn và đa dạng. Cùng {STORE_BRAND}{" "}
             kiến tạo những bữa ăn dặm đầy niềm vui và phát triển toàn diện cho
             bé yêu của bạn.
           </p>
@@ -158,7 +159,7 @@ export function HomePage() {
             <div className="empty-state product-empty-state">
               <Icon>inventory_2</Icon>
               <h2>Chưa có sản phẩm</h2>
-              <p>BabyJoy đang chuẩn bị danh sách sản phẩm mới.</p>
+              <p>{STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.</p>
               <Link className="btn primary" to="/shop">
                 Xem cửa hàng
               </Link>
@@ -426,7 +427,7 @@ export function ProductListPage({
                 <p>
                   {products.length
                     ? "Hãy thử từ khóa hoặc bộ lọc khác."
-                    : "BabyJoy đang chuẩn bị danh sách sản phẩm mới."}
+                    : `${STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.`}
                 </p>
               </div>
             )}
@@ -522,7 +523,7 @@ export function ProductDetailPage() {
         <section className="empty-state">
           <Icon>inventory_2</Icon>
           <h1>Chưa có sản phẩm</h1>
-          <p>BabyJoy đang chuẩn bị danh sách sản phẩm mới.</p>
+          <p>{STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.</p>
           <Link className="btn primary" to="/shop">
             Về cửa hàng
           </Link>
@@ -672,7 +673,7 @@ export function ProductDetailPage() {
             <p>{product.description}</p>
             <img
               src="/images/hero-desktop.jpg"
-              alt="Nông trại hữu cơ BabyJoy tại Đà Lạt"
+              alt={`Nông trại hữu cơ ${STORE_BRAND} tại Đà Lạt`}
             />
             <div className="ingredients" id="ingredients">
               <h3>Thành phần tự nhiên 100%</h3>
@@ -1072,7 +1073,7 @@ function MessengerCheckoutControls({
       setStatus(body.status);
       if (body.status === "SENT") completeSentCart(value);
       else if (body.status === "FAILED")
-        setMessage("BabyJoy chưa gửi được giỏ hàng qua Messenger. Giỏ hàng của bạn vẫn được giữ lại.");
+        setMessage(`${STORE_BRAND} chưa gửi được giỏ hàng qua Messenger. Giỏ hàng của bạn vẫn được giữ lại.`);
     } catch (caught) {
       if (!quiet)
         setMessage(
@@ -1172,7 +1173,7 @@ function MessengerCheckoutControls({
             : status === "IDENTIFIED"
               ? "Messenger đã được nhận diện"
               : status === "CONFIRMED" || status === "SENDING"
-                ? "BabyJoy đang gửi giỏ hàng"
+                ? `${STORE_BRAND} đang gửi giỏ hàng`
                 : "Đang chờ xác nhận trên Messenger"}
         </b>
         {hasUnavailable ? (
@@ -1181,7 +1182,7 @@ function MessengerCheckoutControls({
           </p>
         ) : !expired && (
           <p>
-            Mở Messenger, xác nhận giỏ hàng và quay lại BabyJoy. Shop sẽ nhận
+            Mở Messenger, xác nhận giỏ hàng và quay lại {STORE_BRAND}. Shop sẽ nhận
             giỏ hàng ngay trong cuộc trò chuyện của bạn.
           </p>
         )}
@@ -1263,9 +1264,9 @@ export function PublicCartSharePage() {
   }, [token]);
   return (
     <main className="public-share-page">
-      <Link to="/" className="share-brand" aria-label="BabyJoy - Trang chủ">
+      <Link to="/" className="share-brand" aria-label={`${STORE_BRAND} - Trang chủ`}>
         <img src="/images/logo.png" alt="" />
-        <span>BABYJOY</span>
+        <span>{STORE_BRAND}</span>
       </Link>
       {unavailable ? (
         <section className="share-unavailable">
@@ -1511,7 +1512,10 @@ function MessengerGuideIllustration({ seller }: { seller: SellerContact }) {
   return (
     <section className="messenger-guide" aria-label="Minh họa cách dán và gửi giỏ hàng trong Messenger">
       <h2>Hướng dẫn nhanh: Nhấn giữ → Dán → Gửi</h2>
-      <div className="messenger-mockup">
+      <div
+        className="messenger-mockup"
+        data-animation="finger-touch-long-press-paste-send"
+      >
         <header>
           {seller.avatarUrl ? <img src={seller.avatarUrl} alt="" /> : <span><Icon>storefront</Icon></span>}
           <p><b>{seller.displayName}</b><small>● Đang hoạt động</small></p>
@@ -1519,9 +1523,29 @@ function MessengerGuideIllustration({ seller }: { seller: SellerContact }) {
         <div className="messenger-chat">
           <p>🛒 Chi tiết giỏ hàng của bạn...</p>
         </div>
-        <div className="messenger-paste-tip">Dán <Icon>content_paste</Icon></div>
-        <div className="messenger-input">
-          <Icon>add_circle</Icon><span>Nhắn tin...</span><Icon>send</Icon>
+        <div className="messenger-paste-tip" data-animation-step="paste-menu">
+          Dán <Icon>content_paste</Icon>
+        </div>
+        <span
+          className="messenger-paste-ping"
+          data-animation-step="paste-ping"
+          aria-hidden="true"
+        />
+        <div className="messenger-input" data-animation-step="input">
+          <span className="messenger-input-action" aria-hidden="true"><Icon>add_circle</Icon></span>
+          <span className="messenger-input-copy messenger-input-copy-placeholder">Nhắn tin...</span>
+          <span className="messenger-input-copy messenger-input-copy-populated">[Đơn hàng]...</span>
+          <span
+            className="messenger-finger"
+            data-animation-step="finger-touch-long-press"
+            aria-hidden="true"
+          >
+            <svg className="messenger-finger-icon" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M9 11.24V7.5C9 6.12 10.12 5 11.5 5S14 6.12 14 7.5v3.74c1.21-.81 2-2.18 2-3.74C16 5.01 13.99 3 11.5 3S7 5.01 7 7.5c0 1.56.79 2.93 2 3.74zm9.84 4.63l-4.54-2.26c-.17-.07-.35-.11-.54-.11H13v-6c0-.83-.67-1.5-1.5-1.5S10 6.67 10 7.5v10.74l-3.43-.72c-.08-.01-.15-.03-.24-.03-.31 0-.59.13-.79.33l-.79.8 4.94 4.94c.27.27.65.44 1.06.44h6.79c.75 0 1.33-.55 1.44-1.28l.75-5.27c.01-.07.02-.14.02-.2 0-.62-.38-1.16-.91-1.38z" />
+            </svg>
+          </span>
+          <span className="messenger-touch-pulse" data-animation-step="touch-pulse" aria-hidden="true" />
+          <span className="messenger-send" data-animation-step="send" aria-hidden="true"><Icon>send</Icon></span>
         </div>
       </div>
       <p className="messenger-caption"><Icon>touch_app</Icon> Nhấn giữ khung chat để dán</p>
@@ -1571,7 +1595,7 @@ export function SuccessPage() {
           </h1>
           <p>
             {data.contactChannel === "MESSENGER"
-              ? "BabyJoy đã gửi chi tiết giỏ hàng vào cuộc trò chuyện Messenger của bạn. Shop sẽ tư vấn và xác nhận hàng ngay tại đó."
+              ? `${STORE_BRAND} đã gửi chi tiết giỏ hàng vào cuộc trò chuyện Messenger của bạn. Shop sẽ tư vấn và xác nhận hàng ngay tại đó.`
               : "Người bán sẽ liên hệ với bạn để xác nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán."}
           </p>
           <div className="success-data">

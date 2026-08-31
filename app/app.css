@@ -134,3 +134,50 @@
 .taxonomy-delete-btn:disabled{opacity:.55;cursor:not-allowed}
 /* Trên màn hình hẹp, các action không bị ép chồng hoặc tràn ngang. */
 @media(max-width:639px){.taxonomy-editor .editor-heading>div:last-child{flex-wrap:wrap;gap:10px}.taxonomy-delete-btn{padding-inline:14px;font-size:13px}}
+
+/* Đồng bộ nhịp header với mẫu storefront và giữ nguyên chiều cao hiện tại. */
+@media(min-width:1024px){.header-inner{gap:24px}.public-header .brand img{width:40px;height:40px}.desktop-nav{gap:24px;margin-left:40px}.header-search{max-width:448px}}
+@media(min-width:768px){.desktop-nav a{white-space:nowrap}.cart-link{flex:0 0 44px}}
+@media(min-width:1024px) and (max-width:1199px){.header-inner{gap:16px}.public-header .brand{font-size:20px}.desktop-nav{gap:16px;margin-left:16px}.header-search{min-width:0;max-width:300px}}
+@media(min-width:640px) and (max-width:1023px){.header-inner{gap:16px}.public-header .brand{font-size:20px}.public-header .brand img{width:40px;height:40px}.desktop-nav{gap:16px;margin-left:16px}}
+@media(max-width:767px){.public-header{height:64px}.public-main{padding-top:64px}.header-inner{width:100%;padding:0 16px;gap:8px}.desktop-nav,.header-search{display:none}.public-header .brand{min-width:0;max-width:calc(100% - 52px);gap:8px;font-size:16px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.public-header .brand img{width:32px;height:32px;flex:none}.cart-link{margin-left:auto;flex:none}}
+
+/* Trình tự minh họa: chạm, nhấn giữ, chọn Dán, điền nội dung rồi gửi. */
+.messenger-mockup{overflow:hidden}
+.messenger-mockup>header p{min-width:0}
+.messenger-mockup>header b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.messenger-chat p{opacity:0;transform:translateY(16px);animation:messenger-sent-bubble 8s ease-in-out infinite}
+.messenger-paste-tip{opacity:0;transform:translateX(-50%) translateY(8px);animation:messenger-paste-menu 8s ease-in-out infinite}
+.messenger-paste-ping{position:absolute;left:50%;bottom:92px;width:18px;height:18px;border:2px solid var(--primary);border-radius:50%;opacity:0;pointer-events:none;transform:translate(-50%,6px) scale(.6);animation:messenger-paste-ping 8s ease-out infinite}
+.messenger-input{position:relative;overflow:visible}
+.messenger-input-action,.messenger-send{display:grid;place-items:center;flex:none}
+.messenger-input-action{color:var(--outline)}
+.messenger-input-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.messenger-input-copy-placeholder{animation:messenger-input-placeholder 8s linear infinite}
+.messenger-input-copy-populated{position:absolute;inset:0 40px 0 42px;display:flex;align-items:center;opacity:0;color:var(--on-variant);animation:messenger-input-populated 8s linear infinite}
+.messenger-send{color:var(--outline);animation:messenger-send-state 8s linear infinite}
+.messenger-finger{position:absolute;top:50%;left:30%;z-index:3;width:32px;height:32px;display:block;pointer-events:none;opacity:0;transform:translate(20px,40px) scale(.9);animation:messenger-finger-sequence 8s ease-in-out infinite}
+.messenger-finger-icon{display:block;width:100%;height:100%;filter:drop-shadow(0 2px 3px rgba(0,0,0,.22))}
+.messenger-touch-pulse{position:absolute;top:50%;left:30%;z-index:2;width:36px;height:36px;border:2px solid color-mix(in srgb,var(--primary) 70%,transparent);border-radius:50%;pointer-events:none;opacity:0;transform:translate(18px,-2px) scale(.55);animation:messenger-touch-pulse 8s ease-out infinite}
+
+@keyframes messenger-finger-sequence{0%,6%{opacity:0;transform:translate(20px,40px) scale(.9)}14%{opacity:1;transform:translate(0,0) scale(1)}24%,34%{opacity:1;transform:translate(0,0) scale(.88)}45%{opacity:1;transform:translate(0,-40px) scale(.88)}54%,100%{opacity:0;transform:translate(0,-40px) scale(.88)}}
+@keyframes messenger-touch-pulse{0%,12%,20%,28%,100%{opacity:0;transform:translate(18px,-2px) scale(.55)}15%{opacity:.78;transform:translate(18px,-2px) scale(.8)}19%{opacity:0;transform:translate(18px,-2px) scale(1.45)}23%{opacity:.62;transform:translate(18px,-2px) scale(.8)}27%{opacity:0;transform:translate(18px,-2px) scale(1.45)}}
+@keyframes messenger-paste-menu{0%,29%{opacity:0;transform:translateX(-50%) translateY(8px)}36%,51%{opacity:1;transform:translateX(-50%) translateY(0)}58%,100%{opacity:0;transform:translateX(-50%) translateY(8px)}}
+@keyframes messenger-paste-ping{0%,32%{opacity:0;transform:translate(-50%,6px) scale(.6)}37%{opacity:.7;transform:translate(-50%,0) scale(.8)}46%,100%{opacity:0;transform:translate(-50%,0) scale(1.5)}}
+@keyframes messenger-input-placeholder{0%,50%{opacity:1}56%,76%{opacity:0}82%,100%{opacity:1}}
+@keyframes messenger-input-populated{0%,50%{opacity:0}56%,76%{opacity:1}82%,100%{opacity:0}}
+@keyframes messenger-send-state{0%,50%{color:var(--outline)}56%,76%{color:var(--primary)}82%,100%{color:var(--outline)}}
+@keyframes messenger-sent-bubble{0%,66%{opacity:0;transform:translateY(16px)}74%,92%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(16px)}}
+@keyframes messenger-success-check-bounce{0%,100%{transform:translateY(0)}10%{transform:translateY(-8px)}18%{transform:translateY(0)}24%{transform:translateY(-4px)}30%{transform:translateY(0)}}
+
+@media(max-width:639px){.cart-guide-check.copied{animation:messenger-success-check-bounce 2.4s ease-in-out infinite;transform-origin:center bottom}}
+@media(prefers-reduced-motion:reduce){
+  .messenger-guide *,
+  .cart-guide-check.copied{animation:none!important;transition:none!important}
+  .messenger-finger,.messenger-touch-pulse,.messenger-paste-ping{opacity:0!important}
+  .messenger-paste-tip{opacity:1;transform:translateX(-50%)}
+  .messenger-input-copy-placeholder{opacity:0}
+  .messenger-input-copy-populated{opacity:1}
+  .messenger-send{color:var(--primary)}
+  .messenger-chat p{opacity:1;transform:none}
+}

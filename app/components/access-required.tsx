@@ -1,3 +1,5 @@
+import { STORE_BRAND } from "../../shared/branding";
+
 export function AccessRequiredPage() {
   return (
     <main className="access-required-page">
@@ -5,7 +7,7 @@ export function AccessRequiredPage() {
         <div className="access-required-mark" aria-hidden="true">
           <span>🔒</span>
         </div>
-        <p className="access-required-kicker">BABYJOY</p>
+        <p className="access-required-kicker">{STORE_BRAND}</p>
         <h1>Quyền truy cập chưa sẵn sàng</h1>
         <p>
           Quyền truy cập của bạn chưa có hoặc đã hết hạn. Vui lòng mở đường dẫn

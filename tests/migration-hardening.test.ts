@@ -39,6 +39,12 @@ describe("forward migration xóa seed demo", () => {
     database.exec(migration("0005_remove_demo_cart_request.sql"));
     database.exec(migration("0006_product_taxonomy_v1.sql"));
     database.exec(migration("0007_storefront_access_gate_v1.sql"));
+    database.exec(
+      "INSERT INTO app_settings (key, value, updated_at) VALUES ('seller_contact_label', 'Nhãn cũ', CURRENT_TIMESTAMP)",
+    );
+    database.exec(migration("0010_storefront_brand_v1.sql"));
+    database.exec("UPDATE app_settings SET value = 'BabyJoy' WHERE key = 'seller_display_name'");
+    database.exec(migration("0010_storefront_brand_v1.sql"));
 
     expect(
       database
@@ -96,6 +102,16 @@ describe("forward migration xóa seed demo", () => {
         .prepare("SELECT value FROM app_settings WHERE key = 'storefront_session_ttl_seconds'")
         .get(),
     ).toEqual({ value: "1296000" });
+    expect(
+      database
+        .prepare("SELECT value FROM app_settings WHERE key = 'seller_display_name'")
+        .get(),
+    ).toEqual({ value: "Đồ ăn dặm UK 🍼Trà Phương🍼" });
+    expect(
+      database
+        .prepare("SELECT value FROM app_settings WHERE key = 'seller_contact_label'")
+        .get(),
+    ).toEqual({ value: "Nhãn cũ" });
     expect(
       database
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name LIKE 'idx_access_%' ORDER BY name")

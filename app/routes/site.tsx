@@ -7,6 +7,7 @@ import { AccessRequiredPage } from "../components/access-required";
 import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 import { AdminAccessLinksPage } from "../components/admin-access-links";
+import { STORE_BRAND } from "../../shared/branding";
 
 export function loader({ request }: Route.LoaderArgs) {
   return new URL(request.url).pathname === "/admin"
@@ -16,10 +17,10 @@ export function loader({ request }: Route.LoaderArgs) {
 
 export function meta({ location }: Route.MetaArgs) {
   const path = location.pathname;
-  if (path.startsWith("/product/")) return [{ title: "Sản phẩm ăn dặm hữu cơ | BabyJoy" }, { name: "description", content: "Khám phá sản phẩm ăn dặm hữu cơ an toàn cho bé." }];
-  if (path.startsWith("/admin")) return [{ title: "Quản trị BabyJoy" }, { name: "robots", content: "noindex,nofollow" }];
-  if (path.startsWith("/c/")) return [{ title: "Giỏ hàng BabyJoy" }, { name: "robots", content: "noindex,nofollow,noarchive" }, { name: "referrer", content: "no-referrer" }];
-  return [{ title: "BabyJoy - Dinh dưỡng trọn vẹn cho bé yêu" }, { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." }];
+  if (path.startsWith("/product/")) return [{ title: `Sản phẩm ăn dặm hữu cơ | ${STORE_BRAND}` }, { name: "description", content: "Khám phá sản phẩm ăn dặm hữu cơ an toàn cho bé." }];
+  if (path.startsWith("/admin")) return [{ title: `Quản trị ${STORE_BRAND}` }, { name: "robots", content: "noindex,nofollow" }];
+  if (path.startsWith("/c/")) return [{ title: `Giỏ hàng ${STORE_BRAND}` }, { name: "robots", content: "noindex,nofollow,noarchive" }, { name: "referrer", content: "no-referrer" }];
+  return [{ title: `${STORE_BRAND} - Dinh dưỡng trọn vẹn cho bé yêu` }, { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." }];
 }
 
 function RoutedContent() {

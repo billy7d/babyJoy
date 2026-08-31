@@ -1,5 +1,6 @@
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError, sha256 } from "./rate-limit";
+import { STORE_BRAND } from "../shared/branding";
 
 export { sha256 } from "./rate-limit";
 
@@ -878,7 +879,7 @@ export function composeMessengerCartSummary(request: {
   items: PricedItem[];
   subtotalVnd: number;
 }) {
-  const lines = ["🛒 GIỎ HÀNG BABYJOY", "", `Mã: ${request.code}`, ""];
+  const lines = [`🛒 GIỎ HÀNG ${STORE_BRAND}`, "", `Mã: ${request.code}`, ""];
   request.items.forEach((item) => {
     lines.push(
       `• ${item.productName}`,
@@ -891,7 +892,7 @@ export function composeMessengerCartSummary(request: {
     "────────────────",
     `Tạm tính: ${formatVnd(request.subtotalVnd)}`,
     "",
-    "✅ BabyJoy đã nhận giỏ hàng.",
+    `✅ ${STORE_BRAND} đã nhận giỏ hàng.`,
     "",
     "Shop sẽ tư vấn và xác nhận hàng với bạn ngay tại cuộc trò chuyện này.",
   );
@@ -990,7 +991,7 @@ async function sendConfirmationPrompt(session: SessionRow, env: Env) {
       type: "template",
       payload: {
         template_type: "button",
-        text: `Bạn đang xác nhận giỏ hàng ${session.publicCode}.\n\nChạm nút bên dưới để BabyJoy gửi chi tiết giỏ hàng vào cuộc trò chuyện này.`,
+        text: `Bạn đang xác nhận giỏ hàng ${session.publicCode}.\n\nChạm nút bên dưới để ${STORE_BRAND} gửi chi tiết giỏ hàng vào cuộc trò chuyện này.`,
         buttons: [
           {
             type: "postback",

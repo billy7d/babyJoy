@@ -13,6 +13,7 @@ import { searchCatalog } from "../lib/search";
 import { ProductImage } from "./product-image";
 import type { CartLine } from "../lib/cart";
 import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
+import { STORE_BRAND } from "../../shared/branding";
 
 export function Icon({
   children,
@@ -33,9 +34,9 @@ export function Icon({
 
 export function Logo() {
   return (
-    <Link to="/" className="brand" aria-label="BabyJoy - Trang chủ">
+    <Link to="/" className="brand" aria-label={`${STORE_BRAND} - Trang chủ`}>
       <img src="/images/logo.png" alt="" />
-      <span>BabyJoy</span>
+      <span>{STORE_BRAND}</span>
     </Link>
   );
 }
@@ -143,7 +144,7 @@ export function PublicFooter() {
         </div>
       </div>
       <div className="copyright">
-        © 2024 BabyJoy - Dinh dưỡng trọn vẹn cho bé yêu.
+        © 2024 {STORE_BRAND} - Dinh dưỡng trọn vẹn cho bé yêu.
       </div>
     </footer>
   );

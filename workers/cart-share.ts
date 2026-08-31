@@ -1,6 +1,7 @@
 import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
+import { STORE_BRAND } from "../shared/branding";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -183,7 +184,7 @@ export function composeCartShareText(input: {
 }) {
   const maximumLines = Math.min(input.items.length, 8);
   const build = (count: number) => {
-    const lines = ["🛒 GIỎ HÀNG BABYJOY", `Mã: ${input.code}`, ""];
+    const lines = [`🛒 GIỎ HÀNG ${STORE_BRAND}`, `Mã: ${input.code}`, ""];
     input.items.slice(0, count).forEach((item) => {
       lines.push(
         `• ${item.productName} — ${item.variantName} × ${item.quantity}`,
@@ -379,7 +380,7 @@ async function buildPreparedResponse(
       createdAt: row.createdAt,
     },
     share: {
-      title: `Giỏ hàng BabyJoy ${row.publicCode}`,
+      title: `Giỏ hàng ${STORE_BRAND} ${row.publicCode}`,
       text,
       url,
       copyText: text,
@@ -650,7 +651,7 @@ export async function getAdminSellerSettings(env: Env) {
   return json({
     data: seller ?? {
       displayName: "",
-      label: "Người bán BabyJoy",
+      label: `Người bán ${STORE_BRAND}`,
       messengerUrl: "",
       avatarKey: null,
       avatarUrl: null,

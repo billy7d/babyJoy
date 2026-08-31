@@ -16,6 +16,7 @@ import {
   runNativeCartShare,
 } from "../app/lib/cart-share";
 import { consumeRateLimit } from "../workers/rate-limit";
+import { STORE_BRAND } from "../shared/branding";
 
 function migration(name: string) {
   return readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8");
@@ -135,10 +136,12 @@ describe("Direct Seller Cart Share domain", () => {
     const first = await prepareCartShare(prepareRequest(), env);
     expect(first.status).toBe(201);
     const body = await first.json() as {
-      cartRequest: { subtotalVnd: number; totalQuantity: number };
-      share: { url: string; copyText: string };
+      cartRequest: { code: string; subtotalVnd: number; totalQuantity: number };
+      share: { title: string; url: string; copyText: string };
     };
     expect(body.cartRequest).toMatchObject({ subtotalVnd: 318000, totalQuantity: 3 });
+    expect(body.share.title).toBe(`Giỏ hàng ${STORE_BRAND} ${body.cartRequest.code}`);
+    expect(body.share.copyText).toContain(`🛒 GIỎ HÀNG ${STORE_BRAND}`);
     expect(body.share.copyText).toContain(body.share.url);
     const rawToken = body.share.url.split("/").at(-1) ?? "";
     const stored = database.prepare("SELECT token_hash FROM cart_share_links").get() as { token_hash: string };

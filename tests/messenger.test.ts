@@ -12,6 +12,7 @@ import {
   verifyMetaSignature,
 } from "../workers/messenger";
 import { cartFingerprint } from "../app/lib/messenger-checkout";
+import { STORE_BRAND } from "../shared/branding";
 
 describe("Messenger checkout input", () => {
   it("chỉ nhận variant và quantity, không tin giá từ browser", () => {
@@ -237,7 +238,8 @@ describe("Messenger message và public status", () => {
         },
       ],
     });
-    expect(text).toContain("🛒 GIỎ HÀNG BABYJOY");
+    expect(text).toContain(`🛒 GIỎ HÀNG ${STORE_BRAND}`);
+    expect(text).toContain(`✅ ${STORE_BRAND} đã nhận giỏ hàng.`);
     expect(text).toContain("227g × 2");
     expect(text).toContain("250.000 ₫");
     expect(text).not.toContain("psid");
