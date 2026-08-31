@@ -153,6 +153,54 @@ async function runProductSearchRegression(page) {
   }
 }
 
+async function runCategoryPersistenceRegression(page) {
+  let createdId = "";
+  try {
+    await page.goto(`${baseUrl}/admin/promotions/new`, { waitUntil: "domcontentloaded" });
+    await page.locator("select").first().waitFor({ state: "visible", timeout: 5000 });
+    // Chờ hydration trước khi thao tác form tạo promotion.
+    await page.waitForTimeout(600);
+    await selectPromotionType(page, "CATEGORY_DISCOUNT");
+    const rows = await waitForCategoryRows(page);
+    const name = `[E2E] Category selector ${Date.now()}`;
+    await page.getByPlaceholder("Ví dụ: Ưu đãi tháng 9").fill(name);
+    await rows.nth(0).click();
+    await rows.nth(1).click();
+    await page.locator("label").filter({ hasText: "Phần trăm" }).locator("input").fill("10");
+    await page.getByRole("button", { name: "LƯU CHƯƠNG TRÌNH" }).click();
+    await page.waitForURL(/\/admin\/promotions\/[^/]+\/edit$/);
+    createdId = new URL(page.url()).pathname.split("/").at(-2) ?? "";
+    assert(createdId, "Save promotion không trả về id");
+    const savedRows = await waitForCategoryRows(page);
+    assert((await page.locator('.category-option-list > button[aria-pressed="true"]').count()) === 2, "Sau Save thiếu category đã chọn");
+    assert((await readSelectedCount(page)) === "2 danh mục đã chọn", "Sau Save summary không giữ A+B");
+    assert((await page.locator("label").filter({ hasText: "Phần trăm" }).locator("input").inputValue()) === "10", "Sau Save không giữ percentage 10%");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(500);
+    const reloadedRows = await waitForCategoryRows(page);
+    assert((await page.locator('.category-option-list > button[aria-pressed="true"]').count()) === 2, "Reload editor không khôi phục A+B");
+    assert((await readSelectedCount(page)) === "2 danh mục đã chọn", "Reload editor summary không giữ A+B");
+    assert((await page.locator("label").filter({ hasText: "Phần trăm" }).locator("input").inputValue()) === "10", "Reload editor không giữ percentage 10%");
+
+    // Kiểm tra edit existing: bỏ một category, lưu lại và xác nhận persistence lần nữa.
+    await reloadedRows.nth(1).click();
+    await page.getByRole("button", { name: "LƯU CHƯƠNG TRÌNH" }).click();
+    await page.waitForTimeout(500);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(500);
+    const editedRows = await waitForCategoryRows(page);
+    assert((await page.locator('.category-option-list > button[aria-pressed="true"]').count()) === 1, "Edit existing không lưu thao tác bỏ category");
+    assert((await readSelectedCount(page)) === "1 danh mục đã chọn", "Edit existing summary không cập nhật");
+    assert((await page.locator("label").filter({ hasText: "Phần trăm" }).locator("input").inputValue()) === "10", "Edit existing làm mất percentage 10%");
+  } finally {
+    if (createdId) {
+      const cleanup = await page.request.delete(`${baseUrl}/api/admin/promotions/${encodeURIComponent(createdId)}`);
+      if (!cleanup.ok()) throw new Error(`Cleanup promotion E2E thất bại: HTTP ${cleanup.status()}`);
+    }
+  }
+}
+
 try {
   for (const [name, viewport] of viewports) {
     const context = await browser.newContext({ viewport, locale: "vi-VN" });
@@ -175,6 +223,7 @@ try {
       await assertNoHorizontalOverflow(page, name);
       await runCategoryInteractionRegression(page);
       await runProductSearchRegression(page);
+      if (name === "desktop") await runCategoryPersistenceRegression(page);
       if (browserErrors.length) throw new Error(`${name}: browser error: ${browserErrors.join(" | ")}`);
     } finally {
       await context.close();
