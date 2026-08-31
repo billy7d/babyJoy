@@ -10,6 +10,10 @@ import {
 import { useCatalog } from "../lib/catalog-context";
 import { cartStorageKey, parseStoredCart, useCart } from "../lib/cart";
 import {
+  useCartPromotionEvaluation,
+  type CartPromotionResult,
+} from "../lib/promotions";
+import {
   cartFingerprint,
   clearPendingMessengerCart,
   getMessengerSubmissionToken,
@@ -718,6 +722,11 @@ export function CartPage() {
   const cart = useCart();
   const { products } = useCatalog();
   const lines = cartDetails(cart.items, products);
+  const promotion = useCartPromotionEvaluation(cart.items, cart.hydrated);
+  const evaluatedByVariant = new Map(
+    promotion.data?.items.map((item) => [item.variantId, item]) ?? [],
+  );
+  const giftCount = promotion.data?.gifts.length ?? 0;
   return (
     <PublicShell>
       <section className="cart-page">
@@ -728,7 +737,7 @@ export function CartPage() {
               {cart.totalQuantity} món ngon đang chờ được thưởng thức!
             </p>
           </div>
-          <span>{lines.length} mặt hàng</span>
+          <span>{lines.length + giftCount} mặt hàng</span>
         </div>
         {lines.length === 0 ? (
           <div className="empty-state">
@@ -742,45 +751,74 @@ export function CartPage() {
         ) : (
           <div className="cart-layout">
             <div className="cart-items">
-              {lines.map(({ product, variant, quantity, lineTotal, unavailable }) => (
-                <article
-                  className={`cart-item ${unavailable ? "cart-item-unavailable" : ""}`}
-                  key={variant.id}
-                >
-                  <ProductImage product={product} />
-                  <div className="cart-item-info">
-                    <h2>{product.name}</h2>
-                    <Tag>{variant.name}</Tag>
-                    {unavailable && (
-                      <p className="form-error" role="alert">
-                        Phân loại này không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.
-                      </p>
-                    )}
-                    <button
-                      className="remove-line"
-                      onClick={() => cart.removeItem(variant.id)}
-                    >
-                      <Icon>delete</Icon>
-                      <span>Xóa</span>
-                    </button>
-                    <div className="unit-price">
-                      <span>Đơn giá</span>
-                      <Price value={variant.priceVnd} />
+              {lines.map(({ product, variant, quantity, lineTotal, unavailable }) => {
+                const evaluated = evaluatedByVariant.get(variant.id);
+                const shownLineTotal = evaluated?.lineTotalVnd ?? lineTotal;
+                return (
+                  <article
+                    className={`cart-item ${unavailable ? "cart-item-unavailable" : ""}`}
+                    key={variant.id}
+                  >
+                    <ProductImage product={product} />
+                    <div className="cart-item-info">
+                      <h2>{product.name}</h2>
+                      <Tag>{variant.name}</Tag>
+                      {unavailable && (
+                        <p className="form-error" role="alert">
+                          Phân loại này không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.
+                        </p>
+                      )}
+                      <button
+                        className="remove-line"
+                        onClick={() => cart.removeItem(variant.id)}
+                      >
+                        <Icon>delete</Icon>
+                        <span>Xóa</span>
+                      </button>
+                      <div className="unit-price">
+                        <span>Đơn giá</span>
+                        <Price value={evaluated?.priceVnd ?? variant.priceVnd} />
+                      </div>
+                      {evaluated && evaluated.discountAmountVnd > 0 && (
+                        <small className="cart-line-discount">
+                          Tiết kiệm {formatVnd(evaluated.discountAmountVnd)}
+                        </small>
+                      )}
                     </div>
+                    <QuantityStepper
+                      variantId={variant.id}
+                      value={quantity}
+                      availability={variant.availability}
+                    />
+                    <div className="line-total">
+                      <span>Thành tiền</span>
+                      <Price value={shownLineTotal} />
+                    </div>
+                  </article>
+                );
+              })}
+              {promotion.data?.gifts.map((gift) => (
+                <article className="cart-item promotion-gift-cart-item" key={`${gift.promotionId}-${gift.variantId}`}>
+                  <ProductImage r2Key={gift.imageKey} alt={gift.productName} />
+                  <div className="cart-item-info">
+                    <h2>{gift.productName}</h2>
+                    <Tag tone="primary">Quà tặng khuyến mãi</Tag>
+                    <p className="promotion-gift-meta">{gift.variantName} × {gift.quantity}</p>
+                    <small>Không thể chỉnh sửa số lượng quà tặng.</small>
                   </div>
-                  <QuantityStepper
-                    variantId={variant.id}
-                    value={quantity}
-                    availability={variant.availability}
-                  />
-                  <div className="line-total">
-                    <span>Thành tiền</span>
-                    <Price value={lineTotal} />
+                  <div className="line-total promotion-gift-total">
+                    <span>Giá quà</span>
+                    <Price value={0} />
                   </div>
                 </article>
               ))}
             </div>
-            <CartSummary />
+            <CartSummary
+              lines={lines}
+              promotion={promotion.data}
+              promotionLoading={promotion.loading}
+              promotionError={promotion.error}
+            />
           </div>
         )}
       </section>
@@ -788,11 +826,21 @@ export function CartPage() {
   );
 }
 
-function CartSummary() {
+function CartSummary({
+  lines,
+  promotion,
+  promotionLoading,
+  promotionError,
+}: {
+  lines: ReturnType<typeof cartDetails>;
+  promotion: CartPromotionResult | null;
+  promotionLoading: boolean;
+  promotionError: string;
+}) {
   const cart = useCart();
-  const { products } = useCatalog();
-  const lines = cartDetails(cart.items, products);
   const checkoutConfig = useCheckoutConfig();
+  const subtotalVnd = promotion?.subtotalVnd ?? cart.subtotalVnd;
+  const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd;
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
@@ -802,8 +850,49 @@ function CartSummary() {
       </div>
       <div className="subtotal">
         <span>Tạm tính</span>
-        <Price value={cart.subtotalVnd} />
+        <Price value={subtotalVnd} />
       </div>
+      {promotion && promotion.discountTotalVnd > 0 && (
+        <div className="promotion-total-row">
+          <span>Khuyến mãi</span>
+          <b>-{formatVnd(promotion.discountTotalVnd)}</b>
+        </div>
+      )}
+      <div className="cart-final-total">
+        <span>Tổng</span>
+        <Price value={finalTotalVnd} />
+      </div>
+      {promotionLoading && (
+        <p className="promotion-loading" role="status">
+          <Icon>sync</Icon> Đang kiểm tra khuyến mãi...
+        </p>
+      )}
+      {promotionError && (
+        <p className="info-box" role="status">
+          <Icon>info</Icon> Chưa thể tải ưu đãi mới nhất. Khi chốt giỏ hàng, hệ thống sẽ kiểm tra lại.
+        </p>
+      )}
+      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable) && (
+        <div className="promotion-breakdown">
+          <b>Ưu đãi đang áp dụng</b>
+          {promotion.appliedPromotions.map((item) => (
+            <p key={item.promotionId}>
+              <span>{item.promotionName}</span>
+              {item.discountAmountVnd > 0 && <strong>-{formatVnd(item.discountAmountVnd)}</strong>}
+              {item.giftUnavailable && <small>Quà hiện tạm hết hàng</small>}
+            </p>
+          ))}
+        </div>
+      )}
+      {promotion?.progress.length ? (
+        <div className="promotion-progress" aria-live="polite">
+          {promotion.progress.slice(0, 2).map((item) => (
+            <p key={item.promotionId}>
+              <Icon>local_offer</Icon> {item.message}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {checkoutConfig?.enabled === true ? (
         <DirectSellerShareControls lines={lines} seller={checkoutConfig.seller} />
       ) : checkoutConfig?.messengerCheckoutEnabled === true ? (
@@ -1230,6 +1319,12 @@ type PublicCartShareDto = {
   itemLineCount: number;
   totalQuantity: number;
   subtotalVnd: number;
+  promotionDiscountVnd?: number;
+  finalTotalVnd?: number;
+  promotions?: Array<{
+    promotionName: string;
+    discountAmountVnd: number;
+  }>;
   items: Array<{
     productName: string;
     variantName: string;
@@ -1237,6 +1332,8 @@ type PublicCartShareDto = {
     unitPriceVnd: number;
     quantity: number;
     lineTotalVnd: number;
+    isPromotionGift?: boolean;
+    promotionId?: string;
   }>;
 };
 
@@ -1288,12 +1385,19 @@ export function PublicCartSharePage() {
           </header>
           <div className="public-share-items">
             {data.items.map((item, index) => (
-              <section key={`${item.productName}-${item.variantName}-${index}`}>
+              <section
+                className={item.isPromotionGift ? "promotion-gift-share-item" : ""}
+                key={`${item.productName}-${item.variantName}-${index}`}
+              >
                 <img src={item.imageUrl} alt="" />
                 <p>
                   <b>{item.productName}</b>
                   <span>{item.variantName}</span>
-                  <small>{formatVnd(item.unitPriceVnd)} × {item.quantity}</small>
+                  <small>
+                    {item.isPromotionGift
+                      ? `Quà tặng khuyến mãi · 0 ₫ × ${item.quantity}`
+                      : `${formatVnd(item.unitPriceVnd)} × ${item.quantity}`}
+                  </small>
                 </p>
                 <Price value={item.lineTotalVnd} />
               </section>
@@ -1302,6 +1406,16 @@ export function PublicCartSharePage() {
           <footer>
             <p><span>Tổng số lượng</span><b>{data.totalQuantity}</b></p>
             <p><span>Tạm tính</span><Price value={data.subtotalVnd} /></p>
+            {data.promotions?.map((promotion) => (
+              <p key={promotion.promotionName}>
+                <span>{promotion.promotionName}</span>
+                <b className="promotion-value">-{formatVnd(promotion.discountAmountVnd)}</b>
+              </p>
+            ))}
+            {(data.promotionDiscountVnd ?? 0) > 0 && (
+              <p><span>Khuyến mãi</span><b className="promotion-value">-{formatVnd(data.promotionDiscountVnd ?? 0)}</b></p>
+            )}
+            <p className="share-final-total"><span>Tổng</span><Price value={data.finalTotalVnd ?? data.subtotalVnd} /></p>
           </footer>
         </article>
       )}
@@ -1563,6 +1677,8 @@ export function SuccessPage() {
     itemLineCount: 3,
     totalQuantity: 4,
     subtotalVnd: 367000,
+    promotionDiscountVnd: 0,
+    finalTotalVnd: 367000,
     createdAt: "2026-08-25T15:12:00+07:00",
     contactChannel: "LEGACY",
   });
@@ -1622,6 +1738,18 @@ export function SuccessPage() {
                 <span>Tạm tính (chưa gồm phí ship)</span>
                 <Price value={data.subtotalVnd} />
               </div>
+              {data.promotionDiscountVnd > 0 && (
+                <div className="meta-promotion">
+                  <span>Khuyến mãi</span>
+                  <b>-{formatVnd(data.promotionDiscountVnd)}</b>
+                </div>
+              )}
+              {data.finalTotalVnd !== undefined && data.finalTotalVnd !== data.subtotalVnd && (
+                <div className="meta-total">
+                  <span>Tổng sau ưu đãi</span>
+                  <Price value={data.finalTotalVnd} />
+                </div>
+              )}
             </div>
           </div>
           <p className="mobile-success-note">

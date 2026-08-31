@@ -457,6 +457,7 @@ export function QuantityStepper({
 
 const adminLinks = [
   ["/admin/products", "restaurant_menu", "Sản phẩm"],
+  ["/admin/promotions", "local_offer", "Khuyến mãi"],
   ["/admin/categories", "category", "Danh mục"],
   ["/admin/tags", "sell", "Tags"],
   ["/admin/cart-requests", "shopping_basket", "Giỏ hàng gửi đến"],
@@ -525,6 +526,9 @@ export function StatusBadge({ status }: { status: string }) {
     LEGACY: "Kênh cũ",
     SHARE: "Chia sẻ thủ công",
     SHARE_READY: "Đã tạo giỏ chia sẻ",
+    DRAFT: "Bản nháp",
+    INACTIVE: "Đã tắt",
+    ARCHIVED: "Đã archive",
   };
   return (
     <span className={`status status-${status.toLowerCase()}`}>

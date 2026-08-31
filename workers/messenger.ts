@@ -1,6 +1,13 @@
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError, sha256 } from "./rate-limit";
 import { STORE_BRAND } from "../shared/branding";
+import {
+  buildPromotionPersistenceStatements,
+  evaluateAuthoritativeCart,
+  hasPromotionSchema,
+  loadPromotionHistory,
+  PromotionCartError,
+} from "./promotions";
 
 export { sha256 } from "./rate-limit";
 
@@ -268,62 +275,6 @@ async function readBoundedJson(request: Request, maxBytes = 64 * 1024) {
   return JSON.parse(text) as unknown;
 }
 
-async function loadMessengerPricedItems(body: MessengerStartBody, env: Env) {
-  const placeholders = body.items.map(() => "?").join(",");
-  const result = await env.DB.prepare(
-    `SELECT v.id AS variantId, v.name AS variantName, v.sku, v.price_vnd AS priceVnd,
-      v.availability, p.id AS productId, p.name AS productName, p.status AS productStatus,
-      (SELECT r2_key FROM product_images WHERE product_id = p.id ORDER BY sort_order, created_at LIMIT 1) AS imageKey
-     FROM product_variants v JOIN products p ON p.id = v.product_id
-     WHERE v.id IN (${placeholders})`,
-  )
-    .bind(...body.items.map((item) => item.variantId))
-    .all<{
-      variantId: string;
-      variantName: string;
-      sku: string | null;
-      priceVnd: number;
-      availability: string;
-      productId: string;
-      productName: string;
-      productStatus: string;
-      imageKey: string | null;
-    }>();
-  if (result.results.length !== body.items.length)
-    throw new MessengerDomainError(
-      "VARIANT_NOT_FOUND",
-      "Một phân loại sản phẩm không còn tồn tại.",
-      404,
-    );
-  const byId = new Map(result.results.map((row) => [row.variantId, row]));
-  return body.items.map((item) => {
-    const row = byId.get(item.variantId);
-    if (!row)
-      throw new MessengerDomainError(
-        "VARIANT_NOT_FOUND",
-        "Một phân loại sản phẩm không còn tồn tại.",
-        404,
-      );
-    if (row.availability !== "AVAILABLE" || row.productStatus !== "AVAILABLE")
-      throw new MessengerDomainError(
-        "VARIANT_UNAVAILABLE",
-        "Một số sản phẩm hiện không còn sẵn sàng.",
-        409,
-      );
-    return {
-      productId: row.productId,
-      variantId: row.variantId,
-      productName: row.productName,
-      variantName: row.variantName,
-      sku: row.sku,
-      imageKey: row.imageKey,
-      priceVnd: row.priceVnd,
-      quantity: item.quantity,
-      lineTotalVnd: row.priceVnd * item.quantity,
-    } satisfies PricedItem;
-  });
-}
-
 async function findExistingStart(submissionToken: string, env: Env) {
   return env.DB.prepare(
     `SELECT s.id, s.cart_request_id AS cartRequestId, c.public_code AS publicCode,
@@ -341,6 +292,7 @@ async function startResponse(
   row: ExistingStartRow,
   submissionToken: string,
   config: Pick<MessengerConfig, "appSecret" | "pageUsername">,
+  env: Env,
   status = 200,
 ) {
   const tokens = await deriveSessionTokens(
@@ -348,6 +300,8 @@ async function startResponse(
     row.id,
     submissionToken,
   );
+  const schema = await hasPromotionSchema(env);
+  const history = await loadPromotionHistory(row.cartRequestId, env);
   return json(
     {
       success: true,
@@ -365,6 +319,8 @@ async function startResponse(
         itemLineCount: row.itemLineCount,
         totalQuantity: row.totalQuantity,
         subtotalVnd: row.subtotalVnd,
+        promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
+        finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
         createdAt: row.createdAt,
       },
     },
@@ -384,9 +340,17 @@ export async function startMessengerCheckout(request: Request, env: Env) {
     const config = messengerStartConfig(env);
     const body = validateMessengerStart(await readBoundedJson(request));
     const existing = await findExistingStart(body.submissionToken, env);
-    if (existing) return startResponse(existing, body.submissionToken, config);
+    if (existing)
+      return startResponse(existing, body.submissionToken, config, env);
 
-    const pricedItems = await loadMessengerPricedItems(body, env);
+    const loaded = await evaluateAuthoritativeCart(body.items, env);
+    if (loaded.unavailable.length)
+      return error(
+        "VARIANT_UNAVAILABLE",
+        "Một số sản phẩm hiện không còn sẵn sàng.",
+        409,
+      );
+    const pricedItems = loaded.pricedItems;
     const now = new Date();
     const createdAt = now.toISOString();
     const expiresAt = new Date(now.getTime() + sessionTtlMs).toISOString();
@@ -397,10 +361,7 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       (sum, item) => sum + item.quantity,
       0,
     );
-    const subtotalVnd = pricedItems.reduce(
-      (sum, item) => sum + item.lineTotalVnd,
-      0,
-    );
+    const subtotalVnd = loaded.evaluation.subtotalVnd;
     const tokens = await deriveSessionTokens(
       config.appSecret,
       sessionId,
@@ -410,23 +371,53 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       sha256(tokens.referralToken),
       sha256(tokens.statusToken),
     ]);
+    const promotionStatements = buildPromotionPersistenceStatements(
+      (sql) => env.DB.prepare(sql),
+      cartRequestId,
+      createdAt,
+      loaded,
+    );
+    const itemLineCount = pricedItems.length + loaded.evaluation.gifts.length;
     const statements: D1PreparedStatement[] = [
-      env.DB.prepare(
-        `INSERT INTO cart_requests (
-          id, public_code, submission_token, customer_name, customer_phone,
-          item_line_count, total_quantity, subtotal_vnd, status, telegram_status,
-          contact_channel, messenger_delivery_status, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'SUBMITTED', 'PENDING', 'MESSENGER', 'PENDING', ?, ?)`,
-      ).bind(
-        cartRequestId,
-        publicCode,
-        body.submissionToken,
-        pricedItems.length,
-        totalQuantity,
-        subtotalVnd,
-        createdAt,
-        createdAt,
-      ),
+      ...promotionStatements.usage,
+      loaded.promotionSchema
+        ? env.DB.prepare(
+            `INSERT INTO cart_requests (
+              id, public_code, submission_token, customer_name, customer_phone,
+              item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
+              final_total_vnd, status, telegram_status, contact_channel,
+              messenger_delivery_status, created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED', 'PENDING',
+              'MESSENGER', 'PENDING', ?, ?)`,
+          ).bind(
+            cartRequestId,
+            publicCode,
+            body.submissionToken,
+            itemLineCount,
+            totalQuantity,
+            subtotalVnd,
+            loaded.evaluation.discountTotalVnd,
+            loaded.evaluation.finalTotalVnd,
+            createdAt,
+            createdAt,
+          )
+        : env.DB.prepare(
+            `INSERT INTO cart_requests (
+              id, public_code, submission_token, customer_name, customer_phone,
+              item_line_count, total_quantity, subtotal_vnd, status, telegram_status,
+              contact_channel, messenger_delivery_status, created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'SUBMITTED', 'PENDING',
+              'MESSENGER', 'PENDING', ?, ?)`,
+          ).bind(
+            cartRequestId,
+            publicCode,
+            body.submissionToken,
+            itemLineCount,
+            totalQuantity,
+            subtotalVnd,
+            createdAt,
+            createdAt,
+          ),
       env.DB.prepare(
         `INSERT INTO messenger_checkout_sessions (
           id, cart_request_id, ref_hash, status_token_hash, status,
@@ -466,11 +457,26 @@ export async function startMessengerCheckout(request: Request, env: Env) {
         ),
       ),
     );
+    statements.push(
+      ...promotionStatements.snapshots,
+      ...promotionStatements.gifts,
+      ...promotionStatements.redemptions,
+    );
     try {
       await env.DB.batch(statements);
     } catch (caught) {
       const duplicate = await findExistingStart(body.submissionToken, env);
-      if (duplicate) return startResponse(duplicate, body.submissionToken, config);
+      if (duplicate)
+        return startResponse(duplicate, body.submissionToken, config, env);
+      if (
+        caught instanceof Error &&
+        caught.message.includes("PROMOTION_USAGE_LIMIT")
+      )
+        return error(
+          "PROMOTION_USAGE_LIMIT",
+          "Một chương trình khuyến mãi vừa hết lượt áp dụng. Vui lòng thử lại.",
+          409,
+        );
       throw caught;
     }
     return startResponse(
@@ -481,7 +487,7 @@ export async function startMessengerCheckout(request: Request, env: Env) {
         status: "CREATED",
         psid: null,
         expiresAt,
-        itemLineCount: pricedItems.length,
+        itemLineCount,
         totalQuantity,
         subtotalVnd,
         createdAt,
@@ -489,12 +495,15 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       },
       body.submissionToken,
       config,
+      env,
       201,
     );
   } catch (caught) {
     if (caught instanceof RateLimitError)
       return error(caught.code, caught.message, caught.status);
     if (caught instanceof MessengerDomainError)
+      return error(caught.code, caught.message, caught.status);
+    if (caught instanceof PromotionCartError)
       return error(caught.code, caught.message, caught.status);
     console.error(
       JSON.stringify({
@@ -878,6 +887,10 @@ export function composeMessengerCartSummary(request: {
   code: string;
   items: PricedItem[];
   subtotalVnd: number;
+  promotionDiscountVnd?: number;
+  finalTotalVnd?: number;
+  promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
+  gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
 }) {
   const lines = [`🛒 GIỎ HÀNG ${STORE_BRAND}`, "", `Mã: ${request.code}`, ""];
   request.items.forEach((item) => {
@@ -888,9 +901,29 @@ export function composeMessengerCartSummary(request: {
       "",
     );
   });
+  request.gifts?.forEach((gift) => {
+    lines.push(
+      `🎁 ${gift.productName}`,
+      `  ${gift.variantName} × ${gift.quantity}`,
+      "  Quà tặng khuyến mãi · 0 ₫",
+      "",
+    );
+  });
+  request.promotions?.forEach((promotion) => {
+    if (promotion.discountAmountVnd > 0)
+      lines.push(
+        `Khuyến mãi ${promotion.promotionName}: -${formatVnd(promotion.discountAmountVnd)}`,
+      );
+  });
   lines.push(
     "────────────────",
     `Tạm tính: ${formatVnd(request.subtotalVnd)}`,
+    ...(request.promotionDiscountVnd
+      ? [`Khuyến mãi: -${formatVnd(request.promotionDiscountVnd)}`]
+      : []),
+    ...(request.finalTotalVnd !== undefined
+      ? [`Tổng thanh toán: ${formatVnd(request.finalTotalVnd)}`]
+      : []),
     "",
     `✅ ${STORE_BRAND} đã nhận giỏ hàng.`,
     "",
@@ -1037,12 +1070,18 @@ async function deliverCartSummary(cartRequestId: string, env: Env) {
   )
     .bind(cartRequestId)
     .all<PricedItem>();
+  const schema = await hasPromotionSchema(env);
+  const history = await loadPromotionHistory(cartRequestId, env);
   try {
     const messageId = await sendMessengerMessage(env, delivery.psid, {
       text: composeMessengerCartSummary({
         code: delivery.code,
         items: items.results,
         subtotalVnd: delivery.subtotalVnd,
+        promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
+        finalTotalVnd: schema ? history.finalTotalVnd : delivery.subtotalVnd,
+        promotions: history.promotions,
+        gifts: history.gifts,
       }),
     });
     const sentAt = new Date().toISOString();

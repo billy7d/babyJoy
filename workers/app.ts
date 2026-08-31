@@ -32,6 +32,19 @@ import {
   saveAdminSellerSettings,
 } from "./cart-share";
 import {
+  evaluateAuthoritativeCart,
+  PromotionCartError,
+} from "./promotions";
+import {
+  deleteAdminPromotion,
+  duplicateAdminPromotion,
+  getAdminPromotion,
+  listAdminPromotions,
+  listPromotionOptions,
+  saveAdminPromotion,
+  updateAdminPromotionStatus,
+} from "./promotion-admin";
+import {
   addAdminAnalyticsExemption,
   authorizeStorefrontSession,
   createAccessLink,
@@ -98,6 +111,68 @@ async function readBoundedJson(request: Request) {
   const text = await request.text();
   if (text.length > 64 * 1024) throw new Error("PAYLOAD_TOO_LARGE");
   return JSON.parse(text) as unknown;
+}
+
+async function evaluateCart(request: Request, env: Env) {
+  let value: unknown;
+  try {
+    value = await readBoundedJson(request);
+  } catch {
+    return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+  }
+  if (!value || typeof value !== "object")
+    return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+  const rawItems = (value as { items?: unknown }).items;
+  if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 50)
+    return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+  const seen = new Set<string>();
+  const items = [] as Array<{ variantId: string; quantity: number }>;
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object")
+      return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+    const row = rawItem as Record<string, unknown>;
+    const variantId = typeof row.variantId === "string" ? row.variantId.trim() : "";
+    const quantity = Number(row.quantity);
+    if (
+      !variantId ||
+      seen.has(variantId) ||
+      !Number.isSafeInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 99
+    )
+      return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+    seen.add(variantId);
+    items.push({ variantId, quantity });
+  }
+  try {
+    const result = await evaluateAuthoritativeCart(items, env);
+    if (result.unavailable.length)
+      return error(
+        "VARIANT_UNAVAILABLE",
+        "Một số sản phẩm hiện không còn sẵn sàng.",
+        409,
+        { variantIds: result.unavailable },
+      );
+    return json({
+      success: true,
+      subtotalVnd: result.evaluation.subtotalVnd,
+      discountTotalVnd: result.evaluation.discountTotalVnd,
+      finalTotalVnd: result.evaluation.finalTotalVnd,
+      totalQuantity: result.evaluation.totalQuantity,
+      items: result.evaluation.items.map(({ categoryIds: _categoryIds, ...item }) => item),
+      gifts: result.evaluation.gifts,
+      appliedPromotions: result.evaluation.appliedPromotions.map(
+        ({ giftItems: _giftItems, ...promotion }) => promotion,
+      ),
+      progress: result.evaluation.progress,
+    });
+  } catch (caught) {
+    if (caught instanceof PromotionCartError)
+      return error(caught.code, caught.message, caught.status, {
+        variantIds: caught.variantIds,
+      });
+    throw caught;
+  }
 }
 
 async function listCategories(env: Env, includeInactive = false) {
@@ -1524,6 +1599,8 @@ async function handleApi(
     return getProduct(decodeURIComponent(path.slice(14)), env);
   if (request.method === "GET" && path === "/api/checkout-config")
     return checkoutConfigResponse(env);
+  if (request.method === "POST" && path === "/api/cart/evaluate")
+    return evaluateCart(request, env);
   if (request.method === "POST" && path === "/api/cart/share/prepare")
     return prepareCartShare(request, env);
   const publicShareMatch = path.match(/^\/api\/cart\/share\/([^/]+)$/);
@@ -1600,6 +1677,36 @@ async function handleApi(
     return getStorefrontSettings(env);
   if (request.method === "PUT" && path === "/api/admin/settings/storefront")
     return saveStorefrontSettings(request, env);
+  if (request.method === "GET" && path === "/api/admin/promotions")
+    return listAdminPromotions(request, env);
+  if (request.method === "GET" && path === "/api/admin/promotions/options")
+    return listPromotionOptions(request, env);
+  const promotionMatch = path.match(/^\/api\/admin\/promotions\/([^/]+)$/);
+  const promotionDuplicateMatch = path.match(
+    /^\/api\/admin\/promotions\/([^/]+)\/duplicate$/,
+  );
+  const promotionStatusMatch = path.match(
+    /^\/api\/admin\/promotions\/([^/]+)\/status$/,
+  );
+  if (request.method === "POST" && path === "/api/admin/promotions")
+    return saveAdminPromotion(request, env);
+  if (request.method === "GET" && promotionMatch)
+    return getAdminPromotion(decodeURIComponent(promotionMatch[1]), env);
+  if (request.method === "PUT" && promotionMatch)
+    return saveAdminPromotion(request, env, decodeURIComponent(promotionMatch[1]));
+  if (request.method === "DELETE" && promotionMatch)
+    return deleteAdminPromotion(decodeURIComponent(promotionMatch[1]), env);
+  if (request.method === "POST" && promotionDuplicateMatch)
+    return duplicateAdminPromotion(
+      decodeURIComponent(promotionDuplicateMatch[1]),
+      env,
+    );
+  if (request.method === "PATCH" && promotionStatusMatch)
+    return updateAdminPromotionStatus(
+      request,
+      decodeURIComponent(promotionStatusMatch[1]),
+      env,
+    );
   if (request.method === "GET" && path === "/api/admin/products")
     return listProducts(request, env, true);
   const productMatch = path.match(/^\/api\/admin\/products\/([^/]+)$/);

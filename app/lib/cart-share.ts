@@ -20,6 +20,8 @@ export type PreparedCartShare = {
     itemLineCount: number;
     totalQuantity: number;
     subtotalVnd: number;
+    promotionDiscountVnd?: number;
+    finalTotalVnd?: number;
     createdAt: string;
   };
   share: {
@@ -28,6 +30,16 @@ export type PreparedCartShare = {
     url: string;
     copyText: string;
     expiresAt: string;
+    promotions?: Array<{
+      promotionName: string;
+      discountAmountVnd: number;
+    }>;
+    gifts?: Array<{
+      productName: string;
+      variantName: string;
+      quantity: number;
+      isPromotionGift: true;
+    }>;
   };
   seller: SellerContact;
 };

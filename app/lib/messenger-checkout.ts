@@ -14,6 +14,8 @@ export type PendingMessengerCart = {
     itemLineCount: number;
     totalQuantity: number;
     subtotalVnd: number;
+    promotionDiscountVnd?: number;
+    finalTotalVnd?: number;
     createdAt: string;
   };
 };
