@@ -9,6 +9,10 @@ export type EditableVariant = {
   priceVnd: string;
   compareAtPriceVnd?: number | null;
   availability: Availability;
+  trackInventory: boolean;
+  stockOnHand: string;
+  reservedQuantity?: number;
+  availableQuantity?: number;
 };
 
 /** Tạo khóa tạm ổn định cho row draft mà không phụ thuộc SKU đang chỉnh sửa. */
@@ -25,6 +29,10 @@ export function createDraftVariant(): EditableVariant {
     sku: "",
     priceVnd: "",
     availability: "AVAILABLE",
+    trackInventory: true,
+    stockOnHand: "0",
+    reservedQuantity: 0,
+    availableQuantity: 0,
   };
 }
 
@@ -37,10 +45,20 @@ export function toEditableVariant(variant: Variant): EditableVariant {
     priceVnd: String(variant.priceVnd),
     compareAtPriceVnd: variant.compareAtPriceVnd ?? null,
     availability: variant.availability,
+    trackInventory: Boolean(variant.trackInventory),
+    stockOnHand: String(variant.stockOnHand ?? 0),
+    reservedQuantity: variant.reservedQuantity ?? 0,
+    availableQuantity: variant.availableQuantity ?? 0,
   };
 }
 
-export type VariantField = "name" | "sku" | "priceVnd" | "availability";
+export type VariantField =
+  | "name"
+  | "sku"
+  | "priceVnd"
+  | "availability"
+  | "trackInventory"
+  | "stockOnHand";
 export type VariantFieldErrors = Partial<Record<VariantField, string>>;
 
 /** Kiểm tra nhanh từng row trước khi gửi; server vẫn là lớp xác thực cuối. */
@@ -70,6 +88,13 @@ export function validateEditableVariants(variants: EditableVariant[]) {
       rowErrors.priceVnd = "Giá bán phải là số nguyên lớn hơn 0.";
     if (!(["AVAILABLE", "OUT_OF_STOCK", "HIDDEN"] as Availability[]).includes(variant.availability))
       rowErrors.availability = "Tình trạng phân loại không hợp lệ.";
+    const stockOnHand = Number(variant.stockOnHand);
+    if (
+      !variant.stockOnHand.trim() ||
+      !Number.isSafeInteger(stockOnHand) ||
+      stockOnHand < 0
+    )
+      rowErrors.stockOnHand = "Tồn kho thực tế phải là số nguyên không âm.";
     if (Object.keys(rowErrors).length) errors[variant.clientId] = rowErrors;
   });
   return errors;
@@ -88,7 +113,9 @@ export function mapVariantValidationIssue(
     field !== "name" &&
     field !== "sku" &&
     field !== "priceVnd" &&
-    field !== "availability"
+    field !== "availability" &&
+    field !== "trackInventory" &&
+    field !== "stockOnHand"
   )
     return {} as Record<string, VariantFieldErrors>;
   const clientId = typeof issue.clientId === "string" ? issue.clientId : "";

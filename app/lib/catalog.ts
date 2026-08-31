@@ -1,4 +1,5 @@
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
+export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
 
 export type Variant = {
   id: string;
@@ -7,6 +8,11 @@ export type Variant = {
   priceVnd: number;
   compareAtPriceVnd?: number;
   availability: Availability;
+  trackInventory?: boolean;
+  stockOnHand?: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+  inventoryAvailability?: InventoryAvailability;
 };
 
 export type ProductImageRecord = {
@@ -203,7 +209,7 @@ export function findVariantInProducts(source: Product[], variantId: string) {
 /** Chọn phân loại mặc định có thể mua; chỉ dùng phần tử đầu tiên làm phương án cuối. */
 export function getDefaultVariant(product: Product) {
   return (
-    product.variants.find((variant) => variant.availability === "AVAILABLE") ??
+    product.variants.find(isVariantPurchasable) ??
     product.variants.find((variant) => variant.availability !== "HIDDEN") ??
     product.variants.at(0)
   );
@@ -214,4 +220,20 @@ export function getDisplayVariant(product: Product) {
   return product.variants
     .filter((variant) => variant.availability !== "HIDDEN")
     .sort((left, right) => left.priceVnd - right.priceVnd)[0] ?? getDefaultVariant(product);
+}
+
+export function isVariantPurchasable(variant: Variant) {
+  return (
+    variant.availability === "AVAILABLE" &&
+    (!variant.trackInventory || (variant.availableQuantity ?? 0) > 0)
+  );
+}
+
+export function getVariantAvailableQuantity(variant: Variant) {
+  if (!variant.trackInventory) return null;
+  return Math.max(
+    0,
+    variant.availableQuantity ??
+      (variant.stockOnHand ?? 0) - (variant.reservedQuantity ?? 0),
+  );
 }

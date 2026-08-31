@@ -26,11 +26,23 @@ import {
 } from "./messenger";
 import {
   checkoutConfigResponse,
+  activateCartShare,
   getAdminSellerSettings,
   getPublicCartShare,
   prepareCartShare,
   saveAdminSellerSettings,
 } from "./cart-share";
+import {
+  cancelInventoryOrder,
+  confirmInventoryOrder,
+  cleanupExpiredReservations,
+  getAdminCheckoutSettings,
+  hasInventorySchema,
+  listActiveReservations,
+  listPromotionReservations,
+  mapInventoryError,
+  saveAdminCheckoutSettings,
+} from "./inventory";
 import {
   evaluateAuthoritativeCart,
   PromotionCartError,
@@ -150,6 +162,8 @@ async function evaluateCart(request: Request, env: Env) {
     items.push({ variantId, quantity });
   }
   try {
+    // Dọn lazy để tồn kho khả dụng không bị khóa bởi reservation đã quá hạn khi cron trễ.
+    await cleanupExpiredReservations(env);
     const result = await evaluateAuthoritativeCart(items, env);
     if (result.unavailable.length)
       return error(
@@ -157,6 +171,13 @@ async function evaluateCart(request: Request, env: Env) {
         "Một số sản phẩm hiện không còn sẵn sàng.",
         409,
         { variantIds: result.unavailable },
+      );
+    if (result.insufficientStock.length)
+      return error(
+        "INSUFFICIENT_STOCK",
+        "Một số sản phẩm không đủ tồn kho khả dụng.",
+        409,
+        { variantIds: result.insufficientStock },
       );
     return json({
       success: true,
@@ -238,6 +259,9 @@ type ProductVariantRow = {
   compareAtPriceVnd: number | null;
   availability: string;
   sortOrder: number;
+  trackInventory?: number;
+  stockOnHand?: number;
+  reservedQuantity?: number;
 };
 type ProductImageRow = {
   productId: string;
@@ -253,9 +277,13 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
+  const inventorySchema = await hasInventorySchema(env);
+  const inventorySelect = inventorySchema
+    ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
+    : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
   const [variants, images, tags, categories] = await Promise.all([
     env.DB.prepare(
-      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder FROM product_variants WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
+      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
     )
       .bind(...ids)
       .all<ProductVariantRow>(),
@@ -282,7 +310,18 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
     ...product,
     variants: variants.results
       .filter((variant) => variant.productId === product.id)
-      .map(({ productId: _productId, ...variant }) => variant),
+      .map(({ productId: _productId, ...variant }) => ({
+        ...variant,
+        trackInventory: Boolean(variant.trackInventory),
+        availableQuantity: Math.max(
+          0,
+          Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0),
+        ),
+        inventoryAvailability:
+          Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0) > 0
+            ? "AVAILABLE"
+            : "OUT_OF_STOCK",
+      })),
     images: images.results
       .filter((image) => image.productId === product.id)
       .map(({ productId: _productId, ...image }) => ({
@@ -368,6 +407,7 @@ function buildProductListQuery({
   sort,
   includeHidden,
   status,
+  inventorySchema,
 }: {
   q: string;
   categories: string[];
@@ -379,6 +419,7 @@ function buildProductListQuery({
   sort: ProductListSort;
   includeHidden: boolean;
   status: ProductListStatus;
+  inventorySchema: boolean;
 }): ProductListQuery {
   const where = includeHidden
     ? ["1 = 1"]
@@ -423,7 +464,9 @@ function buildProductListQuery({
   }
   if (available)
     where.push(
-      "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE')",
+      inventorySchema
+        ? "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity))"
+        : "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE')",
     );
 
   const price =
@@ -442,6 +485,9 @@ function buildProductListQuery({
 }
 
 async function listProducts(request: Request, env: Env, includeHidden = false) {
+  // Dọn lazy để catalog không giữ trạng thái tồn kho đã quá hạn khi cron trễ.
+  await cleanupExpiredReservations(env);
+  const inventorySchema = await hasInventorySchema(env);
   const url = new URL(request.url);
   const ageValue = url.searchParams.get("age");
   let age: number | null = null;
@@ -464,6 +510,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     sort: parseProductSort(url.searchParams.get("sort")),
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
+    inventorySchema,
   });
   const count = await env.DB.prepare(
     `SELECT COUNT(DISTINCT p.id) AS totalItems
@@ -505,6 +552,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
 }
 
 async function getProduct(slug: string, env: Env) {
+  await cleanupExpiredReservations(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
@@ -528,15 +576,27 @@ async function getProduct(slug: string, env: Env) {
 }
 
 async function getAdminRequests(request: Request, env: Env) {
+  await cleanupExpiredReservations(env);
   const scope = new URL(request.url).searchParams.get("scope") ?? "queue";
-  const where =
-    scope === "messenger"
+  const inventorySchema = await hasInventorySchema(env);
+  const where = inventorySchema
+    ? scope === "messenger"
+      ? "WHERE contact_channel = 'MESSENGER'"
+      : scope === "share"
+        ? "WHERE contact_channel = 'SHARE' AND checkout_state != 'READY_TO_SEND'"
+        : scope === "all"
+          ? "WHERE checkout_state != 'READY_TO_SEND'"
+          : "WHERE checkout_state = 'WAITING_SELLER_CONFIRM'"
+    : scope === "messenger"
       ? "WHERE contact_channel = 'MESSENGER'"
       : scope === "share"
         ? "WHERE contact_channel = 'SHARE'"
-      : scope === "all"
-        ? ""
-        : "WHERE contact_channel IN ('LEGACY', 'SHARE') OR messenger_delivery_status = 'SENT'";
+        : scope === "all"
+          ? ""
+          : "WHERE contact_channel IN ('LEGACY', 'SHARE') OR messenger_delivery_status = 'SENT'";
+  const inventorySelect = inventorySchema
+    ? ", checkout_state AS checkoutState, reservation_started_at AS reservationStartedAt, reservation_expires_at AS reservationExpiresAt, reservation_duration_minutes AS reservationDurationMinutes"
+    : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes";
   const result = await env.DB.prepare(
     `SELECT id, public_code AS publicCode, customer_name AS customerName,
       customer_phone AS customerPhone, item_line_count AS itemLineCount,
@@ -544,15 +604,19 @@ async function getAdminRequests(request: Request, env: Env) {
       telegram_status AS telegramStatus, contact_channel AS contactChannel,
       messenger_delivery_status AS messengerDeliveryStatus,
       (SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerSessionStatus,
-      created_at AS createdAt
+      created_at AS createdAt${inventorySelect}
      FROM cart_requests ${where}
-     ORDER BY CASE WHEN contact_channel = 'MESSENGER' AND messenger_delivery_status != 'SENT' THEN 1 ELSE 0 END,
+     ORDER BY ${inventorySchema
+       ? "CASE WHEN checkout_state = 'WAITING_SELLER_CONFIRM' THEN 0 ELSE 1 END, reservation_expires_at"
+       : "CASE WHEN contact_channel = 'MESSENGER' AND messenger_delivery_status != 'SENT' THEN 1 ELSE 0 END"},
        created_at DESC LIMIT 100`,
   ).all();
   return json({ data: result.results });
 }
 
 async function getAdminRequest(id: string, env: Env) {
+  await cleanupExpiredReservations(env);
+  const inventorySchema = await hasInventorySchema(env);
   const cartRequest = await env.DB.prepare(
     `SELECT id, public_code AS publicCode, customer_name AS customerName,
       customer_phone AS customerPhone, customer_contact AS customerContact,
@@ -570,7 +634,9 @@ async function getAdminRequest(id: string, env: Env) {
       CASE WHEN messenger_psid IS NULL THEN 0 ELSE 1 END AS messengerLinked,
       (SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerSessionStatus,
       (SELECT expires_at FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerExpiresAt,
-      created_at AS createdAt, updated_at AS updatedAt
+      created_at AS createdAt, updated_at AS updatedAt${inventorySchema
+        ? ", checkout_state AS checkoutState, reservation_started_at AS reservationStartedAt, reservation_expires_at AS reservationExpiresAt, reservation_duration_minutes AS reservationDurationMinutes, seller_confirmed_at AS sellerConfirmedAt"
+        : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes, NULL AS sellerConfirmedAt"}
      FROM cart_requests WHERE id = ?`,
   )
     .bind(id)
@@ -582,8 +648,18 @@ async function getAdminRequest(id: string, env: Env) {
   )
     .bind(id)
     .all<CartItemSnapshotRow>();
+  const [reservations, promotionReservations] = await Promise.all([
+    listActiveReservations(id, env),
+    listPromotionReservations(id, env),
+  ]);
   return json({
-    data: { ...cartRequest, items: items.results.map(mapCartItemSnapshot) },
+    data: {
+      ...cartRequest,
+      serverNow: new Date().toISOString(),
+      reservations,
+      promotionReservations,
+      items: items.results.map(mapCartItemSnapshot),
+    },
   });
 }
 
@@ -598,6 +674,20 @@ async function updateRequestStatus(request: Request, id: string, env: Env) {
   ];
   if (!body.status || !allowed.includes(body.status))
     return error("VALIDATION_ERROR", "Trạng thái không hợp lệ.", 422);
+  if (await hasInventorySchema(env)) {
+    const checkout = await env.DB.prepare(
+      "SELECT checkout_state AS checkoutState FROM cart_requests WHERE id = ?",
+    )
+      .bind(id)
+      .first<{ checkoutState: string }>();
+    if (!checkout) return error("ORDER_NOT_FOUND", "Không tìm thấy giỏ hàng.", 404);
+    if (checkout.checkoutState !== "LEGACY")
+      return error(
+        "INVALID_ORDER_TRANSITION",
+        "Đơn hàng reservation phải dùng thao tác xác nhận hoặc giải phóng riêng.",
+        409,
+      );
+  }
   await env.DB.prepare(
     "UPDATE cart_requests SET status = ?, updated_at = ? WHERE id = ?",
   )
@@ -668,13 +758,15 @@ type AdminProductInput = {
     compareAtPriceVnd?: number | string | null;
     availability?: string;
     sortOrder?: number;
+    trackInventory?: boolean;
+    stockOnHand?: number | string;
   }>;
   deletedVariantIds?: string[];
 };
 
 type VariantValidationIssue = {
   code: string;
-  field?: "name" | "sku" | "priceVnd" | "availability";
+  field?: "name" | "sku" | "priceVnd" | "availability" | "trackInventory" | "stockOnHand";
   variantId?: string | null;
   clientId?: string | null;
   message: string;
@@ -740,6 +832,19 @@ function validateAdminProduct(input: unknown) {
     const variantId = typeof variant.id === "string" ? variant.id.trim() : "";
     const clientId =
       typeof variant.clientId === "string" ? variant.clientId.trim() : "";
+    const trackInventory =
+      variant.trackInventory === undefined
+        ? undefined
+        : typeof variant.trackInventory === "boolean"
+          ? variant.trackInventory
+          : null;
+    const rawStockOnHand = variant.stockOnHand;
+    const stockOnHand =
+      rawStockOnHand === undefined
+        ? undefined
+        : typeof rawStockOnHand === "number" || typeof rawStockOnHand === "string"
+          ? Number(rawStockOnHand)
+          : Number.NaN;
     const issue = (code: string, field: VariantValidationIssue["field"], message: string) => {
       throw new AdminProductValidationError({
         code,
@@ -764,6 +869,13 @@ function validateAdminProduct(input: unknown) {
       issue("INVALID_PRICE", "priceVnd", "Giá bán phải là số nguyên lớn hơn 0.");
     if (!statuses.includes(availability))
       issue("INVALID_AVAILABILITY", "availability", "Tình trạng phân loại không hợp lệ.");
+    if (trackInventory === null)
+      issue("INVALID_INVENTORY", "trackInventory", "Theo dõi tồn kho phải là bật hoặc tắt.");
+    if (
+      stockOnHand !== undefined &&
+      (!Number.isSafeInteger(stockOnHand) || stockOnHand < 0)
+    )
+      issue("INVALID_STOCK", "stockOnHand", "Tồn kho thực tế phải là số nguyên không âm.");
     const rawCompareAtPrice = variant.compareAtPriceVnd;
     const compareAtPriceVnd =
       rawCompareAtPrice === null || rawCompareAtPrice === undefined
@@ -786,6 +898,8 @@ function validateAdminProduct(input: unknown) {
       priceVnd,
       compareAtPriceVnd,
       availability,
+      trackInventory: trackInventory === null ? undefined : trackInventory,
+      stockOnHand,
       sortOrder: Number.isFinite(variant.sortOrder)
         ? Number(variant.sortOrder)
         : index,
@@ -878,6 +992,7 @@ function validateAdminProduct(input: unknown) {
 }
 
 async function readAdminProductData(id: string, env: Env) {
+  await cleanupExpiredReservations(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
@@ -889,8 +1004,12 @@ async function readAdminProductData(id: string, env: Env) {
     .bind(id)
     .first<Record<string, unknown>>();
   if (!product) return null;
+  const inventorySchema = await hasInventorySchema(env);
   const variants = await env.DB.prepare(
-    "SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder FROM product_variants WHERE product_id = ? ORDER BY sort_order, created_at, id",
+    `SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
+      ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
+      : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
+     FROM product_variants WHERE product_id = ? ORDER BY sort_order, created_at, id`,
   )
     .bind(id)
     .all();
@@ -911,7 +1030,14 @@ async function readAdminProductData(id: string, env: Env) {
     .all<Omit<ProductImageRow, "productId">>();
   return {
     ...product,
-    variants: variants.results,
+    variants: variants.results.map((variant) => ({
+      ...variant,
+      trackInventory: Boolean(variant.trackInventory),
+      availableQuantity: Math.max(
+        0,
+        Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0),
+      ),
+    })),
     categoryIds: categories.results.map((item) => item.id),
     tagIds: tags.results.map((item) => item.id),
     images: images.results.map((image) => ({
@@ -951,14 +1077,26 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
 
+  const inventorySchema = await hasInventorySchema(env);
+
   // Đọc toàn bộ ID trước transaction để phân biệt rõ update, insert và delete.
   const existingVariants = id
     ? await env.DB.prepare(
-        "SELECT id FROM product_variants WHERE product_id = ?",
+        `SELECT id${inventorySchema
+          ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
+          : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
+         FROM product_variants WHERE product_id = ?`,
       )
         .bind(productId)
-        .all<{ id: string }>()
-    : { results: [] as Array<{ id: string }> };
+        .all<{ id: string; trackInventory: number; stockOnHand: number; reservedQuantity: number }>()
+    : {
+        results: [] as Array<{
+          id: string;
+          trackInventory: number;
+          stockOnHand: number;
+          reservedQuantity: number;
+        }>,
+      };
   const existingVariantIds = new Set(
     existingVariants.results.map((variant) => variant.id),
   );
@@ -1012,6 +1150,29 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
           message: "Phân loại không thuộc sản phẩm này.",
         },
       );
+  }
+  if (inventorySchema && id) {
+    const guardedIds = body.variants
+      .filter((variant) => variant.id && variant.trackInventory === false)
+      .map((variant) => variant.id as string)
+      .concat([...deletedVariantIds]);
+    if (guardedIds.length) {
+      const placeholders = guardedIds.map(() => "?").join(",");
+      const active = await env.DB.prepare(
+        `SELECT DISTINCT variant_id AS variantId
+         FROM inventory_reservations
+         WHERE status = 'ACTIVE' AND variant_id IN (${placeholders})`,
+      )
+        .bind(...guardedIds)
+        .all<{ variantId: string }>();
+      if (active.results.length)
+        return error(
+          "INVENTORY_CONFLICT",
+          "Không thể tắt theo dõi hoặc xóa phân loại đang được giữ hàng.",
+          409,
+          { variantIds: active.results.map((row) => row.variantId) },
+        );
+    }
   }
   const newVariantCount = body.variants.filter((variant) => !variant.id).length;
   const finalVariantCount =
@@ -1122,6 +1283,21 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       );
     }
   }
+  if (inventorySchema) {
+    for (const variant of body.variants) {
+      if (!variant.id) continue;
+      const current = existingVariants.results.find((item) => item.id === variant.id);
+      if (!current) continue;
+      const stockOnHand = variant.stockOnHand ?? current.stockOnHand;
+      if (stockOnHand < current.reservedQuantity)
+        return error(
+          "INVENTORY_CONFLICT",
+          "Tồn kho thực tế không được thấp hơn số lượng đang giữ.",
+          409,
+          { variantId: variant.id },
+        );
+    }
+  }
   const now = new Date().toISOString();
   const statements = id
     ? [
@@ -1203,38 +1379,120 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   );
   body.variants.forEach((variant) => {
     if (variant.id) {
+      const current = existingVariants.results.find((item) => item.id === variant.id);
+      const trackInventory =
+        variant.trackInventory ?? Boolean(current?.trackInventory);
+      const stockOnHand = variant.stockOnHand ?? current?.stockOnHand ?? 0;
+      if (
+        inventorySchema &&
+        current &&
+        stockOnHand !== current.stockOnHand
+      )
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO inventory_movements (
+              id, variant_id, movement_type, quantity_delta,
+              stock_before, stock_after, note, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(
+            crypto.randomUUID(),
+            variant.id,
+            stockOnHand > current.stockOnHand ? "RESTOCK" : "MANUAL_ADJUSTMENT",
+            stockOnHand - current.stockOnHand,
+            current.stockOnHand,
+            stockOnHand,
+            "Điều chỉnh tồn kho từ Admin.",
+            now,
+          ),
+        );
       statements.push(
         env.DB.prepare(
-          "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?",
+          inventorySchema
+            ? "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, track_inventory = ?, stock_on_hand = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?"
+            : "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?",
         ).bind(
-          variant.name,
-          variant.sku,
-          variant.priceVnd,
-          variant.compareAtPriceVnd ?? null,
-          variant.availability,
-          variant.sortOrder,
-          now,
-          variant.id,
-          productId,
+          ...(inventorySchema
+            ? [
+                variant.name,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                trackInventory ? 1 : 0,
+                stockOnHand,
+                variant.sortOrder,
+                now,
+                variant.id,
+                productId,
+              ]
+            : [
+                variant.name,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                variant.sortOrder,
+                now,
+                variant.id,
+                productId,
+              ]),
         ),
       );
     } else {
+      const variantId = crypto.randomUUID();
+      const trackInventory = variant.trackInventory ?? true;
+      const stockOnHand = variant.stockOnHand ?? 0;
       statements.push(
         env.DB.prepare(
-          "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          inventorySchema
+            ? "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, track_inventory, stock_on_hand, reserved_quantity, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
+            : "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ).bind(
-          crypto.randomUUID(),
-          productId,
-          variant.name,
-          variant.sku,
-          variant.priceVnd,
-          variant.compareAtPriceVnd ?? null,
-          variant.availability,
-          variant.sortOrder,
-          now,
-          now,
+          ...(inventorySchema
+            ? [
+                variantId,
+                productId,
+                variant.name,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                trackInventory ? 1 : 0,
+                stockOnHand,
+                variant.sortOrder,
+                now,
+                now,
+              ]
+            : [
+                variantId,
+                productId,
+                variant.name,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                variant.sortOrder,
+                now,
+                now,
+              ]),
         ),
       );
+      if (inventorySchema)
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO inventory_movements (
+              id, variant_id, movement_type, quantity_delta,
+              stock_before, stock_after, note, created_at
+            ) VALUES (?, ?, 'INITIAL_STOCK', ?, 0, ?, ?, ?)`,
+          ).bind(
+            crypto.randomUUID(),
+            variantId,
+            stockOnHand,
+            stockOnHand,
+            "Tồn kho ban đầu từ Admin.",
+            now,
+          ),
+        );
     }
   });
   if (body.images !== undefined) {
@@ -1279,6 +1537,8 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     await env.DB.batch(statements);
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
+    const inventoryFailure = mapInventoryError(caught);
+    if (inventoryFailure) return inventoryFailure;
     if (message.includes("UNIQUE")) {
       const conflict = await findConflict();
       if (conflict) {
@@ -1318,6 +1578,7 @@ async function duplicateAdminProduct(id: string, env: Env) {
   const newId = crypto.randomUUID();
   const suffix = crypto.randomUUID().slice(0, 6);
   const now = new Date().toISOString();
+  const inventorySchema = await hasInventorySchema(env);
   const statements = [
     env.DB.prepare(
       "INSERT INTO products (id, name, slug, brand, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', 0, ?, ?, ?)",
@@ -1334,21 +1595,58 @@ async function duplicateAdminProduct(id: string, env: Env) {
     ),
   ];
   variants.results.forEach((variant) =>
-    statements.push(
-      env.DB.prepare(
-        "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', ?, ?, ?)",
-      ).bind(
-        crypto.randomUUID(),
-        newId,
-        variant.name,
-        variant.sku ? `${variant.sku}-COPY-${suffix}` : null,
-        variant.price_vnd,
-        variant.compare_at_price_vnd,
-        variant.sort_order,
-        now,
-        now,
-      ),
-    ),
+    (() => {
+      const variantId = crypto.randomUUID();
+      statements.push(
+        env.DB.prepare(
+          inventorySchema
+            ? "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, track_inventory, stock_on_hand, reserved_quantity, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', ?, ?, 0, ?, ?, ?)"
+            : "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', ?, ?, ?)",
+        ).bind(
+          ...(inventorySchema
+            ? [
+                variantId,
+                newId,
+                variant.name,
+                variant.sku ? `${variant.sku}-COPY-${suffix}` : null,
+                variant.price_vnd,
+                variant.compare_at_price_vnd,
+                variant.track_inventory ?? 1,
+                variant.stock_on_hand ?? 0,
+                variant.sort_order,
+                now,
+                now,
+              ]
+            : [
+                variantId,
+                newId,
+                variant.name,
+                variant.sku ? `${variant.sku}-COPY-${suffix}` : null,
+                variant.price_vnd,
+                variant.compare_at_price_vnd,
+                variant.sort_order,
+                now,
+                now,
+              ]),
+        ),
+      );
+      if (inventorySchema)
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO inventory_movements (
+              id, variant_id, movement_type, quantity_delta,
+              stock_before, stock_after, note, created_at
+            ) VALUES (?, ?, 'INITIAL_STOCK', ?, 0, ?, ?, ?)`,
+          ).bind(
+            crypto.randomUUID(),
+            variantId,
+            variant.stock_on_hand ?? 0,
+            variant.stock_on_hand ?? 0,
+            "Tồn kho ban đầu của sản phẩm sao chép.",
+            now,
+          ),
+        );
+    })(),
   );
   await env.DB.batch(statements);
   return json({ success: true, id: newId }, 201);
@@ -1710,6 +2008,8 @@ async function handleApi(
     return evaluateCart(request, env);
   if (request.method === "POST" && path === "/api/cart/share/prepare")
     return prepareCartShare(request, env);
+  if (request.method === "POST" && path === "/api/cart/share/activate")
+    return activateCartShare(request, env);
   const publicShareMatch = path.match(/^\/api\/cart\/share\/([^/]+)$/);
   if (request.method === "GET" && publicShareMatch)
     return getPublicCartShare(decodeURIComponent(publicShareMatch[1]), env);
@@ -1784,6 +2084,10 @@ async function handleApi(
     return getStorefrontSettings(env);
   if (request.method === "PUT" && path === "/api/admin/settings/storefront")
     return saveStorefrontSettings(request, env);
+  if (request.method === "GET" && path === "/api/admin/settings/checkout")
+    return getAdminCheckoutSettings(env);
+  if (request.method === "PUT" && path === "/api/admin/settings/checkout")
+    return saveAdminCheckoutSettings(request, env);
   if (request.method === "GET" && path === "/api/admin/promotions")
     return listAdminPromotions(request, env);
   if (request.method === "GET" && path === "/api/admin/promotions/options")
@@ -1893,6 +2197,16 @@ async function handleApi(
   );
   if (request.method === "PATCH" && statusMatch)
     return updateRequestStatus(request, statusMatch[1], env);
+  const confirmRequestMatch = path.match(
+    /^\/api\/admin\/cart-requests\/([^/]+)\/confirm$/,
+  );
+  if (request.method === "POST" && confirmRequestMatch)
+    return confirmInventoryOrder(decodeURIComponent(confirmRequestMatch[1]), env);
+  const cancelRequestMatch = path.match(
+    /^\/api\/admin\/cart-requests\/([^/]+)\/cancel$/,
+  );
+  if (request.method === "POST" && cancelRequestMatch)
+    return cancelInventoryOrder(decodeURIComponent(cancelRequestMatch[1]), env);
   const retryMessengerMatch = path.match(
     /^\/api\/admin\/cart-requests\/([^/]+)\/retry-messenger$/,
   );
@@ -1999,5 +2313,8 @@ export default {
         );
       return new Response("Đã có lỗi xảy ra.", { status: 500 });
     }
+  },
+  async scheduled(controller, env) {
+    await cleanupExpiredReservations(env, new Date(controller.scheduledTime), 100);
   },
 } satisfies ExportedHandler<Env>;

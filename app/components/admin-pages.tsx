@@ -8,6 +8,12 @@ import {
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
+import {
+  DEFAULT_CHECKOUT_RESERVATION_MINUTES,
+  MAX_CHECKOUT_RESERVATION_MINUTES,
+  MIN_CHECKOUT_RESERVATION_MINUTES,
+  formatReservationDuration,
+} from "../../shared/reservation";
 import { mapApiProduct } from "../lib/catalog-context";
 import {
   createDraftVariant,
@@ -36,6 +42,15 @@ type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string }
 type AdminProduct = Product & { adminStatus: string };
 type VariantErrors = Record<string, VariantFieldErrors>;
 type AdminProductsResponse = Partial<PaginatedResponse<AdminProductRow>>;
+
+function formatReservationRemaining(expiresAt: string | null | undefined, now = Date.now()) {
+  if (!expiresAt) return "Chưa bắt đầu giữ hàng";
+  const expires = Date.parse(expiresAt);
+  if (!Number.isFinite(expires)) return "Không xác định thời hạn";
+  const remainingMs = expires - now;
+  if (remainingMs <= 0) return "Đã hết hạn";
+  return `Còn ${formatReservationDuration(Math.max(1, Math.ceil(remainingMs / 60000)))}`;
+}
 
 export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
   const product = mapApiProduct(row);
@@ -515,7 +530,7 @@ export function ProductEditorPage() {
   const updateVariant = (
     clientId: string,
     field: VariantField,
-    value: string,
+    value: string | boolean,
   ) => {
     setVariants((current) =>
       current.map((variant) =>
@@ -734,7 +749,7 @@ export function ProductEditorPage() {
                   <span>Tên phân loại</span>
                   <span>Mã SKU</span>
                   <span>Giá bán (₫)</span>
-                  <span>Tình trạng</span>
+                  <span>Tình trạng & tồn kho</span>
                 </div>
                 {variants.map((variant) => {
                   const errors = variantErrors[variant.clientId] ?? {};
@@ -778,7 +793,7 @@ export function ProductEditorPage() {
                         />
                         {errors.priceVnd && <small id={`${variant.clientId}-price-error`} className="form-error">{errors.priceVnd}</small>}
                       </label>
-                      <label>
+                      <div className="variant-inventory-editor">
                         <span className="sr-only">Tình trạng</span>
                         <select
                           value={variant.availability}
@@ -793,7 +808,44 @@ export function ProductEditorPage() {
                           <option value="HIDDEN">Đã ẩn</option>
                         </select>
                         {errors.availability && <small id={`${variant.clientId}-availability-error`} className="form-error">{errors.availability}</small>}
-                      </label>
+                        <label className="inventory-toggle-label">
+                          <input
+                            type="checkbox"
+                            checked={variant.trackInventory}
+                            onChange={(event) =>
+                              updateVariant(
+                                variant.clientId,
+                                "trackInventory",
+                                event.target.checked,
+                              )
+                            }
+                          />
+                          <span>Theo dõi tồn kho</span>
+                        </label>
+                        <label>
+                          <span className="sr-only">Tồn kho thực tế</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={variant.stockOnHand}
+                            onChange={(event) =>
+                              updateVariant(
+                                variant.clientId,
+                                "stockOnHand",
+                                event.target.value,
+                              )
+                            }
+                            aria-label="Tồn kho thực tế"
+                            aria-invalid={Boolean(errors.stockOnHand)}
+                            aria-describedby={errors.stockOnHand ? `${variant.clientId}-stock-error` : undefined}
+                          />
+                          {errors.stockOnHand && <small id={`${variant.clientId}-stock-error`} className="form-error">{errors.stockOnHand}</small>}
+                        </label>
+                        <small className="inventory-readonly">
+                          Đang giữ: {variant.reservedQuantity ?? 0} • Có thể bán: {variant.trackInventory ? Math.max(0, Number(variant.stockOnHand) - (variant.reservedQuantity ?? 0)) : "Không theo dõi"}
+                        </small>
+                      </div>
                       <button
                         type="button"
                         onClick={() => deleteVariant(variant)}
@@ -1038,6 +1090,7 @@ function Toggle({
 
 export function AdminCartRequestsPage() {
   const [scope, setScope] = useState<"queue" | "share" | "messenger">("queue");
+  const [now, setNow] = useState(() => Date.now());
   const [requests, setRequests] = useState<
     Array<{
       id: string;
@@ -1052,8 +1105,16 @@ export function AdminCartRequestsPage() {
       messengerDeliveryStatus: string;
       messengerSessionStatus: string | null;
       createdAt: string;
+      checkoutState?: string;
+      reservationStartedAt?: string | null;
+      reservationExpiresAt?: string | null;
+      reservationDurationMinutes?: number | null;
     }>
   >([]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     void fetch(`/api/admin/cart-requests?scope=${scope}`)
       .then(async (response) => {
@@ -1158,7 +1219,12 @@ export function AdminCartRequestsPage() {
                     <Price value={request.subtotalVnd} />
                   </td>
                   <td>
-                    <StatusBadge status={request.status} />
+                    <StatusBadge status={request.checkoutState && request.checkoutState !== "LEGACY" ? request.checkoutState : request.status} />
+                    {request.checkoutState === "WAITING_SELLER_CONFIRM" && (
+                      <small>
+                        {formatReservationRemaining(request.reservationExpiresAt, now)}
+                      </small>
+                    )}
                   </td>
                   <td>
                     <StatusBadge status={request.contactChannel} />
@@ -1193,6 +1259,9 @@ export function AdminCartRequestDetailPage() {
     "request-canonical";
   const [status, setStatus] = useState("SUBMITTED");
   const [messengerDelivery, setMessengerDelivery] = useState("PENDING");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const [detail, setDetail] = useState<{
     publicCode: string;
     customerName: string | null;
@@ -1213,6 +1282,27 @@ export function AdminCartRequestDetailPage() {
     messengerLastUserInteractionAt: string | null;
     messengerLinked: number;
     createdAt: string;
+    updatedAt?: string;
+    checkoutState?: string;
+    reservationStartedAt?: string | null;
+    reservationExpiresAt?: string | null;
+    reservationDurationMinutes?: number | null;
+    sellerConfirmedAt?: string | null;
+    serverNow?: string;
+    reservations?: Array<{
+      id: string;
+      variantId: string;
+      quantity: number;
+      sourceType: string;
+      status: string;
+      expiresAt: string;
+    }>;
+    promotionReservations?: Array<{
+      id: string;
+      promotionId: string;
+      status: string;
+      expiresAt: string;
+    }>;
     items: Array<{
       id: string;
       productName: string;
@@ -1226,18 +1316,21 @@ export function AdminCartRequestDetailPage() {
   } | null>(null);
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const loadDetail = async () => {
+    const response = await fetch(`/api/admin/cart-requests/${requestId}`);
+    if (!response.ok) throw new Error("REQUEST_LOAD_FAILED");
+    const body = (await response.json()) as { data: NonNullable<typeof detail> };
+    setDetail(body.data);
+    setStatus(body.data.status);
+    setMessengerDelivery(body.data.messengerDeliveryStatus);
+  };
+  useEffect(() => {
     let cancelled = false;
-    void fetch(`/api/admin/cart-requests/${requestId}`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("REQUEST_LOAD_FAILED");
-        return response.json() as Promise<{ data: NonNullable<typeof detail> }>;
-      })
-      .then((body) => {
-        if (cancelled) return;
-        setDetail(body.data);
-        setStatus(body.data.status);
-        setMessengerDelivery(body.data.messengerDeliveryStatus);
-      })
+    void loadDetail()
+      .then(() => undefined)
       .catch(() => {
         if (!cancelled) setLoadError("Không tải được giỏ hàng từ D1.");
       });
@@ -1268,6 +1361,25 @@ export function AdminCartRequestDetailPage() {
     if (response.ok) setMessengerDelivery("SENT");
     else window.alert(body.error?.message || "Chưa thể gửi lại Messenger.");
   };
+  const runReservationAction = async (action: "confirm" | "cancel") => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    setActionError("");
+    try {
+      const response = await fetch(`/api/admin/cart-requests/${requestId}/${action}`, {
+        method: "POST",
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) throw new Error(body.error?.message || "Chưa thể cập nhật reservation.");
+      await loadDetail();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Chưa thể cập nhật reservation.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
   if (!detail)
     return (
       <AdminShell title="Giỏ Hàng Gửi Đến">
@@ -1277,6 +1389,10 @@ export function AdminCartRequestDetailPage() {
         </div>
       </AdminShell>
     );
+  const displayedStatus =
+    detail.checkoutState && detail.checkoutState !== "LEGACY"
+      ? detail.checkoutState
+      : status;
   return (
     <AdminShell title="Giỏ Hàng Gửi Đến">
       <div className="request-detail-heading">
@@ -1285,7 +1401,7 @@ export function AdminCartRequestDetailPage() {
             CHI TIẾT YÊU CẦU • {new Date(detail.createdAt).toLocaleString("vi-VN")}
           </span>
           <h1>
-            {detail.publicCode} <StatusBadge status={status} />
+            {detail.publicCode} <StatusBadge status={displayedStatus} />
           </h1>
         </div>
         <div>
@@ -1349,29 +1465,65 @@ export function AdminCartRequestDetailPage() {
           </section>
         </div>
         <aside>
-          <section className="status-update-card">
-            <h2>Cập nhật Trạng thái</h2>
-            <select
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-            >
-              <option value="SUBMITTED">Mới</option>
-              <option value="CONTACTED">Đã liên hệ</option>
-              <option value="CONFIRMED">Đã xác nhận</option>
-              <option value="COMPLETED">Hoàn thành</option>
-              <option value="CANCELLED">Đã hủy</option>
-            </select>
-            <p>
-              Trạng thái hiện tại:{" "}
-              <b>
-                <StatusBadge status={status} />
-              </b>
-              . Chọn trạng thái mới để cập nhật tiến trình xử lý yêu cầu.
-            </p>
-            <button className="btn primary" onClick={updateStatus}>
-              <Icon>update</Icon> CẬP NHẬT TRẠNG THÁI
-            </button>
-          </section>
+          {(!detail.checkoutState || detail.checkoutState === "LEGACY") ? (
+            <section className="status-update-card">
+              <h2>Cập nhật Trạng thái</h2>
+              <select
+                value={status}
+                onChange={(event) => setStatus(event.target.value)}
+              >
+                <option value="SUBMITTED">Mới</option>
+                <option value="CONTACTED">Đã liên hệ</option>
+                <option value="CONFIRMED">Đã xác nhận</option>
+                <option value="COMPLETED">Hoàn thành</option>
+                <option value="CANCELLED">Đã hủy</option>
+              </select>
+              <p>
+                Trạng thái hiện tại:{" "}
+                <b>
+                  <StatusBadge status={status} />
+                </b>
+                . Chọn trạng thái mới để cập nhật tiến trình xử lý yêu cầu.
+              </p>
+              <button className="btn primary" onClick={updateStatus}>
+                <Icon>update</Icon> CẬP NHẬT TRẠNG THÁI
+              </button>
+            </section>
+          ) : (
+            <section className="status-update-card reservation-admin-card">
+              <h2>Giữ hàng &amp; ưu đãi</h2>
+              <StatusBadge status={detail.checkoutState} />
+              {detail.reservationExpiresAt && (
+                <p>
+                  Hạn xác nhận: <b>{new Date(detail.reservationExpiresAt).toLocaleString("vi-VN")}</b>
+                  <br />
+                  <strong>{formatReservationRemaining(detail.reservationExpiresAt, now)}</strong>
+                </p>
+              )}
+              {detail.reservationDurationMinutes && (
+                <small>Thời lượng đã snapshot: {formatReservationDuration(detail.reservationDurationMinutes)}.</small>
+              )}
+              <small>
+                Đang giữ {detail.reservations?.filter((reservation) => reservation.status === "ACTIVE").length ?? 0} dòng hàng và {detail.promotionReservations?.filter((reservation) => reservation.status === "ACTIVE").length ?? 0} ưu đãi.
+              </small>
+              {actionError && <p className="form-error" role="alert">{actionError}</p>}
+              {detail.checkoutState === "WAITING_SELLER_CONFIRM" && (
+                <div className="reservation-admin-actions">
+                  <button className="btn primary" disabled={actionBusy} onClick={() => void runReservationAction("confirm")}>
+                    <Icon>check</Icon> XÁC NHẬN ĐƠN
+                  </button>
+                  <button className="btn secondary-btn" disabled={actionBusy} onClick={() => void runReservationAction("cancel")}>
+                    <Icon>inventory</Icon> HỦY / GIẢI PHÓNG HÀNG
+                  </button>
+                </div>
+              )}
+              {detail.checkoutState === "READY_TO_SEND" && (
+                <button className="btn secondary-btn" disabled={actionBusy} onClick={() => void runReservationAction("cancel")}>
+                  <Icon>cancel</Icon> HỦY YÊU CẦU
+                </button>
+              )}
+            </section>
+          )}
           {detail.contactChannel === "SHARE" ? (
             <section className="channel-card share-admin-card">
               <h2>
@@ -1733,6 +1885,12 @@ export function AdminSettingsPage() {
   const [storefrontTtlBusy, setStorefrontTtlBusy] = useState(false);
   const [storefrontTtlMessage, setStorefrontTtlMessage] = useState("");
   const [storefrontTtlError, setStorefrontTtlError] = useState("");
+  const [checkoutReservationMinutes, setCheckoutReservationMinutes] = useState(
+    String(DEFAULT_CHECKOUT_RESERVATION_MINUTES),
+  );
+  const [checkoutReservationBusy, setCheckoutReservationBusy] = useState(false);
+  const [checkoutReservationMessage, setCheckoutReservationMessage] = useState("");
+  const [checkoutReservationError, setCheckoutReservationError] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1759,6 +1917,28 @@ export function AdminSettingsPage() {
       })
       .catch(() => {
         if (!cancelled) setError("Không tải được cấu hình người bán từ D1.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/admin/settings/checkout")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("CHECKOUT_SETTINGS_LOAD_FAILED");
+        return response.json() as Promise<{
+          data?: { checkoutReservationMinutes?: number };
+        }>;
+      })
+      .then((body) => {
+        const minutes = body.data?.checkoutReservationMinutes;
+        if (!cancelled && typeof minutes === "number")
+          setCheckoutReservationMinutes(String(minutes));
+      })
+      .catch(() => {
+        if (!cancelled)
+          setCheckoutReservationError("Không tải được thời gian giữ hàng.");
       });
     return () => {
       cancelled = true;
@@ -1878,6 +2058,49 @@ export function AdminSettingsPage() {
       setStorefrontTtlBusy(false);
     }
   };
+  const saveCheckoutReservation = async () => {
+    setCheckoutReservationBusy(true);
+    setCheckoutReservationError("");
+    setCheckoutReservationMessage("");
+    const minutes = Number(checkoutReservationMinutes);
+    if (!Number.isSafeInteger(minutes)) {
+      setCheckoutReservationError("Thời gian giữ hàng phải là số phút nguyên.");
+      setCheckoutReservationBusy(false);
+      return;
+    }
+    if (minutes < MIN_CHECKOUT_RESERVATION_MINUTES) {
+      setCheckoutReservationError("Thời gian giữ hàng tối thiểu là 3 phút.");
+      setCheckoutReservationBusy(false);
+      return;
+    }
+    if (minutes > MAX_CHECKOUT_RESERVATION_MINUTES) {
+      setCheckoutReservationError("Thời gian giữ hàng tối đa là 24 giờ.");
+      setCheckoutReservationBusy(false);
+      return;
+    }
+    try {
+      const response = await fetch("/api/admin/settings/checkout", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ checkoutReservationMinutes: minutes }),
+      });
+      const body = (await response.json()) as {
+        data?: { checkoutReservationMinutes?: number };
+        error?: { message?: string };
+      };
+      if (!response.ok)
+        throw new Error(body.error?.message || "Chưa thể lưu thời gian giữ hàng.");
+      if (typeof body.data?.checkoutReservationMinutes === "number")
+        setCheckoutReservationMinutes(String(body.data.checkoutReservationMinutes));
+      setCheckoutReservationMessage("Đã lưu. Chỉ reservation mới dùng thời gian này.");
+    } catch (caught) {
+      setCheckoutReservationError(
+        caught instanceof Error ? caught.message : "Chưa thể lưu thời gian giữ hàng.",
+      );
+    } finally {
+      setCheckoutReservationBusy(false);
+    }
+  };
   return (
     <AdminShell title="Cài Đặt">
       <div className="admin-page-heading">
@@ -1943,6 +2166,50 @@ export function AdminSettingsPage() {
           onClick={() => void saveStorefrontTtl()}
         >
           <Icon>save</Icon> {storefrontTtlBusy ? "ĐANG LƯU..." : "LƯU THỜI HẠN SESSION"}
+        </button>
+      </section>
+      <section className="editor-card settings-card checkout-reservation-settings-card">
+        <div className="editor-card-title">
+          <span>
+            <Icon>inventory_2</Icon>
+            <h2>Giữ hàng khi gửi Messenger</h2>
+          </span>
+        </div>
+        <p>
+          Khoảng thời gian sản phẩm và ưu đãi được giữ cho khách sau khi khách bấm gửi
+          giỏ hàng qua Messenger. Nếu shop chưa xác nhận trước khi hết thời gian này,
+          đơn sẽ tự hết hạn và hàng được trả lại để khách khác có thể mua.
+        </p>
+        <label>
+          Thời gian giữ hàng &amp; ưu đãi (phút)
+          <input
+            type="number"
+            min={MIN_CHECKOUT_RESERVATION_MINUTES}
+            max={MAX_CHECKOUT_RESERVATION_MINUTES}
+            step="1"
+            value={checkoutReservationMinutes}
+            onChange={(event) => setCheckoutReservationMinutes(event.target.value)}
+          />
+        </label>
+        <small>Mặc định: {formatReservationDuration(DEFAULT_CHECKOUT_RESERVATION_MINUTES)}. Tương đương: {formatReservationDuration(Number(checkoutReservationMinutes))}.</small>
+        {Number(checkoutReservationMinutes) > 60 && (
+          <p className="settings-warning">
+            Thời gian giữ hàng dài có thể làm giảm số lượng sản phẩm khả dụng cho khách khác.
+          </p>
+        )}
+        {Number(checkoutReservationMinutes) >= 720 && (
+          <p className="share-warning">
+            Bạn đang giữ hàng trong thời gian dài. Các sản phẩm được khách gửi Messenger có thể bị khóa tồn kho đến khi shop xác nhận hoặc hết hạn.
+          </p>
+        )}
+        {checkoutReservationError && <p className="form-error">{checkoutReservationError}</p>}
+        {checkoutReservationMessage && <p className="form-success">{checkoutReservationMessage}</p>}
+        <button
+          className="btn primary"
+          disabled={checkoutReservationBusy}
+          onClick={() => void saveCheckoutReservation()}
+        >
+          <Icon>save</Icon> {checkoutReservationBusy ? "ĐANG LƯU..." : "LƯU THỜI GIAN GIỮ HÀNG"}
         </button>
       </section>
       <section className="editor-card settings-card seller-settings-card">

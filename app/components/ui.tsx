@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
-import type { Availability, Product } from "../lib/catalog";
+import type { Availability, Product, Variant } from "../lib/catalog";
 import {
   findVariantInProducts,
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  isVariantPurchasable,
 } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
 import { useCart } from "../lib/cart";
@@ -204,7 +205,7 @@ export function ProductCard({
 }) {
   const variant = getDefaultVariant(product);
   const displayVariant = getDisplayVariant(product) ?? variant;
-  const unavailable = !variant || variant.availability !== "AVAILABLE";
+  const unavailable = !variant || !isVariantPurchasable(variant);
   return (
     <article
       className={`product-card ${compact ? "compact" : ""} ${unavailable ? "unavailable" : ""}`}
@@ -241,7 +242,7 @@ export function InlineCartControl({ product }: { product: Product }) {
   if (!variant) return null;
   const quantity =
     cart.items.find((item) => item.variantId === variant.id)?.quantity ?? 0;
-  const unavailable = variant.availability !== "AVAILABLE";
+  const unavailable = !isVariantPurchasable(variant);
   if (quantity === 0) {
     return (
       <button
@@ -268,7 +269,7 @@ export function InlineCartControl({ product }: { product: Product }) {
       <button
         type="button"
         aria-label={`Tăng số lượng ${product.name}`}
-        disabled={isInlineCartIncrementDisabled(variant.availability, quantity)}
+        disabled={isInlineCartIncrementDisabled(variant.availability, quantity, variant)}
         onClick={() => cart.incrementItem(variant.id, product)}
       >
         <Icon>add</Icon>
@@ -280,8 +281,12 @@ export function InlineCartControl({ product }: { product: Product }) {
 export function isInlineCartIncrementDisabled(
   availability: Availability,
   quantity: number,
+  variant?: Pick<Variant, "trackInventory" | "availableQuantity" | "stockOnHand" | "reservedQuantity">,
 ) {
-  return availability !== "AVAILABLE" || quantity >= 99;
+  const available = variant?.trackInventory
+    ? Math.max(0, variant.availableQuantity ?? (variant.stockOnHand ?? 0) - (variant.reservedQuantity ?? 0))
+    : 99;
+  return availability !== "AVAILABLE" || quantity >= 99 || quantity >= available;
 }
 
 function MobileSearchModal({ onClose }: { onClose: () => void }) {
@@ -426,11 +431,13 @@ export function QuantityStepper({
   value,
   onChange,
   availability,
+  maxQuantity,
 }: {
   variantId?: string;
   value: number;
   onChange?: (value: number) => void;
   availability?: Availability;
+  maxQuantity?: number | null;
 }) {
   const cart = useCart();
   const update = (next: number) =>
@@ -446,7 +453,12 @@ export function QuantityStepper({
       <span>{value}</span>
       <button
         aria-label="Tăng số lượng"
-        disabled={availability !== undefined && availability !== "AVAILABLE"}
+        disabled={
+          (availability !== undefined && availability !== "AVAILABLE") ||
+          (maxQuantity !== null &&
+            maxQuantity !== undefined &&
+            value >= maxQuantity)
+        }
         onClick={() => update(Math.min(99, value + 1))}
       >
         <Icon>add</Icon>
@@ -512,6 +524,8 @@ export function StatusBadge({ status }: { status: string }) {
     CONFIRMED: "Đã xác nhận",
     COMPLETED: "Hoàn thành",
     CANCELLED: "Đã hủy",
+    READY_TO_SEND: "Chờ khách gửi",
+    WAITING_SELLER_CONFIRM: "Chờ shop xác nhận",
     SENT: "Đã gửi",
     FAILED: "Gửi lỗi",
     NOT_APPLICABLE: "Không áp dụng",
@@ -548,7 +562,7 @@ export function cartDetails(
         {
           ...found,
           ...line,
-          unavailable: found.variant.availability !== "AVAILABLE",
+          unavailable: !isVariantPurchasable(found.variant),
           lineTotal: found.variant.priceVnd * line.quantity,
         },
       ];

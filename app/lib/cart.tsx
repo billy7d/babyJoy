@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   canonicalVariantIds,
   findVariantInProducts,
+  getVariantAvailableQuantity,
+  isVariantPurchasable,
   type Product,
 } from "./catalog";
 import { useCatalog } from "./catalog-context";
@@ -151,17 +153,24 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       addItem(variantId, quantity = 1, providedProduct) {
         if (!Number.isSafeInteger(quantity) || quantity < 1) return;
         const match = findCartVariant(products, variantId, providedProduct);
-        if (!match || match.variant.availability !== "AVAILABLE") return;
-        const amount = Math.min(99, quantity);
+        if (!match || !isVariantPurchasable(match.variant)) return;
+        const available = getVariantAvailableQuantity(match.variant);
+        const amount = Math.min(99, available ?? 99, quantity);
+        if (amount < 1) return;
         setItems((current) => {
           const existing = current.find((item) => item.variantId === variantId);
+          const nextQuantity = Math.min(
+            available ?? 99,
+            (existing?.quantity ?? 0) + amount,
+            99,
+          );
           if (existing)
             return persist(
               current.map((item) =>
                 item.variantId === variantId
                   ? {
                       ...item,
-                      quantity: Math.min(99, item.quantity + amount),
+                      quantity: nextQuantity,
                     }
                   : item,
               ),
@@ -174,9 +183,11 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       },
       incrementItem(variantId, providedProduct) {
         const match = findCartVariant(products, variantId, providedProduct);
-        if (!match || match.variant.availability !== "AVAILABLE") return;
+        if (!match || !isVariantPurchasable(match.variant)) return;
         setItems((current) => {
           const existing = current.find((item) => item.variantId === variantId);
+          const available = getVariantAvailableQuantity(match.variant);
+          if (existing && available !== null && existing.quantity >= available) return current;
           const next = changeCartItemQuantity(current, variantId, 1);
           if (existing || next === current) return persist(next);
           return persist(
@@ -202,15 +213,24 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
             persist(current.filter((item) => item.variantId !== variantId)),
           );
         else
-          setItems((current) =>
-            persist(
+          setItems((current) => {
+            const match = findVariantInProducts(products, variantId);
+            const available = match
+              ? getVariantAvailableQuantity(match.variant)
+              : null;
+            const nextQuantity = Math.min(99, quantity, available ?? 99);
+            if (nextQuantity < 1)
+              return persist(
+                current.filter((item) => item.variantId !== variantId),
+              );
+            return persist(
               current.map((item) =>
                 item.variantId === variantId
-                  ? { ...item, quantity: Math.min(99, quantity) }
+                  ? { ...item, quantity: nextQuantity }
                   : item,
               ),
-            ),
-          );
+            );
+          });
       },
       removeItem(variantId) {
         setItems((current) =>

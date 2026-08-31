@@ -133,6 +133,12 @@ export type PromotionCartLine = {
   priceVnd: number;
   quantity: number;
   categoryIds: string[];
+  // Các trường inventory là tuỳ chọn để bộ máy promotion vẫn chạy với fixture/schema legacy.
+  trackInventory?: boolean;
+  stockOnHand?: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+  inventoryAvailability?: "AVAILABLE" | "OUT_OF_STOCK";
 };
 
 export type PromotionCatalogProduct = {
@@ -145,6 +151,11 @@ export type PromotionCatalogProduct = {
   priceVnd: number;
   availability: string;
   productStatus: string;
+  trackInventory?: boolean;
+  stockOnHand?: number;
+  reservedQuantity?: number;
+  availableQuantity?: number;
+  inventoryAvailability?: "AVAILABLE" | "OUT_OF_STOCK";
 };
 
 export type PromotionGiftItem = {
@@ -159,6 +170,8 @@ export type PromotionGiftItem = {
   quantity: number;
   lineTotalVnd: 0;
   isPromotionGift: true;
+  trackInventory?: boolean;
+  availableQuantity?: number;
 };
 
 export type AppliedPromotion = {
@@ -848,6 +861,11 @@ function productGift(
   const product = catalog.get(productId);
   if (!product || product.productStatus !== "AVAILABLE" || product.availability !== "AVAILABLE")
     return null;
+  if (
+    product.trackInventory &&
+    (product.availableQuantity ?? 0) < quantity
+  )
+    return null;
   return {
     promotionId,
     productId: product.productId,
@@ -860,6 +878,9 @@ function productGift(
     quantity,
     lineTotalVnd: 0,
     isPromotionGift: true,
+    ...(product.trackInventory
+      ? { trackInventory: true, availableQuantity: product.availableQuantity ?? 0 }
+      : {}),
   } satisfies PromotionGiftItem;
 }
 
