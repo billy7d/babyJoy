@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { loadCatalogData } from "../app/lib/catalog-context";
+import {
+  buildProductListUrl,
+  loadCatalogData,
+  loadProductBySlug,
+  loadProductPage,
+  ProductNotFoundError,
+} from "../app/lib/catalog-context";
 
 type ApiResponse = {
   status?: number;
@@ -158,11 +164,58 @@ describe("CatalogProvider API boundary", () => {
       expect.objectContaining({ id: "brand-gerber", name: "Gerber" }),
     ]);
     expect(result.tags).toEqual(["Hữu cơ"]);
+    expect(result.tagOptions).toEqual([{ name: "Hữu cơ", slug: "huu-co" }]);
     expect(requestedPaths).toEqual([
       "/api/products?limit=24",
       "/api/categories",
       "/api/brands",
       "/api/tags",
     ]);
+  });
+
+  it("xây URL listing theo query và load page response có metadata", async () => {
+    const params = new URLSearchParams({
+      page: "2",
+      q: "Gerber",
+      sort: "price_asc",
+      tag: "huu-co",
+    });
+    expect(buildProductListUrl(params, "banh-an-dam")).toBe(
+      "/api/products?page=2&limit=24&q=Gerber&category=banh-an-dam&tag=huu-co&sort=price_asc",
+    );
+    const { fetcher } = createFetcher({
+      "/api/products?page=2&limit=24&q=Gerber&tag=huu-co&sort=price_asc": {
+        body: {
+          data: [productRow],
+          pagination: {
+            page: 2,
+            limit: 24,
+            totalItems: 25,
+            totalPages: 2,
+            hasPrevious: true,
+            hasNext: false,
+          },
+        },
+      },
+    });
+    const result = await loadProductPage(
+      new URLSearchParams("page=2&q=Gerber&tag=huu-co&sort=price_asc"),
+      undefined,
+      fetcher,
+    );
+    expect(result.products).toHaveLength(1);
+    expect(result.pagination).toMatchObject({ page: 2, totalItems: 25 });
+  });
+
+  it("detail fetch theo slug và 404 không fallback sang product khác", async () => {
+    const { fetcher } = createFetcher({
+      "/api/products/product-real": { body: { data: productRow } },
+      "/api/products/missing": { status: 404 },
+    });
+    const product = await loadProductBySlug("product-real", fetcher);
+    expect(product.slug).toBe("product-real");
+    await expect(loadProductBySlug("missing", fetcher)).rejects.toBeInstanceOf(
+      ProductNotFoundError,
+    );
   });
 });

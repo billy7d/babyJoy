@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { getPublicImageUrl, PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
+import type { PaginatedResponse, PaginationMeta } from "../../shared/pagination";
 import {
   categories as fallbackCategories,
   products as fallbackProducts,
@@ -10,7 +18,7 @@ import {
   type Variant,
 } from "./catalog";
 
-type ApiProduct = {
+export type ApiProduct = {
   id: string;
   slug: string;
   name: string;
@@ -29,6 +37,7 @@ type ApiProduct = {
   categoryIds?: string[];
   categorySlugs?: string[];
   tagNames?: string[];
+  tagSlugs?: string[];
   variants?: Variant[];
   images?: ProductImageRecord[];
 };
@@ -58,11 +67,18 @@ type ApiTag = {
   sortOrder?: number;
   isActive?: number | boolean;
 };
+export type CatalogTag = { name: string; slug: string };
+
 type CatalogLoadResult = {
   products: Product[];
   categories: Category[];
   brands: Brand[];
   tags: string[];
+  tagOptions: CatalogTag[];
+};
+export type ProductPageResult = {
+  products: Product[];
+  pagination: PaginationMeta;
 };
 type CatalogFetcher = (
   input: RequestInfo | URL,
@@ -74,8 +90,10 @@ type CatalogContextValue = {
   categories: Category[];
   brands: Brand[];
   tags: string[];
+  tagOptions: CatalogTag[];
   loading: boolean;
   refresh: () => Promise<void>;
+  mergeProducts: (products: Product[]) => void;
 };
 
 // Giữ bộ lọc tĩnh khi chạy offline; khi API trả về mảng rỗng thì phải tin dữ liệu D1.
@@ -84,6 +102,12 @@ const fallbackTagNames = [
   "Không chứa sữa",
   "Không thêm đường",
   "Không biến đổi gen",
+];
+const fallbackTagOptions: CatalogTag[] = [
+  { name: "Hữu cơ", slug: "huu-co" },
+  { name: "Không chứa sữa", slug: "khong-chua-sua" },
+  { name: "Không thêm đường", slug: "khong-them-duong" },
+  { name: "Không biến đổi gen", slug: "khong-bien-doi-gen" },
 ];
 
 const CatalogContext = createContext<CatalogContextValue | null>(null);
@@ -132,6 +156,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     archivedAt: row.archivedAt ?? null,
     // Mảng rỗng từ API nghĩa là taxonomy đã bị xóa, không được khôi phục fallback cũ.
     tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
+    tagSlugs: Array.isArray(row.tagSlugs) ? row.tagSlugs : (fallback?.tagSlugs ?? []),
     featured: Boolean(row.featured),
     variants:
       Array.isArray(row.variants) && row.variants.length
@@ -156,6 +181,105 @@ function mapApiCategory(row: ApiCategory): Category {
     isActive: row.isActive === undefined ? true : Boolean(row.isActive),
     productCount: row.productCount ?? 0,
   };
+}
+
+const productQueryKeys = [
+  "q",
+  "category",
+  "brand",
+  "age",
+  "bestSeller",
+  "tag",
+  "available",
+  "sort",
+] as const;
+
+export function buildProductListUrl(
+  params: URLSearchParams,
+  forcedCategory?: string,
+) {
+  const query = new URLSearchParams();
+  query.set("page", params.get("page") ?? "1");
+  query.set("limit", "24");
+  for (const key of productQueryKeys) {
+    if (key === "category" && forcedCategory) {
+      query.set(key, forcedCategory);
+      continue;
+    }
+    const value = params.get(key);
+    if (value) query.set(key, value);
+  }
+  return `/api/products?${query.toString()}`;
+}
+
+function isPaginationMeta(value: unknown): value is PaginationMeta {
+  if (!value || typeof value !== "object") return false;
+  const pagination = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(pagination.page) &&
+    Number.isSafeInteger(pagination.limit) &&
+    Number.isSafeInteger(pagination.totalItems) &&
+    Number.isSafeInteger(pagination.totalPages) &&
+    typeof pagination.hasPrevious === "boolean" &&
+    typeof pagination.hasNext === "boolean"
+  );
+}
+
+function redirectForCatalogAccess(
+  response: Response,
+  onAccessRequired?: AccessRedirect,
+) {
+  if (response.status !== 401 && response.status !== 503) return;
+  const redirect =
+    onAccessRequired ??
+    ((path: string) => {
+      if (typeof window !== "undefined") window.location.assign(path);
+    });
+  redirect("/access-required");
+}
+
+export async function loadProductPage(
+  params: URLSearchParams,
+  forcedCategory?: string,
+  fetcher: CatalogFetcher = fetch,
+  onAccessRequired?: AccessRedirect,
+): Promise<ProductPageResult> {
+  const response = await fetcher(buildProductListUrl(params, forcedCategory), {
+    headers: { accept: "application/json" },
+  });
+  redirectForCatalogAccess(response, onAccessRequired);
+  if (!response.ok) throw new Error("PRODUCT_LIST_LOAD_FAILED");
+  const body = (await response.json()) as Partial<PaginatedResponse<ApiProduct>>;
+  if (!Array.isArray(body.data) || !isPaginationMeta(body.pagination))
+    throw new Error("PRODUCT_LIST_INVALID_RESPONSE");
+  return {
+    products: body.data.map(mapApiProduct),
+    pagination: body.pagination,
+  };
+}
+
+export class ProductNotFoundError extends Error {
+  constructor() {
+    super("PRODUCT_NOT_FOUND");
+    this.name = "ProductNotFoundError";
+  }
+}
+
+export async function loadProductBySlug(
+  slug: string,
+  fetcher: CatalogFetcher = fetch,
+  onAccessRequired?: AccessRedirect,
+) {
+  const response = await fetcher(`/api/products/${encodeURIComponent(slug)}`, {
+    headers: { accept: "application/json" },
+  });
+  redirectForCatalogAccess(response, onAccessRequired);
+  if (response.status === 404) throw new ProductNotFoundError();
+  if (!response.ok) throw new Error("PRODUCT_DETAIL_LOAD_FAILED");
+  const body = (await response.json()) as { data?: ApiProduct };
+  if (!body.data || typeof body.data !== "object")
+    throw new Error("PRODUCT_DETAIL_INVALID_RESPONSE");
+  return mapApiProduct(body.data);
 }
 
 export async function loadCatalogData(
@@ -205,6 +329,9 @@ export async function loadCatalogData(
     !Array.isArray(tagsBody.data)
   )
     throw new Error("CATALOG_INVALID_RESPONSE");
+  const tagOptions = tagsBody.data
+    .map((tag) => ({ name: tag.name, slug: tag.slug }))
+    .filter((tag) => Boolean(tag.name && tag.slug));
   // Chỉ commit toàn bộ snapshot khi bốn API đều thành công và trả đúng mảng dữ liệu.
   return {
     products: productsBody.data.map(mapApiProduct),
@@ -213,7 +340,8 @@ export async function loadCatalogData(
       ...brand,
       isActive: brand.isActive === undefined ? true : Boolean(brand.isActive),
     })),
-    tags: [...new Set(tagsBody.data.map((tag) => tag.name).filter(Boolean))],
+    tags: [...new Set(tagOptions.map((tag) => tag.name))],
+    tagOptions,
   };
 }
 
@@ -224,9 +352,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     useState<Category[]>(fallbackCategories);
   const [catalogBrands, setCatalogBrands] = useState<Brand[]>([]);
   const [catalogTags, setCatalogTags] = useState<string[]>(fallbackTagNames);
+  const [catalogTagOptions, setCatalogTagOptions] =
+    useState<CatalogTag[]>(fallbackTagOptions);
   const [loading, setLoading] = useState(true);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const catalog = await loadCatalogData();
@@ -234,12 +364,22 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       setCatalogCategories(catalog.categories);
       setCatalogBrands(catalog.brands);
       setCatalogTags(catalog.tags);
+      setCatalogTagOptions(catalog.tagOptions);
     } catch {
       // Giữ catalog tĩnh làm fallback tạm thời cho tới khi D1/product_images được backfill đầy đủ.
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const mergeProducts = useCallback((nextProducts: Product[]) => {
+    if (!nextProducts.length) return;
+    setCatalogProducts((current) => {
+      const byId = new Map(current.map((product) => [product.id, product]));
+      nextProducts.forEach((product) => byId.set(product.id, product));
+      return [...byId.values()];
+    });
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -250,10 +390,21 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       categories: catalogCategories,
       brands: catalogBrands,
       tags: catalogTags,
+      tagOptions: catalogTagOptions,
       loading,
       refresh,
+      mergeProducts,
     }),
-    [catalogProducts, catalogCategories, catalogBrands, catalogTags, loading],
+    [
+      catalogProducts,
+      catalogCategories,
+      catalogBrands,
+      catalogTags,
+      catalogTagOptions,
+      loading,
+      refresh,
+      mergeProducts,
+    ],
   );
   return (
     <CatalogContext.Provider value={value}>{children}</CatalogContext.Provider>

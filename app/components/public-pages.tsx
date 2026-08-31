@@ -7,7 +7,13 @@ import {
   type Category,
   type Product,
 } from "../lib/catalog";
-import { useCatalog } from "../lib/catalog-context";
+import {
+  loadProductBySlug,
+  loadProductPage,
+  ProductNotFoundError,
+  type ProductPageResult,
+  useCatalog,
+} from "../lib/catalog-context";
 import { cartStorageKey, parseStoredCart, useCart } from "../lib/cart";
 import {
   useCartPromotionEvaluation,
@@ -35,6 +41,7 @@ import {
 } from "../lib/cart-share";
 import { searchCatalog } from "../lib/search";
 import { STORE_BRAND } from "../../shared/branding";
+import { getPaginationItems } from "../../shared/pagination";
 import { ProductImage } from "./product-image";
 import {
   cartDetails,
@@ -213,7 +220,7 @@ export function applyFilters(
       (!Number.isFinite(age) ||
         (Number.isFinite(productMinAge) && productMinAge <= age)) &&
       (!bestSeller || product.isBestSeller) &&
-      (!tag || product.tags.includes(tag)) &&
+      (!tag || product.tags.includes(tag) || product.tagSlugs?.includes(tag)) &&
       (!available ||
         product.variants.some(
           (variant) => variant.availability === "AVAILABLE",
@@ -242,17 +249,51 @@ export function ProductListPage({
   searchMode?: boolean;
   categorySlug?: string;
 }) {
-  const { products, categories, brands, tags } = useCatalog();
+  const { categories, brands, tagOptions, mergeProducts } = useCatalog();
   const [params, setParams] = useSearchParams();
   const [mobileFilters, setMobileFilters] = useState(false);
-  const filtered = useMemo(
-    () => applyFilters(products, categories, params, categorySlug),
-    [products, categories, params, categorySlug],
-  );
+  const [listing, setListing] = useState<ProductPageResult | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const queryKey = params.toString();
+  useEffect(() => {
+    let cancelled = false;
+    setListing(null);
+    setLoadError("");
+    void loadProductPage(new URLSearchParams(queryKey), categorySlug)
+      .then((result) => {
+        if (cancelled) return;
+        mergeProducts(result.products);
+        setListing(result);
+        const requestedPage = Number(new URLSearchParams(queryKey).get("page"));
+        const normalizedRequestedPage =
+          Number.isSafeInteger(requestedPage) && requestedPage >= 1
+            ? requestedPage
+            : 1;
+        if (result.pagination.page !== normalizedRequestedPage) {
+          const canonicalParams = new URLSearchParams(queryKey);
+          canonicalParams.set("page", String(result.pagination.page));
+          setParams(canonicalParams, { replace: true });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError("Không tải được danh sách sản phẩm từ D1.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [categorySlug, mergeProducts, queryKey, setParams]);
+
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
     else next.delete(key);
+    // Mọi thay đổi bộ lọc/sort phải quay về trang đầu của tập kết quả mới.
+    next.set("page", "1");
+    setParams(next);
+  };
+  const setPage = (page: number) => {
+    const next = new URLSearchParams(params);
+    next.set("page", String(page));
     setParams(next);
   };
   const toggleCsvFilter = (key: "category" | "brand", value: string) => {
@@ -267,6 +308,17 @@ export function ProductListPage({
       ? (categories.find((item) => item.slug === categorySlug)?.name ??
         "Sản phẩm ăn dặm")
       : "Sản phẩm ăn dặm";
+  const totalItems = listing?.pagination.totalItems ?? 0;
+  const hasFilters = Boolean(
+    categorySlug ||
+      params.get("q") ||
+      params.get("category") ||
+      params.get("brand") ||
+      params.get("age") ||
+      params.get("bestSeller") ||
+      params.get("tag") ||
+      params.get("available"),
+  );
   const filters = (
     <div className="filters-inner">
       <h3>Danh mục</h3>
@@ -323,15 +375,15 @@ export function ProductListPage({
       <h3>Đặc tính</h3>
       <div className="filter-tags">
         {/* Chỉ hiển thị tag active do D1 trả về để tag đã xóa không còn trong filter. */}
-        {tags.map((item) => (
+        {tagOptions.map((item) => (
           <button
-            className={params.get("tag") === item ? "active" : ""}
-            key={item}
+            className={params.get("tag") === item.slug ? "active" : ""}
+            key={item.slug}
             onClick={() =>
-              setFilter("tag", params.get("tag") === item ? "" : item)
+              setFilter("tag", params.get("tag") === item.slug ? "" : item.slug)
             }
           >
-            {item}
+            {item.name}
           </button>
         ))}
       </div>
@@ -348,7 +400,7 @@ export function ProductListPage({
       </label>
       <button
         className="clear-filter"
-        onClick={() => setParams(new URLSearchParams())}
+        onClick={() => setParams(new URLSearchParams("page=1"))}
       >
         Xóa bộ lọc
       </button>
@@ -363,7 +415,7 @@ export function ProductListPage({
         <div className="listing-title">
           <div>
             <h1>{title}</h1>
-            <p>{filtered.length} sản phẩm dinh dưỡng cho bé</p>
+            <p>{listing ? `${totalItems} sản phẩm dinh dưỡng cho bé` : "Đang tải sản phẩm…"}</p>
           </div>
           <button
             className="mobile-filter-btn"
@@ -387,7 +439,7 @@ export function ProductListPage({
         </div>
         <div className="mobile-category-chips">
           <button
-            className={!params.get("category") ? "active" : ""}
+            className={!categorySlug && !params.get("category") ? "active" : ""}
             onClick={() => setFilter("category", "")}
           >
             Tất cả
@@ -395,7 +447,11 @@ export function ProductListPage({
           {categories.map((item) => (
             <button
               key={item.id}
-              className={(params.get("category") ?? "").split(",").includes(item.slug) ? "active" : ""}
+              className={(categorySlug
+                ? categorySlug === item.slug
+                : (params.get("category") ?? "").split(",").includes(item.slug))
+                ? "active"
+                : ""}
               onClick={() => toggleCsvFilter("category", item.slug)}
             >
               {item.name}
@@ -403,7 +459,9 @@ export function ProductListPage({
           ))}
         </div>
         <div className="mobile-list-status">
-          <span>Hiển thị {filtered.length} sản phẩm</span>
+          <span>
+            {listing ? `Hiển thị ${totalItems} sản phẩm` : "Đang tải sản phẩm…"}
+          </span>
           <button
             onClick={() =>
               setFilter(
@@ -418,31 +476,79 @@ export function ProductListPage({
         <div className="listing-content">
           <aside className="filter-sidebar">{filters}</aside>
           <div className="listing-products">
-            {filtered.length ? (
+            {listing?.products.length ? (
               <div className="product-grid listing-grid">
-                {filtered.map((product) => (
+                {listing.products.map((product) => (
                   <ProductCard key={product.id} product={product} />
                 ))}
               </div>
-            ) : (
+            ) : listing && !loadError ? (
               <div className="empty-state product-empty-state">
-                <Icon>{products.length ? "search_off" : "inventory_2"}</Icon>
-                <h2>{products.length ? "Chưa tìm thấy sản phẩm" : "Chưa có sản phẩm"}</h2>
+                <Icon>{hasFilters ? "search_off" : "inventory_2"}</Icon>
+                <h2>{hasFilters ? "Không tìm thấy sản phẩm phù hợp" : "Chưa có sản phẩm"}</h2>
                 <p>
-                  {products.length
+                  {hasFilters
                     ? "Hãy thử từ khóa hoặc bộ lọc khác."
                     : `${STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.`}
                 </p>
               </div>
+            ) : loadError ? (
+              <div className="empty-state product-empty-state" role="alert">
+                <Icon>error</Icon>
+                <h2>Không thể tải sản phẩm</h2>
+                <p>{loadError}</p>
+              </div>
+            ) : (
+              <div className="empty-state product-empty-state" role="status">
+                <Icon>progress_activity</Icon>
+                <h2>Đang tải sản phẩm…</h2>
+              </div>
             )}
-            <nav className="pagination" aria-label="Phân trang">
-              <button disabled>‹</button>
-              <button className="active">1</button>
-              <button>2</button>
-              <button>3</button>
-              <span>…</span>
-              <button>›</button>
-            </nav>
+            {listing && listing.pagination.totalPages > 1 && !loadError && (
+              <nav className="pagination" aria-label="Phân trang">
+                <button
+                  type="button"
+                  disabled={!listing.pagination.hasPrevious}
+                  onClick={() => setPage(listing.pagination.page - 1)}
+                  aria-label="Trang trước"
+                >
+                  ‹
+                </button>
+                {getPaginationItems(
+                  listing.pagination.page,
+                  listing.pagination.totalPages,
+                ).map((item, index) =>
+                  item === "ellipsis" ? (
+                    <span key={`ellipsis-${index}`} aria-hidden="true">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      key={item}
+                      className={
+                        item === listing.pagination.page ? "active" : ""
+                      }
+                      aria-current={
+                        item === listing.pagination.page ? "page" : undefined
+                      }
+                      aria-label={`Trang ${item}`}
+                      onClick={() => setPage(item)}
+                    >
+                      {item}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  disabled={!listing.pagination.hasNext}
+                  onClick={() => setPage(listing.pagination.page + 1)}
+                  aria-label="Trang sau"
+                >
+                  ›
+                </button>
+              </nav>
+            )}
           </div>
         </div>
       </div>
@@ -497,37 +603,77 @@ export function CategoriesPage() {
 }
 
 export function ProductDetailPage() {
-  const { products } = useCatalog();
+  const { mergeProducts } = useCatalog();
   const location = useLocation();
   const slug = decodeURIComponent(
     location.pathname.split("/").filter(Boolean).at(-1) ?? "",
   );
-  const product = products.find((item) => item.slug === slug) ?? products[0];
-  const [variantId, setVariantId] = useState(
-    () => (product ? getDefaultVariant(product)?.id ?? "" : ""),
-  );
+  const [product, setProduct] = useState<Product | null>(null);
+  const [detailError, setDetailError] = useState<"not-found" | "load" | "">("");
+  const [loading, setLoading] = useState(true);
+  const [variantId, setVariantId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [toast, setToast] = useState(false);
   const [selectedImage, setSelectedImage] = useState(0);
   const { addItem } = useCart();
   useEffect(() => {
-    if (!product) {
-      setVariantId("");
-      return;
-    }
-    setVariantId((current) =>
-      product.variants.some((item) => item.id === current)
-        ? current
-        : (getDefaultVariant(product)?.id ?? ""),
-    );
+    let cancelled = false;
+    setLoading(true);
+    setProduct(null);
+    setDetailError("");
+    void loadProductBySlug(slug)
+      .then((loadedProduct) => {
+        if (cancelled) return;
+        mergeProducts([loadedProduct]);
+        setProduct(loadedProduct);
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setDetailError(
+          caught instanceof ProductNotFoundError ? "not-found" : "load",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mergeProducts, slug]);
+  useEffect(() => {
+    setVariantId(product ? getDefaultVariant(product)?.id ?? "" : "");
+    setQuantity(1);
+    setSelectedImage(0);
   }, [product]);
-  if (!product) {
+  if (loading) {
     return (
       <PublicShell hideMobileNav>
-        <section className="empty-state">
-          <Icon>inventory_2</Icon>
-          <h1>Chưa có sản phẩm</h1>
-          <p>{STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.</p>
+        <section className="empty-state" role="status">
+          <Icon>progress_activity</Icon>
+          <h1>Đang tải sản phẩm…</h1>
+        </section>
+      </PublicShell>
+    );
+  }
+  if (detailError || !product) {
+    return (
+      <PublicShell hideMobileNav>
+        <section className="empty-state" role={detailError === "load" ? "alert" : undefined}>
+          <Icon>{detailError === "load" ? "error" : "inventory_2"}</Icon>
+          <h1>
+            {detailError === "not-found"
+              ? "Không tìm thấy sản phẩm"
+              : detailError === "load"
+                ? "Không thể tải sản phẩm"
+                : "Chưa có sản phẩm"}
+          </h1>
+          <p>
+            {detailError === "not-found"
+              ? "Sản phẩm có thể đã được gỡ khỏi danh sách."
+              : detailError === "load"
+                ? "Vui lòng thử lại sau."
+                : `${STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.`}
+          </p>
           <Link className="btn primary" to="/shop">
             Về cửa hàng
           </Link>
@@ -557,7 +703,7 @@ export function ProductDetailPage() {
       ];
   const add = () => {
     if (!variant || variant.availability !== "AVAILABLE") return;
-    addItem(variant.id, quantity);
+    addItem(variant.id, quantity, product);
     setToast(true);
     window.setTimeout(() => setToast(false), 2200);
   };

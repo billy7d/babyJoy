@@ -1,5 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { canonicalVariantIds, findVariantInProducts } from "./catalog";
+import {
+  canonicalVariantIds,
+  findVariantInProducts,
+  type Product,
+} from "./catalog";
 import { useCatalog } from "./catalog-context";
 
 export type CartLine = {
@@ -17,8 +21,8 @@ type CartContextValue = {
   hydrated: boolean;
   totalQuantity: number;
   subtotalVnd: number;
-  addItem: (variantId: string, quantity?: number) => void;
-  incrementItem: (variantId: string) => void;
+  addItem: (variantId: string, quantity?: number, product?: Product) => void;
+  incrementItem: (variantId: string, product?: Product) => void;
   decrementItem: (variantId: string) => void;
   setQuantity: (variantId: string, quantity: number) => void;
   removeItem: (variantId: string) => void;
@@ -84,8 +88,13 @@ function snapshotCartLine(
   variantId: string,
   quantity: number,
   products: ReturnType<typeof useCatalog>["products"],
+  providedProduct?: Product,
 ): CartLine {
-  const found = findVariantInProducts(products, variantId);
+  const found =
+    providedProduct?.variants
+      .map((variant) => ({ product: providedProduct, variant }))
+      .find(({ variant }) => variant.id === variantId) ??
+    findVariantInProducts(products, variantId);
   return found
     ? {
         variantId,
@@ -97,6 +106,19 @@ function snapshotCartLine(
         priceVnd: found.variant.priceVnd,
       }
     : { variantId, quantity };
+}
+
+function findCartVariant(
+  products: ReturnType<typeof useCatalog>["products"],
+  variantId: string,
+  providedProduct?: Product,
+) {
+  return (
+    providedProduct?.variants
+      .map((variant) => ({ product: providedProduct, variant }))
+      .find(({ variant }) => variant.id === variantId) ??
+    findVariantInProducts(products, variantId)
+  );
 }
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
@@ -126,9 +148,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       hydrated,
       totalQuantity,
       subtotalVnd,
-      addItem(variantId, quantity = 1) {
+      addItem(variantId, quantity = 1, providedProduct) {
         if (!Number.isSafeInteger(quantity) || quantity < 1) return;
-        const match = findVariantInProducts(products, variantId);
+        const match = findCartVariant(products, variantId, providedProduct);
         if (!match || match.variant.availability !== "AVAILABLE") return;
         const amount = Math.min(99, quantity);
         setItems((current) => {
@@ -146,12 +168,12 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
             );
           return persist([
             ...current,
-            snapshotCartLine(variantId, amount, products),
+            snapshotCartLine(variantId, amount, products, providedProduct),
           ]);
         });
       },
-      incrementItem(variantId) {
-        const match = findVariantInProducts(products, variantId);
+      incrementItem(variantId, providedProduct) {
+        const match = findCartVariant(products, variantId, providedProduct);
         if (!match || match.variant.availability !== "AVAILABLE") return;
         setItems((current) => {
           const existing = current.find((item) => item.variantId === variantId);
@@ -160,7 +182,12 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           return persist(
             next.map((item) =>
               item.variantId === variantId
-                ? snapshotCartLine(variantId, item.quantity, products)
+                ? snapshotCartLine(
+                    variantId,
+                    item.quantity,
+                    products,
+                    providedProduct,
+                  )
                 : item,
             ),
           );

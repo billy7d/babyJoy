@@ -69,7 +69,8 @@ describe("D1 catalog flow", () => {
 
   it("recomputes ProductGrid when CatalogProvider replaces fallback state", () => {
     const source = readFileSync("app/components/public-pages.tsx", "utf8");
-    expect(source).toContain("[products, categories, params, categorySlug]");
+    expect(source).toContain("loadProductPage(new URLSearchParams(queryKey), categorySlug)");
+    expect(source).not.toContain("applyFilters(products, categories, params, categorySlug)");
   });
 });
 
@@ -88,7 +89,7 @@ describe("catalog cleanup empty state", () => {
     const source = readFileSync("app/lib/catalog-context.tsx", "utf8");
 
     expect(source).toContain("categories: categoriesBody.data.map(mapApiCategory)");
-    expect(source).toContain("tags: [...new Set(tagsBody.data.map");
+    expect(source).toContain("tags: [...new Set(tagOptions.map");
     expect(
       applyFilters([], categories, new URLSearchParams("category=trai-cay-nghien")),
     ).toEqual([]);
@@ -113,8 +114,9 @@ describe("catalog cleanup empty state", () => {
     const adminSource = readFileSync("app/components/admin-pages.tsx", "utf8");
 
     expect(publicSource).toContain("featured.map((product) =>");
-    expect(publicSource).toContain("if (!product)");
-    expect(adminSource).toContain("filteredProducts.map((product) =>");
+    expect(publicSource).toContain("loadProductBySlug(slug)");
+    expect(publicSource).toContain("ProductNotFoundError");
+    expect(adminSource).not.toContain("filteredProducts.map((product) =>");
     expect(adminSource).toContain("products.length");
   });
 });

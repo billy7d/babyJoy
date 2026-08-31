@@ -206,3 +206,4 @@
 .promotion-selection-chip>span:first-child{min-width:0;overflow-wrap:anywhere;word-break:normal}
 .promotion-selection-chip>.material-symbols-outlined{flex:0 0 auto;font-size:18px}
 @media(max-width:639px){.promotion-selector-search{height:48px;min-height:48px}.promotion-option-list.category-option-list>button{min-height:56px;padding:8px 10px}.promotion-selection-chip{min-height:36px}}
+@media(max-width:639px){.pagination::after{content:none;display:none}.pagination button:first-child,.pagination button:last-child{display:grid;width:46px;border-radius:999px;background:var(--surface-container)}.pagination button:disabled{opacity:.45}}

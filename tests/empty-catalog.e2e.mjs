@@ -11,9 +11,9 @@ const browser = await chromium.launch({
 const checks = [
   ["/", ["Chưa có sản phẩm"]],
   ["/shop", ["Chưa có sản phẩm"]],
-  ["/category/trai-cay-nghien", ["Chưa có sản phẩm"]],
-  [`/shop?tag=${encodeURIComponent("Hữu cơ")}`, ["Chưa có sản phẩm"]],
-  ["/product/missing-product", ["Chưa có sản phẩm"]],
+  ["/category/trai-cay-nghien", ["Không tìm thấy sản phẩm phù hợp"]],
+  [`/shop?tag=${encodeURIComponent("Hữu cơ")}`, ["Không tìm thấy sản phẩm phù hợp"]],
+  ["/product/missing-product", ["Không tìm thấy sản phẩm"]],
   ["/categories", ["Danh mục dinh dưỡng", "Trái cây nghiền"]],
   ["/admin/products", ["Chưa có sản phẩm"]],
   ["/admin/categories", ["Danh mục", "Trái cây nghiền"]],
