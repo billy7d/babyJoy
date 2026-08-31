@@ -38,6 +38,7 @@ export type Product = {
   bestSellerRank?: number | null;
   archivedAt?: string | null;
   tags: string[];
+  tagSlugs?: string[];
   featured?: boolean;
   variants: Variant[];
 };

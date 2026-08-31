@@ -68,6 +68,11 @@ import {
   updateAccessLink,
   redactPathForLog,
 } from "./storefront-access";
+import {
+  buildPaginationMeta,
+  normalizeLimit,
+  normalizePage,
+} from "../shared/pagination";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -241,7 +246,7 @@ type ProductImageRow = {
   altText: string;
   sortOrder: number;
 };
-type ProductTagRow = { productId: string; name: string };
+type ProductTagRow = { productId: string; name: string; slug: string };
 type ProductCategoryRow = { productId: string; id: string; slug: string; name: string };
 
 async function hydrateProducts(rows: ProductRow[], env: Env) {
@@ -260,7 +265,7 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
       .bind(...ids)
       .all<ProductImageRow>(),
     env.DB.prepare(
-      `SELECT pt.product_id AS productId, t.name FROM product_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.product_id IN (${placeholders}) AND t.is_active = 1 ORDER BY t.sort_order, t.name`,
+      `SELECT pt.product_id AS productId, t.name, t.slug FROM product_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.product_id IN (${placeholders}) AND t.is_active = 1 ORDER BY t.sort_order, t.name`,
     )
       .bind(...ids)
       .all<ProductTagRow>(),
@@ -287,6 +292,9 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
     tagNames: tags.results
       .filter((tag) => tag.productId === product.id)
       .map((tag) => tag.name),
+    tagSlugs: tags.results
+      .filter((tag) => tag.productId === product.id)
+      .map((tag) => tag.slug),
     categories: categories.results
       .filter((category) => category.productId === product.id)
       .map(({ productId: _productId, ...category }) => category),
@@ -299,33 +307,79 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
   }));
 }
 
-async function listProducts(request: Request, env: Env, includeHidden = false) {
-  const url = new URL(request.url);
-  const q = (url.searchParams.get("q") ?? "").trim();
-  const categories = (url.searchParams.get("category") ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const brands = (url.searchParams.get("brand") ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const ageValue = url.searchParams.get("age");
-  const age = ageValue === null ? null : Number.parseInt(ageValue, 10);
-  const bestSellerValue = url.searchParams.get("bestSeller");
-  const bestSeller = bestSellerValue === "1" || bestSellerValue === "true";
-  const sort = url.searchParams.get("sort") ?? "default";
-  const page = Math.max(
-    1,
-    Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1,
-  );
-  const limit = Math.min(
-    24,
-    Math.max(
-      1,
-      Number.parseInt(url.searchParams.get("limit") ?? "24", 10) || 24,
+type ProductListStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
+type ProductListSort =
+  | "default"
+  | "newest"
+  | "price_asc"
+  | "price_desc"
+  | "best_seller";
+
+type ProductListQuery = {
+  whereSql: string;
+  values: Array<string | number>;
+  orderSql: string;
+};
+
+function csvQueryValue(value: string | null) {
+  return [
+    ...new Set(
+      (value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
     ),
-  );
+  ];
+}
+
+function parseBooleanQuery(value: string | null) {
+  return value === "1" || value === "true";
+}
+
+function parseProductSort(value: string | null): ProductListSort {
+  if (
+    value === "newest" ||
+    value === "price_asc" ||
+    value === "price_desc" ||
+    value === "best_seller"
+  )
+    return value;
+  return "default";
+}
+
+function parseAdminStatus(value: string | null): ProductListStatus {
+  if (
+    value === "AVAILABLE" ||
+    value === "OUT_OF_STOCK" ||
+    value === "HIDDEN"
+  )
+    return value;
+  return "ALL";
+}
+
+function buildProductListQuery({
+  q,
+  categories,
+  brands,
+  age,
+  bestSeller,
+  tag,
+  available,
+  sort,
+  includeHidden,
+  status,
+}: {
+  q: string;
+  categories: string[];
+  brands: string[];
+  age: number | null;
+  bestSeller: boolean;
+  tag: string;
+  available: boolean;
+  sort: ProductListSort;
+  includeHidden: boolean;
+  status: ProductListStatus;
+}): ProductListQuery {
   const where = includeHidden
     ? ["1 = 1"]
     : [
@@ -334,6 +388,10 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
         "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN')",
       ];
   const values: Array<string | number> = [];
+  if (includeHidden && status !== "ALL") {
+    where.push("p.status = ?");
+    values.push(status);
+  }
   if (q) {
     where.push(
       "(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?))",
@@ -352,37 +410,89 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     where.push(`b.slug IN (${brandPlaceholders})`);
     values.push(...brands);
   }
-  if (ageValue !== null) {
-    if (!Number.isSafeInteger(age) || Number(age) < 0 || Number(age) > 240)
-      return error("VALIDATION_ERROR", "Độ tuổi lọc không hợp lệ.", 422);
+  if (age !== null) {
     where.push("p.min_age_months <= ?");
-    values.push(Number(age));
+    values.push(age);
   }
   if (bestSeller) where.push("p.is_best_seller = 1");
+  if (tag) {
+    where.push(
+      "EXISTS (SELECT 1 FROM product_tags spt JOIN tags st ON st.id = spt.tag_id WHERE spt.product_id = p.id AND st.is_active = 1 AND st.slug = ?)",
+    );
+    values.push(tag);
+  }
+  if (available)
+    where.push(
+      "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE')",
+    );
+
   const price =
     "COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'), 0)";
-  const order =
+  const orderSql =
     sort === "price_asc"
-      ? `${price} ASC`
+      ? `${price} ASC, p.sort_order ASC, p.name ASC, p.id ASC`
       : sort === "price_desc"
-        ? `${price} DESC`
-      : sort === "newest"
-          ? "p.created_at DESC"
+        ? `${price} DESC, p.sort_order ASC, p.name ASC, p.id ASC`
+        : sort === "newest"
+          ? "p.created_at DESC, p.id DESC"
           : sort === "best_seller" || bestSeller
-            ? "p.is_best_seller DESC, p.best_seller_rank ASC, p.sort_order, p.name"
-          : "p.sort_order, p.name";
-  values.push(limit, (page - 1) * limit);
-  const sql = `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
-    p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
-    p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
-    p.archived_at AS archivedAt, p.short_description AS shortDescription,
-    p.description, p.status, p.featured, p.sort_order AS sortOrder,
-    (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
-      WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order LIMIT 1) AS categorySlug
+            ? "p.is_best_seller DESC, COALESCE(p.best_seller_rank, 2147483647) ASC, p.sort_order ASC, p.name ASC, p.id ASC"
+            : "p.sort_order ASC, p.name ASC, p.id ASC";
+  return { whereSql: where.join(" AND "), values, orderSql };
+}
+
+async function listProducts(request: Request, env: Env, includeHidden = false) {
+  const url = new URL(request.url);
+  const ageValue = url.searchParams.get("age");
+  let age: number | null = null;
+  if (ageValue !== null) {
+    const parsedAge = Number(ageValue);
+    if (!Number.isSafeInteger(parsedAge) || parsedAge < 0 || parsedAge > 240)
+      return error("VALIDATION_ERROR", "Độ tuổi lọc không hợp lệ.", 422);
+    age = parsedAge;
+  }
+  const requestedPage = normalizePage(url.searchParams.get("page"));
+  const limit = normalizeLimit(url.searchParams.get("limit"));
+  const query = buildProductListQuery({
+    q: (url.searchParams.get("q") ?? "").trim(),
+    categories: csvQueryValue(url.searchParams.get("category")),
+    brands: csvQueryValue(url.searchParams.get("brand")),
+    age,
+    bestSeller: parseBooleanQuery(url.searchParams.get("bestSeller")),
+    tag: (url.searchParams.get("tag") ?? "").trim(),
+    available: parseBooleanQuery(url.searchParams.get("available")),
+    sort: parseProductSort(url.searchParams.get("sort")),
+    includeHidden,
+    status: parseAdminStatus(url.searchParams.get("status")),
+  });
+  const count = await env.DB.prepare(
+    `SELECT COUNT(DISTINCT p.id) AS totalItems
+     FROM products p LEFT JOIN brands b ON b.id = p.brand_id
+     WHERE ${query.whereSql}`,
+  )
+    .bind(...query.values)
+    .first<{ totalItems: number }>();
+  const pagination = buildPaginationMeta({
+    totalItems: Number(count?.totalItems ?? 0),
+    requestedPage,
+    limit,
+  });
+  const result = await env.DB.prepare(
+    `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
+      p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
+      p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
+      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      p.description, p.status, p.featured, p.sort_order AS sortOrder,
+      (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+        WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order, c.id LIMIT 1) AS categorySlug
     FROM products p LEFT JOIN brands b ON b.id = p.brand_id
-    WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`;
-  const result = await env.DB.prepare(sql)
-    .bind(...values)
+    WHERE ${query.whereSql} ORDER BY ${query.orderSql} LIMIT ? OFFSET ?`,
+  )
+    .bind(
+      ...query.values,
+      pagination.limit,
+      (pagination.page - 1) * pagination.limit,
+    )
     .all<ProductRow>();
   const products = await hydrateProducts(result.results, env);
   if (!includeHidden)
@@ -391,10 +501,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
         (variant) => variant.availability !== "HIDDEN",
       );
     });
-  return json({
-    data: products,
-    pagination: { page, limit },
-  });
+  return json({ data: products, pagination });
 }
 
 async function getProduct(slug: string, env: Env) {

@@ -248,7 +248,7 @@ export function InlineCartControl({ product }: { product: Product }) {
         type="button"
         className="inline-cart-add"
         disabled={unavailable}
-        onClick={() => cart.incrementItem(variant.id)}
+        onClick={() => cart.incrementItem(variant.id, product)}
         aria-label={`Thêm ${product.name} vào giỏ hàng`}
       >
         {unavailable ? "Hết hàng" : "Thêm giỏ hàng"}
@@ -269,7 +269,7 @@ export function InlineCartControl({ product }: { product: Product }) {
         type="button"
         aria-label={`Tăng số lượng ${product.name}`}
         disabled={isInlineCartIncrementDisabled(variant.availability, quantity)}
-        onClick={() => cart.incrementItem(variant.id)}
+        onClick={() => cart.incrementItem(variant.id, product)}
       >
         <Icon>add</Icon>
       </button>

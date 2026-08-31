@@ -25,11 +25,17 @@ import {
 } from "../lib/product-editor-save";
 import { AdminShell, Icon, Price, StatusBadge, Tag } from "./ui";
 import { ProductImage } from "./product-image";
+import {
+  getPaginationItems,
+  type PaginatedResponse,
+  type PaginationMeta,
+} from "../../shared/pagination";
 
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
 type AdminProduct = Product & { adminStatus: string };
 type VariantErrors = Record<string, VariantFieldErrors>;
+type AdminProductsResponse = Partial<PaginatedResponse<AdminProductRow>>;
 
 export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
   const product = mapApiProduct(row);
@@ -41,9 +47,14 @@ export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
   return { ...product, adminStatus };
 }
 
-export function buildAdminProductsUrl(page: number, query: string) {
+export function buildAdminProductsUrl(
+  page: number,
+  query: string,
+  status: AdminProductStatus = "ALL",
+) {
   const params = new URLSearchParams({ limit: "24", page: String(Math.max(1, page)) });
   if (query.trim()) params.set("q", query.trim());
+  if (status !== "ALL") params.set("status", status);
   return `/api/admin/products?${params.toString()}`;
 }
 
@@ -60,7 +71,7 @@ export function AdminProductsPage() {
   const [statusFilter, setStatusFilter] = useState<AdminProductStatus>("ALL");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [hasNext, setHasNext] = useState(false);
+  const [pagination, setPagination] = useState<PaginationMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
@@ -94,23 +105,27 @@ export function AdminProductsPage() {
     let cancelled = false;
     setLoading(true);
     setLoadError("");
-    void fetch(buildAdminProductsUrl(page, query), {
+    setProducts([]);
+    setPagination(null);
+    void fetch(buildAdminProductsUrl(page, query, statusFilter), {
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
         if (!response.ok) throw new Error("ADMIN_PRODUCTS_LOAD_FAILED");
-        return response.json() as Promise<{ data?: AdminProductRow[] }>;
+        return response.json() as Promise<AdminProductsResponse>;
       })
       .then((body) => {
         if (cancelled) return;
         const rows = Array.isArray(body.data) ? body.data : [];
+        if (!body.pagination) throw new Error("ADMIN_PRODUCTS_INVALID_RESPONSE");
         setProducts(rows.map(mapAdminProductRow));
-        setHasNext(rows.length === 24);
+        setPagination(body.pagination);
+        if (body.pagination.page !== page) setPage(body.pagination.page);
       })
       .catch(() => {
         if (!cancelled) {
           setProducts([]);
-          setHasNext(false);
+          setPagination(null);
           setLoadError("Không tải được danh sách sản phẩm từ D1.");
         }
       })
@@ -120,11 +135,7 @@ export function AdminProductsPage() {
     return () => {
       cancelled = true;
     };
-  }, [page, query]);
-
-  const filteredProducts = products.filter((product) =>
-    adminProductMatchesStatus(product, statusFilter),
-  );
+  }, [page, query, statusFilter]);
   const statusTabs: Array<[AdminProductStatus, string]> = [
     ["ALL", "Tất cả"],
     ["AVAILABLE", "Đang bán"],
@@ -149,7 +160,10 @@ export function AdminProductsPage() {
               <button
                 key={value}
                 className={statusFilter === value ? "active" : ""}
-                onClick={() => setStatusFilter(value)}
+                onClick={() => {
+                  setPage(1);
+                  setStatusFilter(value);
+                }}
               >
                 {label}
               </button>
@@ -181,8 +195,8 @@ export function AdminProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.length
-                ? filteredProducts.map((product) => {
+              {products.length
+                ? products.map((product) => {
                     const variant = getDisplayVariant(product);
                     return (
                       <tr key={product.id}>
@@ -229,12 +243,12 @@ export function AdminProductsPage() {
                         <div className="empty-state">
                           <Icon>inventory_2</Icon>
                           <h2>
-                            {products.length
+                            {pagination?.totalItems
                               ? "Không có sản phẩm phù hợp"
                               : "Chưa có sản phẩm"}
                           </h2>
                           <p>
-                            {products.length
+                            {pagination?.totalItems
                               ? "Hãy đổi bộ lọc hoặc từ khóa tìm kiếm."
                               : "Thêm sản phẩm thật đầu tiên cho catalog BabyJoy."}
                           </p>
@@ -251,9 +265,7 @@ export function AdminProductsPage() {
           <p className="table-footer">{loadError}</p>
         ) : (
           <TableFooter
-            text={`Trang ${page}: hiển thị ${filteredProducts.length} sản phẩm`}
-            page={page}
-            hasNext={hasNext}
+            pagination={pagination}
             onPageChange={setPage}
           />
         )}
@@ -263,36 +275,57 @@ export function AdminProductsPage() {
 }
 
 function TableFooter({
-  text,
-  page,
-  hasNext,
+  pagination,
   onPageChange,
+  text,
 }: {
-  text: string;
-  page?: number;
-  hasNext?: boolean;
+  pagination?: PaginationMeta | null;
   onPageChange?: (page: number) => void;
+  text?: string;
 }) {
-  const paginated = page !== undefined && onPageChange;
+  const page = pagination?.page ?? 1;
+  const totalItems = pagination?.totalItems ?? 0;
+  const totalPages = pagination?.totalPages ?? 0;
+  const start = totalItems === 0 ? 0 : (page - 1) * (pagination?.limit ?? 24) + 1;
+  const end = totalItems === 0 ? 0 : Math.min(page * (pagination?.limit ?? 24), totalItems);
   return (
     <div className="table-footer">
-      <span>{text}</span>
-      {paginated && (
+      <span>
+        {text ?? (totalItems === 0
+          ? "0 sản phẩm"
+          : `Hiển thị ${start}–${end} trên ${totalItems} sản phẩm`)}
+      </span>
+      {pagination && onPageChange && totalPages > 1 && (
         <div>
           <button
             type="button"
-            disabled={page <= 1}
+            disabled={!pagination.hasPrevious}
             onClick={() => onPageChange(page - 1)}
             aria-label="Trang trước"
           >
             ‹
           </button>
-          <button type="button" className="active" aria-current="page">
-            {page}
-          </button>
+          {getPaginationItems(page, totalPages).map((item, index) =>
+            item === "ellipsis" ? (
+              <span key={`ellipsis-${index}`} aria-hidden="true">
+                …
+              </span>
+            ) : (
+              <button
+                type="button"
+                key={item}
+                className={item === page ? "active" : ""}
+                aria-current={item === page ? "page" : undefined}
+                aria-label={`Trang ${item}`}
+                onClick={() => onPageChange(item)}
+              >
+                {item}
+              </button>
+            ),
+          )}
           <button
             type="button"
-            disabled={!hasNext}
+            disabled={!pagination.hasNext}
             onClick={() => onPageChange(page + 1)}
             aria-label="Trang sau"
           >
