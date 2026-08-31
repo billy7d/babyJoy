@@ -229,6 +229,39 @@ function requestRow(database: DatabaseSync, submissionToken: string) {
 }
 
 describe("Configurable inventory and promotion reservation", () => {
+  it("migration dùng cú pháp CASE parser-safe cho trigger D1", () => {
+    const sql = migration("0012_inventory_messenger_reservation.sql");
+    const triggerCount = sql.match(/^CREATE TRIGGER\b/gm)?.length ?? 0;
+    const beginCount = sql.match(/^BEGIN\s*$/gm)?.length ?? 0;
+    const endCount = sql.match(/^END;\s*$/gm)?.length ?? 0;
+    const raiseCodes = new Set(
+      [...sql.matchAll(/RAISE\(ABORT,\s*'([^']+)'\)/g)].map((match) => match[1]),
+    );
+
+    expect(sql).not.toMatch(/\bSELECT\s+CASE\b/);
+    expect(sql.match(/\bSELECT\s+\(CASE\b/g)?.length ?? 0).toBe(11);
+    expect({ triggerCount, beginCount, endCount }).toEqual({
+      triggerCount: 15,
+      beginCount: 15,
+      endCount: 15,
+    });
+    expect(raiseCodes).toEqual(
+      new Set([
+        "INVENTORY_NOT_TRACKED",
+        "INVENTORY_CONFLICT",
+        "INSUFFICIENT_STOCK",
+        "INVENTORY_RESERVATION_IMMUTABLE",
+        "INVENTORY_RESERVATION_INVALID_STATUS",
+        "PROMOTION_USAGE_LIMIT",
+        "PROMOTION_RESERVATION_IMMUTABLE",
+        "PROMOTION_RESERVATION_INVALID_STATUS",
+        "INVALID_ORDER_TRANSITION",
+        "ORDER_EXPIRED",
+        "RESERVATION_SNAPSHOT_IMMUTABLE",
+      ]),
+    );
+  });
+
   it("upgrade DB hiện hữu theo kiểu expand-only và giữ catalog/cart/promotion history", () => {
     const database = createPreInventoryDatabase();
     const sourceVariant = database
