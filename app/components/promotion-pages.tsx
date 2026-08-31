@@ -372,6 +372,42 @@ export function AdminPromotionsPage() {
   );
 }
 
+function PromotionSelectorSearch({
+  label,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  // Tách khung tìm kiếm khỏi label chung để không bị CSS form-editor làm co giãn sai.
+  return (
+    <div className="promotion-selector-search">
+      <Icon>search</Icon>
+      <input
+        type="text"
+        aria-label={label}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {value && (
+        <button
+          type="button"
+          className="promotion-selector-search-clear"
+          aria-label={`Xóa ${label.toLowerCase()}`}
+          onClick={() => onChange("")}
+        >
+          <Icon>close</Icon>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ProductPicker({
   label,
   selectedIds,
@@ -387,18 +423,20 @@ function ProductPicker({
   onChange: (ids: string[]) => void;
   onSearch: (query: string) => void;
 }) {
+  const [query, setQuery] = useState("");
   const selected = new Set(selectedIds);
   const toggle = (id: string) => {
     if (multiple) onChange(selected.has(id) ? selectedIds.filter((item) => item !== id) : [...selectedIds, id]);
     else onChange(selected.has(id) ? [] : [id]);
   };
+  const handleSearch = (value: string) => {
+    setQuery(value);
+    onSearch(value);
+  };
   return (
     <div className="promotion-selector">
       <span className="promotion-field-label">{label}</span>
-      <label className="admin-search promotion-selector-search">
-        <Icon>search</Icon>
-        <input placeholder="Tìm sản phẩm..." onChange={(event) => onSearch(event.target.value)} />
-      </label>
+      <PromotionSelectorSearch label="Tìm sản phẩm" placeholder="Tìm sản phẩm..." value={query} onChange={handleSearch} />
       <div className="promotion-option-list">
         {options.length ? options.map((option) => (
           <button type="button" key={option.id} className={selected.has(option.id) ? "selected" : ""} onClick={() => toggle(option.id)} aria-pressed={selected.has(option.id)}>
@@ -424,23 +462,46 @@ function CategoryPicker({
 }) {
   const [query, setQuery] = useState("");
   const selected = new Set(selectedIds);
+  const selectedOptions = selectedIds
+    .map((id) => options.find((option) => option.id === id))
+    .filter((option): option is CategoryOption => Boolean(option));
   const visibleOptions = options.filter((option) =>
     `${option.name} ${option.slug}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
+  const toggle = (id: string) => {
+    onChange(selected.has(id) ? selectedIds.filter((item) => item !== id) : [...selectedIds, id]);
+  };
   return (
     <div className="promotion-selector">
       <span className="promotion-field-label">Danh mục áp dụng</span>
-      <label className="admin-search promotion-selector-search">
-        <Icon>search</Icon>
-        <input value={query} placeholder="Tìm danh mục..." onChange={(event) => setQuery(event.target.value)} />
-      </label>
+      <PromotionSelectorSearch label="Tìm danh mục" placeholder="Tìm danh mục..." value={query} onChange={setQuery} />
       <div className="promotion-option-list category-option-list">
         {visibleOptions.length ? visibleOptions.map((option) => (
-          <button type="button" key={option.id} className={selected.has(option.id) ? "selected" : ""} onClick={() => onChange(selected.has(option.id) ? selectedIds.filter((id) => id !== option.id) : [...selectedIds, option.id])} aria-pressed={selected.has(option.id)}>
+          <button type="button" key={option.id} className={selected.has(option.id) ? "selected" : ""} onClick={() => toggle(option.id)} aria-pressed={selected.has(option.id)}>
             <span><b>{option.name}</b><small>{option.isActive ? "Đang hoạt động" : "Đã ẩn"}</small></span>
             {selected.has(option.id) && <Icon>check_circle</Icon>}
           </button>
-        )) : <small className="promotion-selector-empty">Chưa có danh mục.</small>}
+        )) : <small className="promotion-selector-empty">{options.length ? "Không tìm thấy danh mục phù hợp." : "Chưa có danh mục."}</small>}
+      </div>
+      {/* Summary nằm ngoài vùng cuộn để admin luôn thấy và bỏ chọn được các mục đã chọn. */}
+      <div className="promotion-selection-summary" aria-live="polite">
+        <span className="promotion-selection-count">{selectedIds.length} danh mục đã chọn</span>
+        {selectedOptions.length > 0 && (
+          <div className="promotion-selection-chips" aria-label="Danh mục đã chọn">
+            {selectedOptions.map((option) => (
+              <button
+                type="button"
+                key={option.id}
+                className="promotion-selection-chip"
+                aria-label={`Bỏ chọn ${option.name}`}
+                onClick={() => toggle(option.id)}
+              >
+                <span>{option.name}</span>
+                <Icon>close</Icon>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
