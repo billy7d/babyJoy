@@ -123,6 +123,67 @@ describe("production Cron API client", () => {
     });
   });
 
+  it("lists custom domains through the account-level Workers Domains API", async () => {
+    const domains = [
+      { hostname: "metraphuong.com", service: scriptName },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      apiResponse(domains),
+    );
+    const api = createTestApi(fetchImpl);
+
+    await expect(api.listWorkerDomains()).resolves.toEqual(domains);
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/client/v4/accounts/${accountId}/workers/domains?service=${scriptName}`,
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("GET");
+  });
+
+  it.each([401, 403])("fails safely for a custom domain HTTP %s response", async (status) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      apiError(status, 10000, `unauthorized ${token}`),
+    );
+    const api = createTestApi(fetchImpl);
+
+    const error = await api.listWorkerDomains().catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(CloudflareApiError);
+    expect(error).toMatchObject({ status });
+    expect(String((error as Error).message)).not.toContain(token);
+  });
+
+  it("requires success=true and a JSON array for custom domain responses", async () => {
+    const unsuccessfulResponse = new Response(
+      JSON.stringify({
+        errors: [{ code: 1000, message: "request failed" }],
+        messages: [],
+        result: [],
+        success: false,
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(unsuccessfulResponse);
+    const api = createTestApi(fetchImpl);
+
+    await expect(api.listWorkerDomains()).rejects.toBeInstanceOf(CloudflareApiError);
+
+    fetchImpl.mockResolvedValueOnce(apiResponse({ domains: [] }));
+    await expect(api.listWorkerDomains()).rejects.toThrow(
+      "non-array Worker domains value",
+    );
+  });
+
+  it("rejects malformed custom domain records", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      apiResponse([{ hostname: "metraphuong.com" }]),
+    );
+    const api = createTestApi(fetchImpl);
+
+    await expect(api.listWorkerDomains()).rejects.toThrow(
+      "invalid Worker domain",
+    );
+  });
+
   it("fails safely for a missing Worker/10007 response", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       apiError(404, 10007, "Worker not found"),
@@ -309,27 +370,41 @@ describe("production config contract", () => {
   });
 });
 
+type WorkerStateOverrides = {
+  deployments?: unknown[];
+  subdomain?: {
+    enabled: boolean;
+    previews_enabled: boolean;
+  };
+  domains?: unknown[];
+};
+
+function createWorkerStateApi({
+  deployments = [
+    {
+      id: "deployment-1",
+      created_on: "2026-09-01T00:00:00Z",
+      versions: [{ percentage: 100, version_id: "version-1" }],
+    },
+  ],
+  subdomain = {
+    enabled: false,
+    previews_enabled: false,
+  },
+  domains = [
+    { hostname: "metraphuong.com", service: scriptName },
+  ],
+}: WorkerStateOverrides = {}) {
+  return {
+    getDeployments: vi.fn().mockResolvedValue(deployments),
+    getSubdomain: vi.fn().mockResolvedValue(subdomain),
+    listWorkerDomains: vi.fn().mockResolvedValue(domains),
+  };
+}
+
 describe("production Worker safety verification", () => {
   it("verifies disabled workers.dev, custom domain, and 100% active version", async () => {
-    const api = {
-      getDeployments: vi.fn().mockResolvedValue([
-        {
-          id: "deployment-1",
-          created_on: "2026-09-01T00:00:00Z",
-          versions: [{ percentage: 100, version_id: "version-1" }],
-        },
-      ]),
-      getSubdomain: vi.fn().mockResolvedValue({
-        enabled: false,
-        previews_enabled: false,
-      }),
-      listScripts: vi.fn().mockResolvedValue([
-        {
-          id: scriptName,
-          routes: [{ pattern: "metraphuong.com", script: scriptName }],
-        },
-      ]),
-    };
+    const api = createWorkerStateApi();
 
     const state = await getVerifiedWorkerState(api, {
       scriptName,
@@ -343,21 +418,14 @@ describe("production Worker safety verification", () => {
       previewUrls: false,
       activeVersionIds: ["version-1"],
     });
+    expect(api.listWorkerDomains).toHaveBeenCalledTimes(1);
     expect(assertWorkerVersionUnchanged(state, { activeVersionIds: ["version-1"] })).toBe(true);
   });
 
-  it("rejects unsafe subdomain state or a missing custom domain", async () => {
+  it("does not inspect List Scripts routes when verifying a Worker", async () => {
     const api = {
-      getDeployments: vi.fn().mockResolvedValue([
-        { versions: [{ percentage: 100, version_id: "version-1" }] },
-      ]),
-      getSubdomain: vi.fn().mockResolvedValue({
-        enabled: true,
-        previews_enabled: false,
-      }),
-      listScripts: vi.fn().mockResolvedValue([
-        { id: scriptName, routes: [] },
-      ]),
+      ...createWorkerStateApi(),
+      listScripts: vi.fn().mockResolvedValue([{ id: scriptName }]),
     };
 
     await expect(
@@ -365,6 +433,62 @@ describe("production Worker safety verification", () => {
         scriptName,
         customDomain: "metraphuong.com",
       }),
+    ).resolves.toMatchObject({
+      scriptName,
+      customDomain: "metraphuong.com",
+    });
+    expect(api.listScripts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["empty", []],
+    ["another Worker", [{ hostname: "metraphuong.com", service: "other-worker" }]],
+    ["another hostname", [{ hostname: "other.example.com", service: scriptName }]],
+  ])("fails when the custom domain response is %s", async (_label, domains) => {
+    await expect(
+      getVerifiedWorkerState(createWorkerStateApi({ domains }), {
+        scriptName,
+        customDomain: "metraphuong.com",
+      }),
+    ).rejects.toThrow(
+      "Custom domain verification failed: metraphuong.com is not attached to babyjoy-web-app-production.",
+    );
+  });
+
+  it("fails when workers.dev is enabled", async () => {
+    await expect(
+      getVerifiedWorkerState(
+        createWorkerStateApi({
+          subdomain: { enabled: true, previews_enabled: false },
+        }),
+        { scriptName, customDomain: "metraphuong.com" },
+      ),
     ).rejects.toThrow("subdomain verification failed");
+  });
+
+  it("fails when preview URLs are enabled", async () => {
+    await expect(
+      getVerifiedWorkerState(
+        createWorkerStateApi({
+          subdomain: { enabled: false, previews_enabled: true },
+        }),
+        { scriptName, customDomain: "metraphuong.com" },
+      ),
+    ).rejects.toThrow("subdomain verification failed");
+  });
+
+  it("fails when the active Worker deployment does not serve 100% traffic", async () => {
+    await expect(
+      getVerifiedWorkerState(
+        createWorkerStateApi({
+          deployments: [
+            {
+              versions: [{ percentage: 99, version_id: "version-1" }],
+            },
+          ],
+        }),
+        { scriptName, customDomain: "metraphuong.com" },
+      ),
+    ).rejects.toThrow("does not serve 100% traffic");
   });
 });
