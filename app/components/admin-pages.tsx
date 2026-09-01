@@ -36,6 +36,36 @@ import {
   type PaginatedResponse,
   type PaginationMeta,
 } from "../../shared/pagination";
+import {
+  CART_CHECKOUT_STATE_LABELS,
+  CART_REQUEST_CHANNEL_LABELS,
+  CART_REQUEST_SORT_OPTIONS,
+  CART_REQUEST_STATUS_LABELS,
+  MESSENGER_DELIVERY_STATUS_LABELS,
+  buildAdminCartRequestApiUrl,
+  buildAdminCartRequestUrl,
+  emptyAdminCartRequestAdvancedFilters,
+  formatAdminCartRequestFilterNumber,
+  getAdminCartRequestDateRange,
+  getAdminCartRequestFilterChips,
+  parseAdminCartRequestFilterNumber,
+  parseAdminCartRequestUrl,
+  removeAdminCartRequestFilter,
+  type AdminCartRequestAdvancedFilters,
+  type AdminCartRequestDatePreset,
+  type AdminCartRequestRow,
+  type AdminCartRequestUrlState,
+} from "../lib/admin-cart-requests";
+import {
+  CART_CHECKOUT_STATES,
+  CART_REQUEST_CHANNELS,
+  CART_REQUEST_STATUSES,
+  MESSENGER_DELIVERY_STATUSES,
+  type CartCheckoutState,
+  type CartRequestChannel,
+  type CartRequestStatus,
+  type MessengerDeliveryStatus,
+} from "../../shared/cart-requests";
 
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
@@ -293,10 +323,14 @@ function TableFooter({
   pagination,
   onPageChange,
   text,
+  itemLabel = "sản phẩm",
+  emptyText,
 }: {
   pagination?: PaginationMeta | null;
   onPageChange?: (page: number) => void;
   text?: string;
+  itemLabel?: string;
+  emptyText?: string;
 }) {
   const page = pagination?.page ?? 1;
   const totalItems = pagination?.totalItems ?? 0;
@@ -307,8 +341,8 @@ function TableFooter({
     <div className="table-footer">
       <span>
         {text ?? (totalItems === 0
-          ? "0 sản phẩm"
-          : `Hiển thị ${start}–${end} trên ${totalItems} sản phẩm`)}
+          ? emptyText ?? `0 ${itemLabel}`
+          : `Hiển thị ${start}–${end} trên ${totalItems} ${itemLabel}`)}
       </span>
       {pagination && onPageChange && totalPages > 1 && (
         <div>
@@ -1088,42 +1122,410 @@ function Toggle({
   );
 }
 
+function toggleCartRequestFilterValue<T extends string>(
+  values: readonly T[],
+  value: T,
+) {
+  return values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value];
+}
+
+function advancedFiltersFromUrlState(
+  state: AdminCartRequestUrlState,
+): AdminCartRequestAdvancedFilters {
+  return {
+    datePreset: state.datePreset,
+    dateFrom: state.dateFrom,
+    dateTo: state.dateTo,
+    statuses: [...state.statuses],
+    checkoutStates: [...state.checkoutStates],
+    channels: [...state.channels],
+    messengerDeliveryStatuses: [...state.messengerDeliveryStatuses],
+    subtotalMin: state.subtotalMin,
+    subtotalMax: state.subtotalMax,
+    itemCountMin: state.itemCountMin,
+    itemCountMax: state.itemCountMax,
+  };
+}
+
+function AdminCartRequestFilterPanel({
+  filters,
+  onChange,
+  onApply,
+  onClear,
+  onClose,
+  errorMessage,
+}: {
+  filters: AdminCartRequestAdvancedFilters;
+  onChange: (filters: AdminCartRequestAdvancedFilters) => void;
+  onApply: () => void;
+  onClear: () => void;
+  onClose: () => void;
+  errorMessage: string;
+}) {
+  const datePresets: Array<[AdminCartRequestDatePreset, string]> = [
+    ["today", "Hôm nay"],
+    ["yesterday", "Hôm qua"],
+    ["sevenDays", "7 ngày gần nhất"],
+    ["thirtyDays", "30 ngày gần nhất"],
+    ["thisMonth", "Tháng này"],
+    ["lastMonth", "Tháng trước"],
+    ["custom", "Khoảng ngày tùy chỉnh"],
+  ];
+  const setPreset = (preset: AdminCartRequestDatePreset) => {
+    if (preset === "custom") {
+      onChange({ ...filters, datePreset: preset });
+      return;
+    }
+    onChange({
+      ...filters,
+      datePreset: preset,
+      ...getAdminCartRequestDateRange(preset),
+    });
+  };
+  const setDate = (key: "dateFrom" | "dateTo", value: string) =>
+    onChange({ ...filters, datePreset: "custom", [key]: value || null });
+  const setNumber = (
+    key:
+      | "subtotalMin"
+      | "subtotalMax"
+      | "itemCountMin"
+      | "itemCountMax",
+    value: string,
+  ) => onChange({ ...filters, [key]: parseAdminCartRequestFilterNumber(value) });
+  return (
+    <div className="request-filter-panel" role="dialog" aria-label="Lọc nâng cao">
+      <div className="request-filter-panel-heading">
+        <div>
+          <h2>Lọc nâng cao</h2>
+          <p>Kết hợp các điều kiện với tab đang chọn.</p>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Đóng bộ lọc">
+          <Icon>close</Icon>
+        </button>
+      </div>
+      <div className="request-filter-grid">
+        <fieldset>
+          <legend>Thời gian tạo</legend>
+          <div className="request-filter-presets">
+            {datePresets.map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                className={filters.datePreset === value ? "active" : ""}
+                aria-pressed={filters.datePreset === value}
+                onClick={() => setPreset(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="request-filter-date-grid">
+            <label>
+              Từ ngày
+              <input
+                type="date"
+                value={filters.dateFrom ?? ""}
+                onChange={(event) => setDate("dateFrom", event.target.value)}
+              />
+            </label>
+            <label>
+              Đến ngày
+              <input
+                type="date"
+                value={filters.dateTo ?? ""}
+                onChange={(event) => setDate("dateTo", event.target.value)}
+              />
+            </label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Trạng thái legacy</legend>
+          <div className="request-filter-options">
+            {CART_REQUEST_STATUSES.map((value: CartRequestStatus) => (
+              <label key={value}>
+                <input
+                  type="checkbox"
+                  checked={filters.statuses.includes(value)}
+                  onChange={() =>
+                    onChange({
+                      ...filters,
+                      statuses: toggleCartRequestFilterValue(filters.statuses, value),
+                    })
+                  }
+                />
+                {CART_REQUEST_STATUS_LABELS[value]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Trạng thái checkout</legend>
+          <div className="request-filter-options">
+            {CART_CHECKOUT_STATES.map((value: CartCheckoutState) => (
+              <label key={value}>
+                <input
+                  type="checkbox"
+                  checked={filters.checkoutStates.includes(value)}
+                  onChange={() =>
+                    onChange({
+                      ...filters,
+                      checkoutStates: toggleCartRequestFilterValue(
+                        filters.checkoutStates,
+                        value,
+                      ),
+                    })
+                  }
+                />
+                {CART_CHECKOUT_STATE_LABELS[value]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Kênh</legend>
+          <div className="request-filter-options">
+            {CART_REQUEST_CHANNELS.map((value: CartRequestChannel) => (
+              <label key={value}>
+                <input
+                  type="checkbox"
+                  checked={filters.channels.includes(value)}
+                  onChange={() =>
+                    onChange({
+                      ...filters,
+                      channels: toggleCartRequestFilterValue(filters.channels, value),
+                    })
+                  }
+                />
+                {CART_REQUEST_CHANNEL_LABELS[value]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Trạng thái gửi Messenger</legend>
+          <div className="request-filter-options">
+            {MESSENGER_DELIVERY_STATUSES.map((value: MessengerDeliveryStatus) => (
+              <label key={value}>
+                <input
+                  type="checkbox"
+                  checked={filters.messengerDeliveryStatuses.includes(value)}
+                  onChange={() =>
+                    onChange({
+                      ...filters,
+                      messengerDeliveryStatuses: toggleCartRequestFilterValue(
+                        filters.messengerDeliveryStatuses,
+                        value,
+                      ),
+                    })
+                  }
+                />
+                {MESSENGER_DELIVERY_STATUS_LABELS[value]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Giá trị giỏ</legend>
+          <div className="request-filter-value-grid">
+            <label>
+              Giá trị từ
+              <input
+                inputMode="numeric"
+                value={formatAdminCartRequestFilterNumber(filters.subtotalMin)}
+                onChange={(event) => setNumber("subtotalMin", event.target.value)}
+                aria-label="Giá trị giỏ từ"
+              />
+            </label>
+            <label>
+              Giá trị đến
+              <input
+                inputMode="numeric"
+                value={formatAdminCartRequestFilterNumber(filters.subtotalMax)}
+                onChange={(event) => setNumber("subtotalMax", event.target.value)}
+                aria-label="Giá trị giỏ đến"
+              />
+            </label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Số mặt hàng</legend>
+          <div className="request-filter-value-grid">
+            <label>
+              Từ mặt hàng
+              <input
+                inputMode="numeric"
+                value={formatAdminCartRequestFilterNumber(filters.itemCountMin)}
+                onChange={(event) => setNumber("itemCountMin", event.target.value)}
+                aria-label="Số mặt hàng từ"
+              />
+            </label>
+            <label>
+              Đến mặt hàng
+              <input
+                inputMode="numeric"
+                value={formatAdminCartRequestFilterNumber(filters.itemCountMax)}
+                onChange={(event) => setNumber("itemCountMax", event.target.value)}
+                aria-label="Số mặt hàng đến"
+              />
+            </label>
+          </div>
+        </fieldset>
+      </div>
+      {errorMessage && <p className="form-error" role="alert">{errorMessage}</p>}
+      <div className="request-filter-actions">
+        <button type="button" className="btn" onClick={onClear}>Xóa tất cả</button>
+        <div>
+          <button type="button" className="btn" onClick={onClose}>Hủy</button>
+          <button type="button" className="btn primary" onClick={onApply}>Áp dụng bộ lọc</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AdminCartRequestsPage() {
-  const [scope, setScope] = useState<"queue" | "share" | "messenger">("queue");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const urlState = parseAdminCartRequestUrl(location.search);
+  const [searchInput, setSearchInput] = useState(urlState.q);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftFilters, setDraftFilters] = useState<AdminCartRequestAdvancedFilters>(
+    () => advancedFiltersFromUrlState(urlState),
+  );
+  const [filterError, setFilterError] = useState("");
   const [now, setNow] = useState(() => Date.now());
-  const [requests, setRequests] = useState<
-    Array<{
-      id: string;
-      publicCode: string;
-      customerName: string;
-      customerPhone: string;
-      itemLineCount: number;
-      totalQuantity: number;
-      subtotalVnd: number;
-      status: string;
-      contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
-      messengerDeliveryStatus: string;
-      messengerSessionStatus: string | null;
-      createdAt: string;
-      checkoutState?: string;
-      reservationStartedAt?: string | null;
-      reservationExpiresAt?: string | null;
-      reservationDurationMinutes?: number | null;
-    }>
-  >([]);
+  const [requests, setRequests] = useState<AdminCartRequestRow[]>([]);
+  const [pagination, setPagination] = useState<PaginationMeta | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const requestSequence = useRef(0);
+  const filterChips = getAdminCartRequestFilterChips(urlState);
+
+  useEffect(() => {
+    // Browser Back/Forward phải đưa ô tìm kiếm về đúng state trong URL.
+    setSearchInput(urlState.q);
+  }, [urlState.q]);
+
+  useEffect(() => {
+    if (!filterOpen) setDraftFilters(advancedFiltersFromUrlState(urlState));
+  }, [filterOpen, location.search]);
+
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 15000);
     return () => window.clearInterval(timer);
   }, []);
+
   useEffect(() => {
-    void fetch(`/api/admin/cart-requests?scope=${scope}`)
+    const normalized = searchInput.trim();
+    if (normalized === urlState.q) return;
+    const timer = window.setTimeout(() => {
+      // Debounce search và reset page để không gửi request theo từng ký tự.
+      navigate(
+        buildAdminCartRequestUrl({ ...urlState, q: normalized, page: 1 }),
+        { replace: true },
+      );
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [location.search, navigate, searchInput, urlState.q]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const sequence = ++requestSequence.current;
+    setLoading(true);
+    setLoadError("");
+    void fetch(buildAdminCartRequestApiUrl(urlState), {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok) throw new Error("REQUESTS_LOAD_FAILED");
-        return response.json() as Promise<{ data?: typeof requests }>;
+        return response.json() as Promise<{
+          data?: AdminCartRequestRow[];
+          pagination?: PaginationMeta;
+        }>;
       })
-      .then((body) => setRequests(body.data ?? []))
-      .catch(() => setRequests([]));
-  }, [scope]);
+      .then((body) => {
+        if (sequence !== requestSequence.current) return;
+        if (!body.pagination) throw new Error("REQUESTS_INVALID_RESPONSE");
+        setRequests(Array.isArray(body.data) ? body.data : []);
+        setPagination(body.pagination);
+        if (body.pagination.page !== urlState.page) {
+          // D1 đã clamp page; URL được thay bằng page chuẩn để không render trang rỗng.
+          navigate(
+            buildAdminCartRequestUrl({ ...urlState, page: body.pagination.page }),
+            { replace: true },
+          );
+        }
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted || sequence !== requestSequence.current) return;
+        setLoadError(
+          caught instanceof Error && caught.message === "REQUESTS_INVALID_RESPONSE"
+            ? "Dữ liệu danh sách giỏ hàng không hợp lệ."
+            : "Không tải được danh sách giỏ hàng từ D1.",
+        );
+        setPagination(null);
+      })
+      .finally(() => {
+        if (sequence === requestSequence.current) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [location.search, navigate, reloadNonce]);
+
+  const navigateWithState = (next: AdminCartRequestUrlState, replace = false) =>
+    navigate(buildAdminCartRequestUrl(next), { replace });
+  const applyAdvancedFilters = () => {
+    if (
+      draftFilters.dateFrom &&
+      draftFilters.dateTo &&
+      draftFilters.dateFrom > draftFilters.dateTo
+    ) {
+      setFilterError("Ngày bắt đầu phải trước hoặc cùng ngày kết thúc.");
+      return;
+    }
+    if (
+      draftFilters.subtotalMin !== null &&
+      draftFilters.subtotalMax !== null &&
+      draftFilters.subtotalMax < draftFilters.subtotalMin
+    ) {
+      setFilterError("Giá trị đến phải lớn hơn hoặc bằng giá trị từ.");
+      return;
+    }
+    if (
+      draftFilters.itemCountMin !== null &&
+      draftFilters.itemCountMax !== null &&
+      draftFilters.itemCountMax < draftFilters.itemCountMin
+    ) {
+      setFilterError("Số mặt hàng đến phải lớn hơn hoặc bằng số mặt hàng từ.");
+      return;
+    }
+    setFilterError("");
+    setFilterOpen(false);
+    navigateWithState({ ...urlState, ...draftFilters, page: 1 });
+  };
+  const clearAdvancedFilters = () => {
+    const empty = emptyAdminCartRequestAdvancedFilters();
+    setDraftFilters(empty);
+    setFilterError("");
+    navigateWithState({ ...urlState, ...empty, page: 1 });
+  };
+  const clearAllFilters = () => {
+    const empty = emptyAdminCartRequestAdvancedFilters();
+    setSearchInput("");
+    navigateWithState({
+      ...urlState,
+      ...empty,
+      q: "",
+      sort: null,
+      order: "desc",
+      page: 1,
+    });
+  };
+  const sortValue = urlState.sort ? `${urlState.sort}:${urlState.order}` : "";
+  const hasSearchOrAdvancedFilter = Boolean(urlState.q || filterChips.length);
   return (
     <AdminShell title="Giỏ Hàng Gửi Đến">
       <div className="requests-heading">
@@ -1136,33 +1538,102 @@ export function AdminCartRequestsPage() {
         </div>
         <label className="admin-search">
           <Icon>search</Icon>
-          <input placeholder="Tìm theo mã GH, SĐT..." />
+          <input
+            value={searchInput}
+            aria-label="Tìm kiếm giỏ hàng"
+            placeholder="Tìm theo mã GH, tên, SĐT..."
+            onChange={(event) => setSearchInput(event.target.value)}
+          />
         </label>
-        <button className="filter-advanced">
-          <Icon>filter_list</Icon>Lọc nâng cao
+        <label className="request-sort-control">
+          <span>Sắp xếp</span>
+          <select
+            aria-label="Sắp xếp giỏ hàng"
+            value={sortValue}
+            onChange={(event) => {
+              const [sort, order] = event.target.value.split(":");
+              navigateWithState({
+                ...urlState,
+                sort: sort ? (sort as AdminCartRequestUrlState["sort"]) : null,
+                order: order === "asc" ? "asc" : "desc",
+                page: 1,
+              });
+            }}
+          >
+            {CART_REQUEST_SORT_OPTIONS.map((option) => (
+              <option value={option.value} key={option.value || "default"}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="filter-advanced"
+          aria-expanded={filterOpen}
+          onClick={() => {
+            setDraftFilters(advancedFiltersFromUrlState(urlState));
+            setFilterError("");
+            setFilterOpen((open) => !open);
+          }}
+        >
+          <Icon>filter_list</Icon>
+          <span>Lọc nâng cao{filterChips.length ? ` (${filterChips.length})` : ""}</span>
         </button>
       </div>
+      {filterChips.length > 0 && (
+        <div className="request-filter-chips" aria-label="Bộ lọc đang áp dụng">
+          {filterChips.map((chip) => (
+            <button
+              type="button"
+              className="request-filter-chip"
+              key={chip.key}
+              onClick={() => navigateWithState(removeAdminCartRequestFilter(urlState, chip.key))}
+              aria-label={`Xóa bộ lọc ${chip.label}`}
+            >
+              <span>{chip.label}</span>
+              <Icon>close</Icon>
+            </button>
+          ))}
+          <button type="button" className="request-clear-filters" onClick={clearAdvancedFilters}>
+            Xóa tất cả
+          </button>
+        </div>
+      )}
+      {filterOpen && (
+        <AdminCartRequestFilterPanel
+          filters={draftFilters}
+          onChange={setDraftFilters}
+          onApply={applyAdvancedFilters}
+          onClear={clearAdvancedFilters}
+          onClose={() => setFilterOpen(false)}
+          errorMessage={filterError}
+        />
+      )}
       <div className="request-tabs">
         <button
-          className={scope === "queue" ? "active" : ""}
-          onClick={() => setScope("queue")}
+          type="button"
+          className={urlState.scope === "queue" ? "active" : ""}
+          onClick={() => navigateWithState({ ...urlState, scope: "queue", page: 1 })}
         >
           Hàng chờ xử lý
         </button>
         <button
-          className={scope === "share" ? "active" : ""}
-          onClick={() => setScope("share")}
+          type="button"
+          className={urlState.scope === "share" ? "active" : ""}
+          onClick={() => navigateWithState({ ...urlState, scope: "share", page: 1 })}
         >
           Chia sẻ thủ công
         </button>
         <button
-          className={scope === "messenger" ? "active" : ""}
-          onClick={() => setScope("messenger")}
+          type="button"
+          className={urlState.scope === "messenger" ? "active" : ""}
+          onClick={() => navigateWithState({ ...urlState, scope: "messenger", page: 1 })}
         >
           Theo dõi Messenger
         </button>
       </div>
-      <section className="admin-table-card request-table">
+      <section className={`admin-table-card request-table${loading ? " is-loading" : ""}`}>
         <div className="table-scroll">
           <table>
             <thead>
@@ -1178,76 +1649,150 @@ export function AdminCartRequestsPage() {
               </tr>
             </thead>
             <tbody>
-              {requests.map((request) => (
-                <tr key={request.id}>
-                  <td>
-                    <Link
-                      className="request-code"
-                      to={`/admin/cart-requests/${request.id}`}
-                    >
-                      {request.publicCode}
-                    </Link>
-                  </td>
-                  <td>
-                    <b>{request.customerName || (request.contactChannel === "SHARE" ? "Khách chia sẻ" : "Khách Messenger")}</b>
-                    {request.customerPhone ? (
-                      <small>
-                        <Icon>call</Icon>
-                        {request.customerPhone}
-                      </small>
-                    ) : (
-                      <small>
-                        {request.contactChannel === "SHARE"
-                          ? "Khách tự gửi thông tin tới người bán"
-                          : "Trao đổi trực tiếp trên Messenger"}
-                      </small>
-                    )}
-                  </td>
-                  <td>
-                    {new Date(request.createdAt).toLocaleTimeString("vi-VN", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                    <small>{new Date(request.createdAt).toLocaleDateString("vi-VN")}</small>
-                  </td>
-                  <td>
-                    <Tag tone="neutral">
-                      {request.itemLineCount} mặt hàng • SL {request.totalQuantity}
-                    </Tag>
-                  </td>
-                  <td>
-                    <Price value={request.subtotalVnd} />
-                  </td>
-                  <td>
-                    <StatusBadge status={request.checkoutState && request.checkoutState !== "LEGACY" ? request.checkoutState : request.status} />
-                    {request.checkoutState === "WAITING_SELLER_CONFIRM" && (
-                      <small>
-                        {formatReservationRemaining(request.reservationExpiresAt, now)}
-                      </small>
-                    )}
-                  </td>
-                  <td>
-                    <StatusBadge status={request.contactChannel} />
-                  </td>
-                  <td>
-                    <StatusBadge
-                      status={
-                        request.contactChannel === "SHARE"
-                          ? "SHARE_READY"
-                          : request.contactChannel === "MESSENGER"
-                          ? request.messengerDeliveryStatus === "PENDING"
-                            ? request.messengerSessionStatus || "CREATED"
-                            : request.messengerDeliveryStatus
-                          : "LEGACY"
-                      }
-                    />
+              {loading && !requests.length ? (
+                <tr>
+                  <td colSpan={8}>
+                    <div className="request-table-state" aria-live="polite">
+                      <Icon className="request-table-loading-icon">progress_activity</Icon>
+                      <p>Đang tải danh sách giỏ hàng…</p>
+                    </div>
                   </td>
                 </tr>
-              ))}
+              ) : loadError && !requests.length ? (
+                <tr>
+                  <td colSpan={8}>
+                    <div className="request-table-state request-table-error" role="alert">
+                      <Icon>error</Icon>
+                      <p>{loadError}</p>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setReloadNonce((value) => value + 1)}
+                      >
+                        Thử lại
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : requests.length ? (
+                requests.map((request) => (
+                  <tr key={request.id}>
+                    <td>
+                      <Link
+                        className="request-code"
+                        to={`/admin/cart-requests/${request.id}`}
+                      >
+                        {request.publicCode}
+                      </Link>
+                    </td>
+                    <td>
+                      <b>
+                        {request.customerName ||
+                          (request.contactChannel === "SHARE"
+                            ? "Khách chia sẻ"
+                            : "Khách Messenger")}
+                      </b>
+                      {request.customerPhone ? (
+                        <small>
+                          <Icon>call</Icon>
+                          {request.customerPhone}
+                        </small>
+                      ) : (
+                        <small>
+                          {request.contactChannel === "SHARE"
+                            ? "Khách tự gửi thông tin tới người bán"
+                            : "Trao đổi trực tiếp trên Messenger"}
+                        </small>
+                      )}
+                    </td>
+                    <td>
+                      {new Date(request.createdAt).toLocaleTimeString("vi-VN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                      <small>
+                        {new Date(request.createdAt).toLocaleDateString("vi-VN")}
+                      </small>
+                    </td>
+                    <td>
+                      <Tag tone="neutral">
+                        {request.itemLineCount} mặt hàng • SL {request.totalQuantity}
+                      </Tag>
+                    </td>
+                    <td>
+                      <Price value={request.subtotalVnd} />
+                    </td>
+                    <td>
+                      <StatusBadge
+                        status={
+                          request.checkoutState && request.checkoutState !== "LEGACY"
+                            ? request.checkoutState
+                            : request.status
+                        }
+                      />
+                      {request.checkoutState === "WAITING_SELLER_CONFIRM" && (
+                        <small>
+                          {formatReservationRemaining(request.reservationExpiresAt, now)}
+                        </small>
+                      )}
+                    </td>
+                    <td>
+                      <StatusBadge status={request.contactChannel} />
+                    </td>
+                    <td>
+                      <StatusBadge
+                        status={
+                          request.contactChannel === "SHARE"
+                            ? "SHARE_READY"
+                            : request.contactChannel === "MESSENGER"
+                              ? request.messengerDeliveryStatus === "PENDING"
+                                ? request.messengerSessionStatus || "CREATED"
+                                : request.messengerDeliveryStatus
+                              : "LEGACY"
+                        }
+                      />
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={8}>
+                    <div className="request-table-state">
+                      <Icon>shopping_basket</Icon>
+                      <h2>
+                        {hasSearchOrAdvancedFilter
+                          ? "Không tìm thấy giỏ hàng phù hợp"
+                          : "Chưa có giỏ hàng"}
+                      </h2>
+                      <p>
+                        {hasSearchOrAdvancedFilter
+                          ? "Hãy thử thay đổi từ khóa hoặc bộ lọc."
+                          : "Các yêu cầu giỏ hàng mới sẽ xuất hiện ở đây."}
+                      </p>
+                      {hasSearchOrAdvancedFilter && (
+                        <button type="button" className="btn" onClick={clearAllFilters}>
+                          Xóa bộ lọc
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-        <TableFooter text={`Hiển thị ${requests.length} giỏ hàng`} />
+        {loading ? (
+          <div className="table-footer" aria-live="polite">Đang tải danh sách giỏ hàng…</div>
+        ) : loadError ? (
+          <div className="table-footer request-footer-error" role="alert">{loadError}</div>
+        ) : (
+          <TableFooter
+            pagination={pagination}
+            onPageChange={(page) => navigateWithState({ ...urlState, page })}
+            itemLabel="giỏ hàng"
+            emptyText="0 giỏ hàng"
+          />
+        )}
       </section>
     </AdminShell>
   );

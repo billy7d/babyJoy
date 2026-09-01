@@ -63,6 +63,7 @@ class SqliteD1Adapter {
 }
 
 const databases: DatabaseSync[] = [];
+const REAL_TEST_START_MS = Date.now();
 const migrations = [
   "0001_initial.sql",
   "0002_seed.sql",
@@ -151,6 +152,14 @@ function jsonInit(method: string, body: unknown): RequestInit {
 function setClock(iso: string) {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(iso));
+}
+
+// SQLite trigger đọc đồng hồ thật, nên các test confirm cần mốc tương lai ổn định.
+function futureTestClock(minutes = 0) {
+  const date = new Date(REAL_TEST_START_MS + 2 * 24 * 60 * 60 * 1000);
+  date.setUTCMinutes(0, 0, 0);
+  date.setUTCMinutes(date.getUTCMinutes() + minutes);
+  return date.toISOString();
 }
 
 function seedVariant(
@@ -516,7 +525,19 @@ describe("Configurable inventory and promotion reservation", () => {
   });
 
   it("setting mới chỉ áp dụng order mới, confirm consume và expiry retry tạo reservation mới", async () => {
-    setClock("2026-08-31T10:00:00.000Z");
+    const firstClock = futureTestClock();
+    const firstExpiry = new Date(
+      Date.parse(firstClock) + reservationDurationMs(1440),
+    ).toISOString();
+    const secondClock = futureTestClock(1);
+    const secondExpiry = new Date(
+      Date.parse(secondClock) + reservationDurationMs(5),
+    ).toISOString();
+    const expiredClock = futureTestClock(7);
+    const retriedExpiry = new Date(
+      Date.parse(expiredClock) + reservationDurationMs(5),
+    ).toISOString();
+    setClock(firstClock);
     const { database, env } = createEnv();
     const first = seedVariant(database, "first", 1);
     const second = seedVariant(database, "second", 1);
@@ -524,16 +545,16 @@ describe("Configurable inventory and promotion reservation", () => {
     await prepare(env, "ttl-first", first.variantId);
     await activate(env, "ttl-first", first.variantId);
     const firstRow = requestRow(database, "ttl-first");
-    expect(firstRow.reservationExpiresAt).toBe("2026-09-01T10:00:00.000Z");
+    expect(firstRow.reservationExpiresAt).toBe(firstExpiry);
 
     await api(env, "/api/admin/settings/checkout", jsonInit("PUT", { checkoutReservationMinutes: 5 }));
-    setClock("2026-08-31T10:01:00.000Z");
+    setClock(secondClock);
     await prepare(env, "ttl-second", second.variantId);
     await activate(env, "ttl-second", second.variantId);
     const secondRow = requestRow(database, "ttl-second");
     expect(secondRow.reservationDurationMinutes).toBe(5);
-    expect(secondRow.reservationExpiresAt).toBe("2026-08-31T10:06:00.000Z");
-    expect(requestRow(database, "ttl-first").reservationExpiresAt).toBe("2026-09-01T10:00:00.000Z");
+    expect(secondRow.reservationExpiresAt).toBe(secondExpiry);
+    expect(requestRow(database, "ttl-first").reservationExpiresAt).toBe(firstExpiry);
 
     const confirm = await api(
       env,
@@ -547,7 +568,7 @@ describe("Configurable inventory and promotion reservation", () => {
     expect(confirmAgain.status).toBe(200);
     expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_movements WHERE variant_id = ? AND movement_type = 'ORDER_CONFIRMED'").get(first.variantId)).toEqual({ count: 1 });
 
-    setClock("2026-08-31T10:07:00.000Z");
+    setClock(expiredClock);
     expect(await cleanupExpiredReservations(env, new Date())).toBe(1);
     expect(requestRow(database, "ttl-second").checkoutState).toBe("EXPIRED");
     expect(database.prepare("SELECT reserved_quantity FROM product_variants WHERE id = ?").get(second.variantId)).toEqual({ reserved_quantity: 0 });
@@ -564,8 +585,8 @@ describe("Configurable inventory and promotion reservation", () => {
     expect(retry.status).toBe(200);
     const retried = requestRow(database, "ttl-second");
     expect(retried.checkoutState).toBe("WAITING_SELLER_CONFIRM");
-    expect(retried.reservationStartedAt).toBe("2026-08-31T10:07:00.000Z");
-    expect(retried.reservationExpiresAt).toBe("2026-08-31T10:12:00.000Z");
+    expect(retried.reservationStartedAt).toBe(expiredClock);
+    expect(retried.reservationExpiresAt).toBe(retriedExpiry);
     expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_reservations WHERE cart_request_id = ?").get(retried.id)).toEqual({ count: 2 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_reservations WHERE cart_request_id = ? AND status = 'ACTIVE'").get(retried.id)).toEqual({ count: 1 });
   });
@@ -597,7 +618,7 @@ describe("Configurable inventory and promotion reservation", () => {
   });
 
   it("promotion chỉ reserve tại Messenger, dùng cùng deadline và consume đúng một lần khi confirm", async () => {
-    setClock("2026-08-31T10:00:00.000Z");
+    setClock(futureTestClock());
     const { database, env } = createEnv();
     const { variantId } = seedVariant(database, "promotion", 2);
     await api(
@@ -666,7 +687,7 @@ describe("Configurable inventory and promotion reservation", () => {
   });
 
   it("quà tặng vật lý cũng reserve và consume cùng một deadline", async () => {
-    setClock("2026-08-31T10:00:00.000Z");
+    setClock(futureTestClock());
     const { database, env } = createEnv();
     const main = seedVariant(database, "gift-main", 2);
     const gift = seedVariant(database, "gift-item", 1);

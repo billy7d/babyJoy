@@ -9,6 +9,7 @@ import {
 
 import type { Route } from "./+types/root";
 import "./app.css";
+import "./admin-cart-requests.css";
 import "./mobile-cart.css";
 
 export const links: Route.LinksFunction = () => [];
