@@ -174,6 +174,24 @@ function scheduleCrons(schedules) {
   return scheduleRecords(schedules).map((schedule) => schedule.cron);
 }
 
+function workerDomainRecords(domains) {
+  if (!Array.isArray(domains)) {
+    throw new Error("Cloudflare returned a non-array Worker domains value.");
+  }
+  return domains.map((domain, index) => {
+    if (
+      !isRecord(domain) ||
+      typeof domain.hostname !== "string" ||
+      typeof domain.service !== "string"
+    ) {
+      throw new Error(
+        `Cloudflare returned an invalid Worker domain at index ${index}.`,
+      );
+    }
+    return domain;
+  });
+}
+
 function customDomainFromRoutes(routes) {
   if (!Array.isArray(routes)) return null;
   const route = routes.find(
@@ -352,12 +370,17 @@ export function createCloudflareApi({
   const resourcePath = `/accounts/${encodeURIComponent(
     accountId,
   )}/workers/scripts/${encodeURIComponent(scriptName)}`;
+  const accountResourcePath = `/accounts/${encodeURIComponent(accountId)}`;
 
-  async function request(path, { method = "GET", body } = {}) {
-    const operation = `${method} ${path}`;
+  async function requestResource(
+    resource,
+    path,
+    { method = "GET", body } = {},
+  ) {
+    const operation = `${method} ${resource}${path}`;
     let response;
     try {
-      response = await fetchImpl(`${baseUrl}${resourcePath}${path}`, {
+      response = await fetchImpl(`${baseUrl}${resource}${path}`, {
         method,
         headers: {
           Accept: "application/json",
@@ -403,6 +426,14 @@ export function createCloudflareApi({
     return payload;
   }
 
+  async function request(path, options) {
+    return requestResource(resourcePath, path, options);
+  }
+
+  async function requestAccount(path, options) {
+    return requestResource(accountResourcePath, path, options);
+  }
+
   return {
     async getSchedules() {
       const payload = await request("/schedules");
@@ -434,63 +465,13 @@ export function createCloudflareApi({
       return payload.result;
     },
 
-    async listScripts() {
-      const payload = await fetchScripts();
-      if (!Array.isArray(payload.result)) {
-        throw new Error("Cloudflare returned an invalid scripts value.");
-      }
-      return payload.result;
+    async listWorkerDomains() {
+      const payload = await requestAccount(
+        `/workers/domains?service=${encodeURIComponent(scriptName)}`,
+      );
+      return workerDomainRecords(payload.result);
     },
   };
-
-  async function fetchScripts() {
-    const operation = "GET /scripts";
-    let response;
-    try {
-      response = await fetchImpl(
-        `${baseUrl}/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
-    } catch (error) {
-      throw new CloudflareApiError({
-        operation,
-        status: 0,
-        message: `Cloudflare API request failed: ${errorMessage(error)}`,
-        token,
-      });
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new CloudflareApiError({
-        operation,
-        status: response.status,
-        message: `Cloudflare API returned a non-JSON response (HTTP ${response.status}).`,
-        token,
-      });
-    }
-    if (!response.ok || payload?.success !== true) {
-      const errors = responseErrors(payload);
-      throw new CloudflareApiError({
-        operation,
-        status: response.status,
-        codes: errors.flatMap(({ code }) => (code === undefined ? [] : [code])),
-        message: `Cloudflare API request failed (${operation}): ${formatResponseErrors(
-          payload,
-          response.status,
-        )}`,
-        token,
-      });
-    }
-    return payload;
-  }
 }
 
 export async function checkSchedules(api, expectedCrons) {
@@ -530,13 +511,11 @@ export async function reconcileSchedules(api, expectedCrons) {
   };
 }
 
-function routeMatchesCustomDomain(route, expectedDomain, scriptName) {
-  if (!isRecord(route) || typeof route.pattern !== "string") return false;
-  const pattern = route.pattern.replace(/\/$/, "");
-  const domain = expectedDomain.replace(/\/$/, "");
+function domainMatchesCustomDomain(domain, expectedDomain, scriptName) {
   return (
-    (pattern === domain || pattern === `${domain}/*`) &&
-    (route.script === undefined || route.script === null || route.script === scriptName)
+    isRecord(domain) &&
+    domain.hostname === expectedDomain &&
+    domain.service === scriptName
   );
 }
 
@@ -585,10 +564,10 @@ export async function getVerifiedWorkerState(api, metadata) {
   if (typeof expectedDomain !== "string" || expectedDomain.length === 0) {
     throw new Error("Worker verification metadata is missing customDomain.");
   }
-  const [deployments, subdomain, scripts] = await Promise.all([
+  const [deployments, subdomain, domains] = await Promise.all([
     api.getDeployments(),
     api.getSubdomain(),
-    api.listScripts(),
+    api.listWorkerDomains(),
   ]);
   if (subdomain.enabled !== false || subdomain.previews_enabled !== false) {
     throw new Error(
@@ -597,19 +576,10 @@ export async function getVerifiedWorkerState(api, metadata) {
       )}, previews_enabled=${String(subdomain.previews_enabled)}.`,
     );
   }
-  const script = scripts.find((candidate) => candidate?.id === expectedScriptName);
-  if (!script) {
-    throw new Error(
-      `Worker ${expectedScriptName} was not found in the configured Cloudflare account.`,
-    );
-  }
-  if (!Array.isArray(script.routes)) {
-    throw new Error("Cloudflare did not return routes for the production Worker.");
-  }
-  const customDomainRoute = script.routes.find((route) =>
-    routeMatchesCustomDomain(route, expectedDomain, expectedScriptName),
+  const customDomainRecord = domains.find((domain) =>
+    domainMatchesCustomDomain(domain, expectedDomain, expectedScriptName),
   );
-  if (!customDomainRoute) {
+  if (!customDomainRecord) {
     throw new Error(
       `Custom domain verification failed: ${expectedDomain} is not attached to ${expectedScriptName}.`,
     );
