@@ -11,8 +11,14 @@ on:
         options:
           - prepare
           - enable_gate
+          - repair_cron
       confirm_enable_gate:
         description: "Type ENABLE when mode=enable_gate"
+        required: false
+        default: ""
+        type: string
+      confirm_repair_cron:
+        description: "Type REPAIR_CRON when mode=repair_cron"
         required: false
         default: ""
         type: string
@@ -36,6 +42,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_WORKER_SCRIPT_NAME: babyjoy-web-app-production
 
     steps:
       - name: Checkout
@@ -58,7 +65,7 @@ jobs:
             echo "Unsupported production rollout trigger: $GITHUB_EVENT_NAME / $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ]; then
+          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ] && [ "$mode" != "repair_cron" ]; then
             echo "Unsupported rollout mode: $mode" >&2
             exit 1
           fi
@@ -71,14 +78,23 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Validate Cloudflare API token
+      - name: Validate production Cloudflare credentials
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            echo "Missing GitHub environment secret: CLOUDFLARE_API_TOKEN" >&2
+            echo "Missing GitHub production environment secret: CLOUDFLARE_API_TOKEN" >&2
             exit 1
           fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Missing GitHub production environment secret: CLOUDFLARE_ACCOUNT_ID" >&2
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[[:xdigit:]]{32}$ ]]; then
+            echo "CLOUDFLARE_ACCOUNT_ID must be a 32-character hexadecimal Cloudflare account ID." >&2
+            exit 1
+          fi
+          echo "Using the explicitly configured GitHub production account; local Wrangler account discovery is not used."
 
       - name: Validate manual enable confirmation
         if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' && github.event_name == 'workflow_dispatch' }}
@@ -92,31 +108,79 @@ jobs:
             exit 1
           fi
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Validate manual Cron repair confirmation
+        if: ${{ steps.rollout_mode.outputs.value == 'repair_cron' }}
+        shell: bash
+        env:
+          CONFIRM_REPAIR_CRON: ${{ inputs.confirm_repair_cron }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_REPAIR_CRON" != "REPAIR_CRON" ]; then
+            echo "To repair production Cron, set confirm_repair_cron to REPAIR_CRON." >&2
+            exit 1
+          fi
 
-      - name: Resolve Cloudflare account
+      - name: Extract canonical production deployment contract
+        id: deployment_contract
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "Using configured CLOUDFLARE_ACCOUNT_ID."
-            exit 0
-          fi
-          npx wrangler whoami --json > /tmp/cloudflare-whoami.json
-          node <<'NODE'
-          const fs = require('fs');
-          const data = JSON.parse(fs.readFileSync('/tmp/cloudflare-whoami.json', 'utf8'));
-          const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-          if (accounts.length !== 1 || !accounts[0]?.id) {
-            console.error(`Expected exactly one Cloudflare account, found ${accounts.length}.`);
-            process.exit(1);
+          expected_file="$RUNNER_TEMP/babyjoy-production-crons.json"
+          metadata_file="$RUNNER_TEMP/babyjoy-production-metadata.json"
+          config_path="wrangler.jsonc"
+          node scripts/cloudflare-production-cron.mjs extract \
+            --config "$config_path" \
+            --environment production \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --output "$expected_file" \
+            --metadata-output "$metadata_file"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const metadata = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/babyjoy-production-metadata.json', 'utf8'));
+          if (metadata.scriptName !== process.env.PRODUCTION_WORKER_SCRIPT_NAME) {
+            throw new Error(`Resolved Worker script ${metadata.scriptName} does not match the verified production script name.`);
           }
-          fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_ACCOUNT_ID=${accounts[0].id}\n`);
+          if (metadata.workersDev !== false || metadata.previewUrls !== false) {
+            throw new Error('Production deployment contract must keep workers.dev and preview URLs disabled.');
+          }
+          if (metadata.customDomain !== 'metraphuong.com') {
+            throw new Error(`Resolved custom domain ${metadata.customDomain} does not match metraphuong.com.`);
+          }
+          console.log(`Resolved production Worker: ${metadata.scriptName}`);
+          console.log(`Canonical production Cron: ${JSON.stringify(metadata.crons)}`);
+          console.log(`Canonical custom domain: ${metadata.customDomain}`);
           NODE
-          rm -f /tmp/cloudflare-whoami.json
+          echo "config_path=$config_path" >> "$GITHUB_OUTPUT"
+          echo "expected_file=$expected_file" >> "$GITHUB_OUTPUT"
+          echo "metadata_file=$metadata_file" >> "$GITHUB_OUTPUT"
+
+      - name: Cron API read preflight
+        id: cron_preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          node scripts/cloudflare-production-cron.mjs check \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --expected-file "$RUNNER_TEMP/babyjoy-production-crons.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-cron-before.json"
+          check_status=$?
+          set -e
+          if [ "$check_status" -eq 0 ]; then
+            echo "Cron API preflight passed: current schedules exactly match canonical state."
+          elif [ "$check_status" -eq 2 ]; then
+            echo "Cron API preflight passed: API is reachable, but schedules need reconciliation."
+          else
+            echo "Cron API preflight failed; production operations are blocked." >&2
+            exit "$check_status"
+          fi
+
+      - name: Install dependencies
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
+        run: npm ci
 
       - name: Run quality checks
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -181,27 +245,88 @@ jobs:
           fs.writeFileSync(path, content);
           NODE
 
-      - name: Rebuild redirected Wrangler deployment config
+      - name: Build resolved production deployment config
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
         shell: bash
         env:
           ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
         run: |
           set -euo pipefail
           npm run build
-          node <<'NODE'
-          const fs = require('fs');
+          test -s build/server/wrangler.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
           const config = JSON.parse(fs.readFileSync('build/server/wrangler.json', 'utf8'));
-          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED
-            ?? config.env?.production?.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
+          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
           const expected = process.env.ROLLOUT_MODE === 'prepare' ? 'false' : 'true';
           console.log(`Generated deployment gate flag: ${value}; expected: ${expected}`);
-          if (value !== expected) process.exit(1);
+          if (value !== expected) {
+            throw new Error('Generated deployment config has an unexpected storefront gate flag.');
+          }
           NODE
 
+      - name: Create trigger-free Worker deployment config
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/cloudflare-production-cron.mjs prepare-deploy-config \
+            --input build/server/wrangler.json \
+            --output build/server/wrangler.production-deploy.json \
+            --expected-file "$RUNNER_TEMP/babyjoy-production-crons.json"
+          test -s build/server/wrangler.production-deploy.json
+
+      - name: Verify production Worker before Cron repair
+        if: ${{ steps.rollout_mode.outputs.value == 'repair_cron' }}
+        run: |
+          node scripts/cloudflare-production-cron.mjs worker-state \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --metadata-file "$RUNNER_TEMP/babyjoy-production-metadata.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-worker-before.json"
+
+      - name: Validate trigger-free Wrangler deployment (dry run)
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
+        run: npx wrangler deploy --dry-run --config build/server/wrangler.production-deploy.json
+
       - name: Deploy production Worker
-        run: npx wrangler deploy --env production
+        id: worker_deploy
+        if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
+        run: npx wrangler deploy --config build/server/wrangler.production-deploy.json
+
+      - name: Reconcile production Cron
+        id: cron_reconcile
+        run: |
+          node scripts/cloudflare-production-cron.mjs reconcile \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --expected-file "$RUNNER_TEMP/babyjoy-production-crons.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-cron-reconcile.json"
+
+      - name: Verify production Cron exact state
+        id: cron_verify
+        run: |
+          node scripts/cloudflare-production-cron.mjs check \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --expected-file "$RUNNER_TEMP/babyjoy-production-crons.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-cron-after.json"
+
+      - name: Verify production Worker routing and deployment state
+        id: worker_verify
+        run: |
+          node scripts/cloudflare-production-cron.mjs worker-state \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --metadata-file "$RUNNER_TEMP/babyjoy-production-metadata.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-worker-after.json"
+
+      - name: Verify Cron repair did not change Worker version
+        id: repair_version_verify
+        if: ${{ steps.rollout_mode.outputs.value == 'repair_cron' }}
+        run: |
+          node scripts/cloudflare-production-cron.mjs assert-version-unchanged \
+            --before "$RUNNER_TEMP/babyjoy-worker-before.json" \
+            --after "$RUNNER_TEMP/babyjoy-worker-after.json"
 
       - name: Smoke test gate disabled
+        id: smoke_prepare
         if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
         shell: bash
         run: |
@@ -223,6 +348,7 @@ jobs:
           echo "Prepare smoke passed: homepage and public products API are reachable with gate disabled."
 
       - name: Smoke test gate enabled
+        id: smoke_enable
         if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' }}
         shell: bash
         run: |
@@ -238,9 +364,93 @@ jobs:
           retry bash -c 'status=$(curl -sS -o /tmp/products.json -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
           grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/products.json
           retry bash -c 'status=$(curl -sS -L -o /tmp/access-required.html -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
-          curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ > /tmp/admin-status.txt || true
+          curl -sS -o /tmp/admin.html -w "%{http_code}" https://metraphuong.com/admin/ > /tmp/admin-status.txt
           if grep -q 'STOREFRONT_SESSION_REQUIRED' /tmp/admin.html 2>/dev/null; then
             echo "Admin route was incorrectly captured by storefront gating." >&2
             exit 1
           fi
           echo "Gate-enabled smoke passed: public catalog API is gated and access-required remains reachable."
+
+      - name: Write production rollout summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
+          WORKER_DEPLOY_OUTCOME: ${{ steps.worker_deploy.outcome }}
+          CRON_RECONCILE_OUTCOME: ${{ steps.cron_reconcile.outcome }}
+          CRON_VERIFY_OUTCOME: ${{ steps.cron_verify.outcome }}
+          WORKER_VERIFY_OUTCOME: ${{ steps.worker_verify.outcome }}
+          SMOKE_PREPARE_OUTCOME: ${{ steps.smoke_prepare.outcome }}
+          SMOKE_ENABLE_OUTCOME: ${{ steps.smoke_enable.outcome }}
+        run: |
+          set -euo pipefail
+          read_json_field() {
+            local path="$1"
+            local field="$2"
+            if [ ! -f "$path" ]; then
+              echo "unavailable"
+              return 0
+            fi
+            node -e '
+              const fs = require("fs");
+              const [path, field] = process.argv.slice(1);
+              const value = JSON.parse(fs.readFileSync(path, "utf8"));
+              const selected = value[field];
+              process.stdout.write(typeof selected === "string" ? selected : JSON.stringify(selected ?? "unavailable"));
+            ' "$path" "$field"
+          }
+          expected_cron="unavailable"
+          if [ -f "$RUNNER_TEMP/babyjoy-production-crons.json" ]; then
+            expected_cron="$(node -e 'const fs = require("fs"); process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(process.argv[1], "utf8"))));' "$RUNNER_TEMP/babyjoy-production-crons.json")"
+          fi
+          cron_before="$(read_json_field "$RUNNER_TEMP/babyjoy-cron-before.json" actualCrons)"
+          cron_after="$(read_json_field "$RUNNER_TEMP/babyjoy-cron-after.json" actualCrons)"
+          cron_operation="$(read_json_field "$RUNNER_TEMP/babyjoy-cron-reconcile.json" operation)"
+          custom_domain="$(read_json_field "$RUNNER_TEMP/babyjoy-production-metadata.json" customDomain)"
+          worker_deploy_status="NOT RUN"
+          if [ "${WORKER_DEPLOY_OUTCOME:-}" = "success" ]; then worker_deploy_status="SUCCESS"; fi
+          if [ "${WORKER_DEPLOY_OUTCOME:-}" = "failure" ]; then worker_deploy_status="FAILED"; fi
+          cron_status="NOT RUN"
+          if [ "${CRON_RECONCILE_OUTCOME:-}" = "success" ]; then cron_status="${cron_operation}"; fi
+          if [ "${CRON_RECONCILE_OUTCOME:-}" = "failure" ]; then cron_status="FAILED"; fi
+          if [ "${CRON_VERIFY_OUTCOME:-}" = "failure" ]; then cron_status="FAILED"; fi
+          smoke_status="NOT RUN"
+          if [ "${ROLLOUT_MODE:-}" = "prepare" ]; then smoke_status="${SMOKE_PREPARE_OUTCOME:-NOT RUN}"; fi
+          if [ "${ROLLOUT_MODE:-}" = "enable_gate" ]; then smoke_status="${SMOKE_ENABLE_OUTCOME:-NOT RUN}"; fi
+          workers_dev_status="UNKNOWN"
+          worker_after="$RUNNER_TEMP/babyjoy-worker-after.json"
+          if [ -f "$worker_after" ]; then
+            workers_dev_status="$(read_json_field "$worker_after" workersDev)"
+            if [ "$workers_dev_status" = "false" ]; then workers_dev_status="disabled"; fi
+          fi
+          {
+            echo "## Production Rollout Summary"
+            echo
+            echo "Mode: ${ROLLOUT_MODE:-unknown}"
+            echo
+            echo "Worker: $PRODUCTION_WORKER_SCRIPT_NAME"
+            echo
+            echo "Worker deploy: $worker_deploy_status"
+            echo
+            echo "Expected cron: $expected_cron"
+            echo
+            echo "Cron before: $cron_before"
+            echo
+            echo "Cron reconciliation: $cron_status"
+            echo
+            echo "Cron after: $cron_after"
+            echo
+            echo "workers.dev: $workers_dev_status"
+            echo
+            echo "Custom domain: ${custom_domain:-unknown}"
+            echo
+            echo "Smoke tests: $smoke_status"
+            echo
+            echo "Cron verification step: ${CRON_VERIFY_OUTCOME:-NOT RUN}"
+            echo
+            echo "Worker verification step: ${WORKER_VERIFY_OUTCOME:-NOT RUN}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$worker_deploy_status" = "SUCCESS" ] && [ "$cron_status" = "FAILED" ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "⚠ Worker deployment succeeded, but Cron reconciliation failed. Production requires operator attention." >> "$GITHUB_STEP_SUMMARY"
+          fi
