@@ -4,6 +4,11 @@ import {
   MIN_CHECKOUT_RESERVATION_MINUTES,
   reservationDurationMs,
 } from "../shared/reservation";
+import {
+  MAX_CRON_CLEANUP_LIMIT,
+  sanitizeCronErrorType,
+  type CronCleanupMetrics,
+} from "../shared/cron-health";
 
 export {
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
@@ -37,6 +42,8 @@ export type ReservationLine = {
 export type ReservationGiftLine = ReservationLine & {
   promotionId: string;
 };
+
+export type CleanupExpiredReservationsResult = CronCleanupMetrics;
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: jsonHeaders });
@@ -155,24 +162,33 @@ export async function saveAdminCheckoutSettings(request: Request, env: Env) {
   return getAdminCheckoutSettings(env);
 }
 
-export async function hasInventorySchema(env: Env) {
+async function inspectInventorySchema(env: Env) {
   try {
     const table = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'inventory_reservations'",
     ).first<{ name: string }>();
-    if (!table?.name) return false;
+    if (!table?.name) return { available: false };
     const column = await env.DB.prepare(
       "SELECT name FROM pragma_table_info('cart_requests') WHERE name = 'checkout_state'",
     ).first<{ name: string }>();
-    return Boolean(column?.name);
-  } catch {
-    return false;
+    return { available: Boolean(column?.name) };
+  } catch (error) {
+    return { available: false, error };
   }
+}
+
+export async function hasInventorySchema(env: Env) {
+  return (await inspectInventorySchema(env)).available;
 }
 
 function isoNow(value: Date | string) {
   const timestamp = typeof value === "string" ? Date.parse(value) : value.getTime();
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString();
+}
+
+function boundedCleanupLimit(limit: number) {
+  const normalized = Number.isFinite(limit) ? Math.floor(limit) : MAX_CRON_CLEANUP_LIMIT;
+  return Math.min(MAX_CRON_CLEANUP_LIMIT, Math.max(1, normalized));
 }
 
 function mapInventoryError(caught: unknown) {
@@ -208,12 +224,23 @@ function mapInventoryError(caught: unknown) {
   return null;
 }
 
-export async function cleanupExpiredReservations(
+export async function cleanupExpiredReservationsDetailed(
   env: Env,
   now = new Date(),
   limit = 100,
-) {
-  if (!(await hasInventorySchema(env))) return 0;
+  options: { runId?: string } = {},
+): Promise<CleanupExpiredReservationsResult> {
+  const effectiveLimit = boundedCleanupLimit(limit);
+  const schema = await inspectInventorySchema(env);
+  if (schema.error && options.runId) throw schema.error;
+  if (!schema.available)
+    return {
+      schemaAvailable: false,
+      candidateCount: 0,
+      releasedCount: 0,
+      failedCount: 0,
+      limit: effectiveLimit,
+    };
   const timestamp = isoNow(now);
   const rows = await env.DB.prepare(
     `SELECT id FROM cart_requests
@@ -222,10 +249,12 @@ export async function cleanupExpiredReservations(
        AND reservation_expires_at <= ?
      ORDER BY reservation_expires_at, id LIMIT ?`,
   )
-    .bind(timestamp, Math.min(100, Math.max(1, limit)))
+    .bind(timestamp, effectiveLimit)
     .all<{ id: string }>();
+  const candidates = rows.results ?? [];
   let released = 0;
-  for (const row of rows.results) {
+  let failed = 0;
+  for (const row of candidates) {
     try {
       await env.DB.batch([
         env.DB.prepare(
@@ -246,16 +275,33 @@ export async function cleanupExpiredReservations(
       ]);
       released += 1;
     } catch (caught) {
+      failed += 1;
       console.error(
         JSON.stringify({
           event: "inventory_expiry_failed",
           cartRequestId: row.id,
-          errorType: caught instanceof Error ? caught.name : "UNKNOWN",
+          ...(options.runId ? { runId: options.runId } : {}),
+          errorType: sanitizeCronErrorType(caught),
         }),
       );
     }
   }
-  return released;
+  return {
+    schemaAvailable: true,
+    candidateCount: candidates.length,
+    releasedCount: released,
+    failedCount: failed,
+    limit: effectiveLimit,
+  };
+}
+
+export async function cleanupExpiredReservations(
+  env: Env,
+  now = new Date(),
+  limit = 100,
+) {
+  const result = await cleanupExpiredReservationsDetailed(env, now, limit);
+  return result.releasedCount;
 }
 
 export function buildInventoryReservationStatements(
