@@ -2510,6 +2510,10 @@ function CronHealthCard({
   );
 }
 
+function CronHealthCardFromContext() {
+  return <CronHealthCard {...useAdminCronHealth()} />;
+}
+
 export function AdminSettingsPage() {
   const [seller, setSeller] = useState({
     displayName: "",
@@ -2532,7 +2536,6 @@ export function AdminSettingsPage() {
   const [checkoutReservationMessage, setCheckoutReservationMessage] = useState("");
   const [checkoutReservationError, setCheckoutReservationError] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
-  const cronHealth = useAdminCronHealth();
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/admin/settings/seller")
@@ -2853,7 +2856,7 @@ export function AdminSettingsPage() {
           <Icon>save</Icon> {checkoutReservationBusy ? "ĐANG LƯU..." : "LƯU THỜI GIAN GIỮ HÀNG"}
         </button>
       </section>
-      <CronHealthCard {...cronHealth} />
+      <CronHealthCardFromContext />
       <section className="editor-card settings-card seller-settings-card">
         <div className="editor-card-title">
           <span>
