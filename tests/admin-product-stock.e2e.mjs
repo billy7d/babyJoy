@@ -99,8 +99,13 @@ try {
   );
 
   for (const viewport of [
+    { width: 320, height: 844 },
+    { width: 375, height: 844 },
     { width: 1440, height: 900 },
     { width: 390, height: 844 },
+    { width: 430, height: 844 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 900 },
   ]) {
     const context = await browser.newContext({ viewport, locale: "vi-VN" });
     const page = await context.newPage();
@@ -126,10 +131,11 @@ try {
       assert((await untrackedStockCell.getAttribute("title")) === "Không theo dõi tồn kho", "Thiếu title cho trạng thái không theo dõi");
       assert((await untrackedStockCell.getAttribute("aria-label")) === "Không theo dõi tồn kho", "Thiếu aria-label cho trạng thái không theo dõi");
       assert(await trackedRow.getByRole("link", { name: "Sửa" }).count() === 1, "Thiếu icon sửa sản phẩm");
-      await page.screenshot({
-        path: `screenshots/actual/admin-products-stock-${viewport.width}.png`,
-        fullPage: true,
-      });
+      if (viewport.width === 390 || viewport.width === 1440)
+        await page.screenshot({
+          path: `screenshots/actual/admin-products-stock-${viewport.width}.png`,
+          fullPage: true,
+        });
 
       const search = page.getByPlaceholder("Tìm kiếm sản phẩm...");
       await search.fill(trackedName);
@@ -139,22 +145,22 @@ try {
       await page.getByRole("button", { name: "Đang bán" }).click();
       await waitForRow(page, trackedName);
 
-      if (viewport.width === 390) {
-        const metrics = await page.evaluate(() => {
-          const scroll = document.querySelector(".admin-products-table")?.parentElement;
-          return {
-            bodyScrollWidth: document.body.scrollWidth,
-            documentScrollWidth: document.documentElement.scrollWidth,
-            viewportWidth: document.documentElement.clientWidth,
-            tableScrollWidth: scroll?.scrollWidth ?? 0,
-            tableClientWidth: scroll?.clientWidth ?? 0,
-          };
-        });
-        assert(
-          metrics.bodyScrollWidth <= metrics.viewportWidth &&
-            metrics.documentScrollWidth <= metrics.viewportWidth,
-          `Horizontal overflow ngoài table: ${JSON.stringify(metrics)}`,
-        );
+      const metrics = await page.evaluate(() => {
+        const scroll = document.querySelector(".admin-products-table")?.parentElement;
+        return {
+          bodyScrollWidth: document.body.scrollWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          viewportWidth: document.documentElement.clientWidth,
+          tableScrollWidth: scroll?.scrollWidth ?? 0,
+          tableClientWidth: scroll?.clientWidth ?? 0,
+        };
+      });
+      assert(
+        metrics.bodyScrollWidth <= metrics.viewportWidth &&
+          metrics.documentScrollWidth <= metrics.viewportWidth,
+        `Horizontal overflow ngoài table: ${JSON.stringify(metrics)}`,
+      );
+      if (viewport.width <= 430) {
         assert(
           metrics.tableScrollWidth > metrics.tableClientWidth,
           "Bảng không có horizontal scroll nội bộ ở mobile",
