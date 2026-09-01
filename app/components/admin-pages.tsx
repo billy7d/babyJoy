@@ -30,7 +30,14 @@ import {
   ProductEditorSaveController,
   type ProductEditorSavePayload,
 } from "../lib/product-editor-save";
-import { AdminShell, Icon, Price, StatusBadge, Tag } from "./ui";
+import {
+  AdminShell,
+  Icon,
+  Price,
+  StatusBadge,
+  Tag,
+  useAdminCronHealth,
+} from "./ui";
 import { ProductImage } from "./product-image";
 import {
   getPaginationItems,
@@ -67,6 +74,13 @@ import {
   type CartRequestStatus,
   type MessengerDeliveryStatus,
 } from "../../shared/cart-requests";
+import {
+  type CronHealthData,
+} from "../../shared/cron-health";
+import {
+  CRON_HEALTH_LABELS,
+  formatCronHealthTimestamp,
+} from "../lib/cron-health-ui";
 
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
@@ -2425,6 +2439,77 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   );
 }
 
+function formatCronHealthMetric(value: number | null | undefined, suffix = "") {
+  return typeof value === "number" ? `${value}${suffix}` : "—";
+}
+
+function CronHealthCard({
+  data,
+  unavailable,
+  refresh,
+}: {
+  data: CronHealthData;
+  unavailable: boolean;
+  refresh: () => void;
+}) {
+  const lastRun = data.lastRun;
+  return (
+    <section className="editor-card settings-card cron-health-card">
+      <div className="editor-card-title cron-health-card-title">
+        <span>
+          <Icon>monitor_heart</Icon>
+          <h2>Tình trạng tác vụ giữ hàng</h2>
+        </span>
+        <span className={`cron-health-status cron-health-status-${data.health.toLowerCase()}`}>
+          {CRON_HEALTH_LABELS[data.health]}
+        </span>
+      </div>
+      <p>
+        Theo dõi lần chạy gần nhất của tác vụ giải phóng reservation đã hết hạn.
+        Trang này chỉ đọc trạng thái và không kích hoạt cleanup.
+      </p>
+      {unavailable && (
+        <p className="cron-health-unavailable">
+          Chưa tải được dữ liệu trạng thái. Vui lòng thử lại.
+        </p>
+      )}
+      <dl className="cron-health-metrics">
+        <div>
+          <dt>Lần chạy gần nhất</dt>
+          <dd>{formatCronHealthTimestamp(data.lastAttemptAt)}</dd>
+        </div>
+        <div>
+          <dt>Lần thành công gần nhất</dt>
+          <dd>{formatCronHealthTimestamp(data.lastSuccessAt)}</dd>
+        </div>
+        <div>
+          <dt>Bản ghi kiểm tra</dt>
+          <dd>{formatCronHealthMetric(lastRun?.candidateCount)}</dd>
+        </div>
+        <div>
+          <dt>Đã giải phóng</dt>
+          <dd>{formatCronHealthMetric(lastRun?.releasedCount)}</dd>
+        </div>
+        <div>
+          <dt>Bản ghi lỗi</dt>
+          <dd>{formatCronHealthMetric(lastRun?.failedCount)}</dd>
+        </div>
+        <div>
+          <dt>Thời gian xử lý</dt>
+          <dd>{formatCronHealthMetric(lastRun?.durationMs, " ms")}</dd>
+        </div>
+        <div>
+          <dt>Lịch chạy</dt>
+          <dd>{data.schedule} (mỗi phút)</dd>
+        </div>
+      </dl>
+      <button className="btn secondary-btn" type="button" onClick={refresh}>
+        <Icon>refresh</Icon> Làm mới trạng thái
+      </button>
+    </section>
+  );
+}
+
 export function AdminSettingsPage() {
   const [seller, setSeller] = useState({
     displayName: "",
@@ -2447,6 +2532,7 @@ export function AdminSettingsPage() {
   const [checkoutReservationMessage, setCheckoutReservationMessage] = useState("");
   const [checkoutReservationError, setCheckoutReservationError] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
+  const cronHealth = useAdminCronHealth();
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/admin/settings/seller")
@@ -2767,6 +2853,7 @@ export function AdminSettingsPage() {
           <Icon>save</Icon> {checkoutReservationBusy ? "ĐANG LƯU..." : "LƯU THỜI GIAN GIỮ HÀNG"}
         </button>
       </section>
+      <CronHealthCard {...cronHealth} />
       <section className="editor-card settings-card seller-settings-card">
         <div className="editor-card-title">
           <span>

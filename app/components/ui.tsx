@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import type { Availability, Product, Variant } from "../lib/catalog";
 import {
@@ -15,6 +23,14 @@ import { ProductImage } from "./product-image";
 import type { CartLine } from "../lib/cart";
 import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
 import { STORE_BRAND } from "../../shared/branding";
+import {
+  buildCronHealthData,
+  CRON_HEALTH_STATUSES,
+  CRON_RUN_OUTCOMES,
+  type CronHealthData,
+  type CronHealthStatus,
+} from "../../shared/cron-health";
+import { getCronHealthWarning } from "../lib/cron-health-ui";
 
 export function Icon({
   children,
@@ -477,6 +493,138 @@ const adminLinks = [
   ["/admin/settings", "settings", "Cài đặt"],
 ];
 
+export type AdminCronHealthContextValue = {
+  data: CronHealthData;
+  unavailable: boolean;
+  refresh: () => void;
+};
+
+const defaultAdminCronHealth: AdminCronHealthContextValue = {
+  data: buildCronHealthData(null),
+  unavailable: true,
+  refresh: () => undefined,
+};
+
+const AdminCronHealthContext = createContext<AdminCronHealthContextValue>(
+  defaultAdminCronHealth,
+);
+
+function isCronHealthData(value: unknown): value is CronHealthData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const data = value as Record<string, unknown>;
+  const lastRun = data.lastRun;
+  let validRun = lastRun === null;
+  if (lastRun && typeof lastRun === "object" && !Array.isArray(lastRun)) {
+    const run = lastRun as Record<string, unknown>;
+    const counts = [
+      run.durationMs,
+      run.candidateCount,
+      run.releasedCount,
+      run.failedCount,
+    ];
+    validRun =
+      CRON_RUN_OUTCOMES.includes(
+        run.outcome as (typeof CRON_RUN_OUTCOMES)[number],
+      ) &&
+      typeof run.scheduledAt === "string" &&
+      Number.isFinite(Date.parse(run.scheduledAt)) &&
+      typeof run.completedAt === "string" &&
+      Number.isFinite(Date.parse(run.completedAt)) &&
+      counts.every(
+        (item) =>
+          typeof item === "number" && Number.isSafeInteger(item) && item >= 0,
+      ) &&
+      typeof run.candidateCount === "number" &&
+      typeof run.releasedCount === "number" &&
+      typeof run.failedCount === "number" &&
+      run.candidateCount === run.releasedCount + run.failedCount;
+  }
+  const validTimestamp = (item: unknown) =>
+    item === null ||
+    (typeof item === "string" && Number.isFinite(Date.parse(item)));
+  return (
+    data.job === "inventory_expiry_cleanup" &&
+    data.schedule === "* * * * *" &&
+    data.expectedIntervalSeconds === 60 &&
+    data.staleAfterSeconds === 300 &&
+    CRON_HEALTH_STATUSES.includes(data.health as CronHealthStatus) &&
+    validTimestamp(data.lastAttemptAt) &&
+    validTimestamp(data.lastSuccessAt) &&
+    validRun
+  );
+}
+
+function useAdminCronHealthPolling() {
+  const [data, setData] = useState<CronHealthData>(defaultAdminCronHealth.data);
+  const [unavailable, setUnavailable] = useState(true);
+  const pendingRequest = useRef<AbortController | null>(null);
+  const load = useCallback(async () => {
+    pendingRequest.current?.abort();
+    const controller = new AbortController();
+    pendingRequest.current = controller;
+    try {
+      const response = await fetch("/api/admin/cron-health", {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("CRON_HEALTH_LOAD_FAILED");
+      const body = (await response.json()) as { data?: unknown };
+      if (!isCronHealthData(body.data)) throw new Error("CRON_HEALTH_INVALID");
+      if (controller.signal.aborted) return;
+      setData(body.data);
+      setUnavailable(false);
+    } catch {
+      if (controller.signal.aborted) return;
+      setData(buildCronHealthData(null));
+      setUnavailable(true);
+    } finally {
+      if (pendingRequest.current === controller) pendingRequest.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => void load(), 60_000);
+    return () => {
+      window.clearInterval(interval);
+      pendingRequest.current?.abort();
+      pendingRequest.current = null;
+    };
+  }, [load]);
+  return {
+    data,
+    unavailable,
+    refresh: () => void load(),
+  } satisfies AdminCronHealthContextValue;
+}
+
+export function useAdminCronHealth() {
+  return useContext(AdminCronHealthContext);
+}
+
+function AdminCronHealthWarning({
+  status,
+  onDismiss,
+}: {
+  status: CronHealthStatus;
+  onDismiss: () => void;
+}) {
+  const message = getCronHealthWarning(status);
+  if (!message) return null;
+  return (
+    <div
+      className={`admin-cron-health-warning admin-cron-health-warning-${status.toLowerCase()}`}
+      role="alert"
+    >
+      <Icon>{status === "DEGRADED" ? "warning" : "error"}</Icon>
+      <span>{message}</span>
+      <button type="button" onClick={onDismiss} aria-label="Ẩn cảnh báo">
+        <Icon>close</Icon>
+      </button>
+    </div>
+  );
+}
+
 export function AdminShell({
   title,
   children,
@@ -484,33 +632,48 @@ export function AdminShell({
   title: string;
   children: React.ReactNode;
 }) {
+  const cronHealth = useAdminCronHealthPolling();
+  const [warningDismissed, setWarningDismissed] = useState(false);
+  useEffect(() => {
+    setWarningDismissed(false);
+  }, [cronHealth.data.health, cronHealth.data.lastAttemptAt]);
   return (
-    <div className="admin-shell">
-      <aside className="admin-sidebar">
-        <Logo />
-        <nav>
-          {adminLinks.map(([to, icon, label]) => (
-            <NavLink key={to} to={to}>
-              <Icon>{icon}</Icon>
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
-      <section className="admin-workspace">
-        <header className="admin-top">
-          <h2>{title}</h2>
-          <div>
-            <Icon>search</Icon>
-            <Icon>notifications</Icon>
-            <span className="admin-avatar">
-              <Icon>person</Icon>
-            </span>
-          </div>
-        </header>
-        <main className="admin-main">{children}</main>
-      </section>
-    </div>
+    <AdminCronHealthContext.Provider value={cronHealth}>
+      <div className="admin-shell">
+        <aside className="admin-sidebar">
+          <Logo />
+          <nav>
+            {adminLinks.map(([to, icon, label]) => (
+              <NavLink key={to} to={to}>
+                <Icon>{icon}</Icon>
+                {label}
+              </NavLink>
+            ))}
+          </nav>
+        </aside>
+        <section className="admin-workspace">
+          <header className="admin-top">
+            <h2>{title}</h2>
+            <div>
+              <Icon>search</Icon>
+              <Icon>notifications</Icon>
+              <span className="admin-avatar">
+                <Icon>person</Icon>
+              </span>
+            </div>
+          </header>
+          <main className="admin-main">
+            {!warningDismissed && (
+              <AdminCronHealthWarning
+                status={cronHealth.data.health}
+                onDismiss={() => setWarningDismissed(true)}
+              />
+            )}
+            {children}
+          </main>
+        </section>
+      </div>
+    </AdminCronHealthContext.Provider>
   );
 }
 

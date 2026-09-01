@@ -44,6 +44,10 @@ import {
   saveAdminCheckoutSettings,
 } from "./inventory";
 import {
+  getAdminCronHealthData,
+  runInventoryCleanupCron,
+} from "./scheduled-inventory-cleanup";
+import {
   evaluateAuthoritativeCart,
   PromotionCartError,
 } from "./promotions";
@@ -2123,6 +2127,8 @@ async function handleApi(
     return getAdminCheckoutSettings(env);
   if (request.method === "PUT" && path === "/api/admin/settings/checkout")
     return saveAdminCheckoutSettings(request, env);
+  if (request.method === "GET" && path === "/api/admin/cron-health")
+    return json({ data: await getAdminCronHealthData(env) });
   if (request.method === "GET" && path === "/api/admin/promotions")
     return listAdminPromotions(request, env);
   if (request.method === "GET" && path === "/api/admin/promotions/options")
@@ -2350,6 +2356,6 @@ export default {
     }
   },
   async scheduled(controller, env) {
-    await cleanupExpiredReservations(env, new Date(controller.scheduledTime), 100);
+    await runInventoryCleanupCron(env, new Date(controller.scheduledTime));
   },
 } satisfies ExportedHandler<Env>;
