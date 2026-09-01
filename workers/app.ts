@@ -85,6 +85,10 @@ import {
   normalizeLimit,
   normalizePage,
 } from "../shared/pagination";
+import {
+  buildCartRequestListQuery,
+  parseCartRequestListParams,
+} from "./cart-requests";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -575,43 +579,74 @@ async function getProduct(slug: string, env: Env) {
   return json({ data: hydrated });
 }
 
+async function hasDatabaseTable(env: Env, tableName: string) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+      .bind(tableName)
+      .first<{ name: string }>();
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+
 async function getAdminRequests(request: Request, env: Env) {
   await cleanupExpiredReservations(env);
-  const scope = new URL(request.url).searchParams.get("scope") ?? "queue";
+  const params = parseCartRequestListParams(new URL(request.url).searchParams);
+  if (params.invalid.length)
+    return error(
+      "VALIDATION_ERROR",
+      "Bộ lọc giỏ hàng không hợp lệ.",
+      422,
+      { fields: params.invalid },
+    );
+
   const inventorySchema = await hasInventorySchema(env);
-  const where = inventorySchema
-    ? scope === "messenger"
-      ? "WHERE contact_channel = 'MESSENGER'"
-      : scope === "share"
-        ? "WHERE contact_channel = 'SHARE' AND checkout_state != 'READY_TO_SEND'"
-        : scope === "all"
-          ? "WHERE checkout_state != 'READY_TO_SEND'"
-          : "WHERE checkout_state = 'WAITING_SELLER_CONFIRM'"
-    : scope === "messenger"
-      ? "WHERE contact_channel = 'MESSENGER'"
-      : scope === "share"
-        ? "WHERE contact_channel = 'SHARE'"
-        : scope === "all"
-          ? ""
-          : "WHERE contact_channel IN ('LEGACY', 'SHARE') OR messenger_delivery_status = 'SENT'";
+  const messengerSessionSchema = await hasDatabaseTable(
+    env,
+    "messenger_checkout_sessions",
+  );
+  const query = buildCartRequestListQuery(params, {
+    inventorySchema,
+    messengerSessionSchema,
+  });
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS totalItems
+     FROM cart_requests cr ${query.whereSql}`,
+  )
+    .bind(...query.values)
+    .first<{ totalItems: number }>();
+  const pagination = buildPaginationMeta({
+    totalItems: Number(count?.totalItems ?? 0),
+    requestedPage: params.page,
+    limit: params.limit,
+  });
   const inventorySelect = inventorySchema
-    ? ", checkout_state AS checkoutState, reservation_started_at AS reservationStartedAt, reservation_expires_at AS reservationExpiresAt, reservation_duration_minutes AS reservationDurationMinutes"
+    ? ", cr.checkout_state AS checkoutState, cr.reservation_started_at AS reservationStartedAt, cr.reservation_expires_at AS reservationExpiresAt, cr.reservation_duration_minutes AS reservationDurationMinutes"
     : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes";
+  const sessionSelect = messengerSessionSchema
+    ? "(SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cr.id ORDER BY created_at DESC LIMIT 1)"
+    : "NULL";
   const result = await env.DB.prepare(
-    `SELECT id, public_code AS publicCode, customer_name AS customerName,
-      customer_phone AS customerPhone, item_line_count AS itemLineCount,
-      total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status,
-      telegram_status AS telegramStatus, contact_channel AS contactChannel,
-      messenger_delivery_status AS messengerDeliveryStatus,
-      (SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cart_requests.id ORDER BY created_at DESC LIMIT 1) AS messengerSessionStatus,
-      created_at AS createdAt${inventorySelect}
-     FROM cart_requests ${where}
-     ORDER BY ${inventorySchema
-       ? "CASE WHEN checkout_state = 'WAITING_SELLER_CONFIRM' THEN 0 ELSE 1 END, reservation_expires_at"
-       : "CASE WHEN contact_channel = 'MESSENGER' AND messenger_delivery_status != 'SENT' THEN 1 ELSE 0 END"},
-       created_at DESC LIMIT 100`,
-  ).all();
-  return json({ data: result.results });
+    `SELECT cr.id, cr.public_code AS publicCode, cr.customer_name AS customerName,
+      cr.customer_phone AS customerPhone, cr.item_line_count AS itemLineCount,
+      cr.total_quantity AS totalQuantity, cr.subtotal_vnd AS subtotalVnd, cr.status,
+      cr.telegram_status AS telegramStatus, cr.contact_channel AS contactChannel,
+      cr.messenger_delivery_status AS messengerDeliveryStatus,
+      ${sessionSelect} AS messengerSessionStatus,
+      cr.created_at AS createdAt${inventorySelect}
+     FROM cart_requests cr ${query.whereSql}
+     ORDER BY ${query.orderSql} LIMIT ? OFFSET ?`,
+  )
+    .bind(
+      ...query.values,
+      pagination.limit,
+      (pagination.page - 1) * pagination.limit,
+    )
+    .all<Record<string, unknown>>();
+  return json({ data: result.results, pagination });
 }
 
 async function getAdminRequest(id: string, env: Env) {

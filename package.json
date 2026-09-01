@@ -13,6 +13,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply babyjoy-db --remote",
     "test": "vitest run",
     "test:e2e": "node tests/e2e.mjs",
+    "test:e2e:cart-requests": "node tests/admin-cart-requests.e2e.mjs",
     "test:e2e:empty": "node tests/empty-catalog.e2e.mjs",
     "test:e2e:promotion-selector": "node tests/promotion-selector.e2e.mjs",
     "postinstall": "wrangler types"

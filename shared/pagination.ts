@@ -16,6 +16,8 @@ export type PaginationItem = number | "ellipsis";
 
 export const DEFAULT_PAGE_SIZE = 24;
 export const MAX_PAGE_SIZE = 24;
+export const ADMIN_DEFAULT_PAGE_SIZE = 20;
+export const ADMIN_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 // Chuẩn hóa primitive query để request lỗi không làm SQL hoặc pagination bị hỏng.
 export function normalizePage(value: string | null | undefined) {
@@ -24,12 +26,25 @@ export function normalizePage(value: string | null | undefined) {
 }
 
 // Page size production giữ nguyên layout hiện tại: tối đa 24 sản phẩm.
-export function normalizeLimit(value: string | null | undefined) {
+export function normalizeLimit(
+  value: string | null | undefined,
+  options: {
+    defaultLimit?: number;
+    allowedLimits?: readonly number[];
+    maxLimit?: number;
+  } = {},
+) {
+  const defaultLimit = options.defaultLimit ?? DEFAULT_PAGE_SIZE;
+  const allowedLimits = options.allowedLimits;
+  const maxLimit =
+    options.maxLimit ??
+    (allowedLimits ? Math.max(...allowedLimits) : MAX_PAGE_SIZE);
   if (value === null || value === undefined || value.trim() === "")
-    return DEFAULT_PAGE_SIZE;
+    return defaultLimit;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) return DEFAULT_PAGE_SIZE;
-  return Math.min(MAX_PAGE_SIZE, Math.max(1, parsed));
+  if (!Number.isSafeInteger(parsed)) return defaultLimit;
+  if (allowedLimits && !allowedLimits.includes(parsed)) return defaultLimit;
+  return Math.min(maxLimit, Math.max(1, parsed));
 }
 
 export function buildPaginationMeta({
