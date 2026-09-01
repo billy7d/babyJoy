@@ -8,6 +8,7 @@ import {
   type Product,
   type ProductImageRecord,
 } from "../lib/catalog";
+import { getAdminProductStockOnHand } from "../lib/admin-product-stock";
 import {
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
   MAX_CHECKOUT_RESERVATION_MINUTES,
@@ -198,7 +199,7 @@ export function AdminProductsPage() {
           <Icon>add</Icon> THÊM SẢN PHẨM
         </Link>
       </div>
-      <section className="admin-table-card">
+      <section className="admin-table-card admin-products-table-card">
         <div className="admin-table-tools">
           <div className="admin-tabs">
             {statusTabs.map(([value, label]) => (
@@ -227,13 +228,14 @@ export function AdminProductsPage() {
           </label>
         </div>
         <div className="table-scroll">
-          <table>
+          <table className="admin-products-table">
             <thead>
               <tr>
                 <th>Ảnh</th>
                 <th>Sản phẩm</th>
                 <th>Danh mục</th>
                 <th>Phân loại</th>
+                <th className="admin-stock-header">Tồn kho</th>
                 <th>Giá</th>
                 <th>Trạng thái</th>
                 <th>Thao tác</th>
@@ -243,6 +245,7 @@ export function AdminProductsPage() {
               {products.length
                 ? products.map((product) => {
                     const variant = getDisplayVariant(product);
+                    const stockOnHand = getAdminProductStockOnHand(product);
                     return (
                       <tr key={product.id}>
                         <td>
@@ -263,6 +266,13 @@ export function AdminProductsPage() {
                           </Tag>
                         </td>
                         <td>{product.variants.length} vị</td>
+                        <td
+                          className="admin-stock-cell"
+                          title={stockOnHand === null ? "Không theo dõi tồn kho" : undefined}
+                          aria-label={stockOnHand === null ? "Không theo dõi tồn kho" : undefined}
+                        >
+                          {stockOnHand === null ? "—" : stockOnHand.toLocaleString("vi-VN")}
+                        </td>
                         <td>
                           <Price value={variant?.priceVnd ?? 0} />
                         </td>
@@ -284,7 +294,7 @@ export function AdminProductsPage() {
                   })
                 : !loading && !loadError && (
                     <tr>
-                      <td colSpan={7}>
+                      <td colSpan={8}>
                         <div className="empty-state">
                           <Icon>inventory_2</Icon>
                           <h2>
