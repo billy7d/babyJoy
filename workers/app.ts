@@ -13,7 +13,13 @@ import {
   uploadImmutableProductImage,
   validateAssociatedImages,
 } from "./image-service";
-import { getPublicImageUrl } from "../shared/images";
+import {
+  getProductImageUrl,
+  getProductImageUrlStrategy,
+  getPublicImageUrl,
+  MAX_STORED_IMAGE_BYTES,
+  type ProductImageUrlStrategy,
+} from "../shared/images";
 import {
   findProductConflict,
   productConflictError,
@@ -281,7 +287,11 @@ type ProductImageRow = {
 type ProductTagRow = { productId: string; name: string; slug: string };
 type ProductCategoryRow = { productId: string; id: string; slug: string; name: string };
 
-async function hydrateProducts(rows: ProductRow[], env: Env) {
+async function hydrateProducts(
+  rows: ProductRow[],
+  env: Env,
+  imageUrlStrategy: ProductImageUrlStrategy,
+) {
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
@@ -334,7 +344,7 @@ async function hydrateProducts(rows: ProductRow[], env: Env) {
       .filter((image) => image.productId === product.id)
       .map(({ productId: _productId, ...image }) => ({
         ...image,
-        url: getPublicImageUrl(image.r2Key),
+        url: getProductImageUrl(image.r2Key, imageUrlStrategy),
       })),
     tagNames: tags.results
       .filter((tag) => tag.productId === product.id)
@@ -496,6 +506,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
   // Dọn lazy để catalog không giữ trạng thái tồn kho đã quá hạn khi cron trễ.
   await cleanupExpiredReservations(env);
   const inventorySchema = await hasInventorySchema(env);
+  const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
   const url = new URL(request.url);
   const ageValue = url.searchParams.get("age");
   let age: number | null = null;
@@ -549,7 +560,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       (pagination.page - 1) * pagination.limit,
     )
     .all<ProductRow>();
-  const products = await hydrateProducts(result.results, env);
+  const products = await hydrateProducts(result.results, env, imageUrlStrategy);
   if (!includeHidden)
     products.forEach((product) => {
       product.variants = product.variants.filter(
@@ -559,7 +570,11 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
   return json({ data: products, pagination });
 }
 
-async function getProduct(slug: string, env: Env) {
+async function getProduct(
+  slug: string,
+  env: Env,
+  imageUrlStrategy: ProductImageUrlStrategy,
+) {
   await cleanupExpiredReservations(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
@@ -576,7 +591,7 @@ async function getProduct(slug: string, env: Env) {
     .first<ProductRow>();
   if (!product)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
-  const [hydrated] = await hydrateProducts([product], env);
+  const [hydrated] = await hydrateProducts([product], env, imageUrlStrategy);
   hydrated.variants = hydrated.variants.filter(
     (variant) => variant.availability !== "HIDDEN",
   );
@@ -741,7 +756,18 @@ async function uploadImage(request: Request, env: Env) {
       request,
       env.PRODUCT_IMAGES,
     );
-    return json({ success: true, ...result }, 201);
+    // API là nơi duy nhất quyết định URL để local dùng /media và production dùng custom domain.
+    return json(
+      {
+        success: true,
+        ...result,
+        url: getProductImageUrl(
+          result.key,
+          getProductImageUrlStrategy(env.ENVIRONMENT),
+        ),
+      },
+      201,
+    );
   } catch (caught) {
     if (caught instanceof ImageUploadError) {
       const status =
@@ -756,7 +782,7 @@ async function uploadImage(request: Request, env: Env) {
         caught.code === "UNSUPPORTED_TYPE"
           ? "Định dạng ảnh không được hỗ trợ."
           : caught.code === "TOO_LARGE"
-            ? "Ảnh vượt quá 5MB."
+            ? `Ảnh tối ưu vượt quá ${MAX_STORED_IMAGE_BYTES / (1024 * 1024)} MB.`
             : caught.code === "KEY_COLLISION"
               ? "Không thể tạo khóa ảnh duy nhất."
               : "Tệp ảnh đang trống.";
@@ -1030,7 +1056,11 @@ function validateAdminProduct(input: unknown) {
   };
 }
 
-async function readAdminProductData(id: string, env: Env) {
+async function readAdminProductData(
+  id: string,
+  env: Env,
+  imageUrlStrategy: ProductImageUrlStrategy,
+) {
   await cleanupExpiredReservations(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
@@ -1081,13 +1111,17 @@ async function readAdminProductData(id: string, env: Env) {
     tagIds: tags.results.map((item) => item.id),
     images: images.results.map((image) => ({
       ...image,
-      url: getPublicImageUrl(image.r2Key),
+      url: getProductImageUrl(image.r2Key, imageUrlStrategy),
     })),
   };
 }
 
-async function getAdminProduct(id: string, env: Env) {
-  const product = await readAdminProductData(id, env);
+async function getAdminProduct(
+  id: string,
+  env: Env,
+  imageUrlStrategy: ProductImageUrlStrategy,
+) {
+  const product = await readAdminProductData(id, env, imageUrlStrategy);
   if (!product)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
   return json({ data: product });
@@ -1591,7 +1625,11 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       409,
     );
   }
-  const persistedProduct = await readAdminProductData(productId, env);
+  const persistedProduct = await readAdminProductData(
+    productId,
+    env,
+    getProductImageUrlStrategy(env.ENVIRONMENT),
+  );
   return json(
     {
       success: true,
@@ -2040,7 +2078,11 @@ async function handleApi(
   )
     return listProducts(request, env);
   if (request.method === "GET" && path.startsWith("/api/products/"))
-    return getProduct(decodeURIComponent(path.slice(14)), env);
+    return getProduct(
+      decodeURIComponent(path.slice(14)),
+      env,
+      getProductImageUrlStrategy(env.ENVIRONMENT),
+    );
   if (request.method === "GET" && path === "/api/checkout-config")
     return checkoutConfigResponse(env);
   if (request.method === "POST" && path === "/api/cart/evaluate")
@@ -2168,7 +2210,11 @@ async function handleApi(
   if (request.method === "POST" && path === "/api/admin/products")
     return saveAdminProduct(request, env);
   if (request.method === "GET" && productMatch)
-    return getAdminProduct(productMatch[1], env);
+    return getAdminProduct(
+      productMatch[1],
+      env,
+      getProductImageUrlStrategy(env.ENVIRONMENT),
+    );
   if (request.method === "PUT" && productMatch)
     return saveAdminProduct(request, env, productMatch[1]);
   if (request.method === "DELETE" && productMatch)

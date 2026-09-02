@@ -1,7 +1,6 @@
 import {
-  MAX_IMAGE_BYTES,
+  MAX_STORED_IMAGE_BYTES,
   createImmutableImageKey,
-  getPublicImageUrl,
   isAllowedImageType,
   isImmutableProductImageKey,
   type AllowedImageType,
@@ -19,6 +18,32 @@ export type NormalizedProductImage = {
   altText: string;
   sortOrder: number;
 };
+
+function toByteChunk(
+  value: Uint8Array<ArrayBufferLike>,
+): Uint8Array<ArrayBuffer> {
+  return value.buffer instanceof ArrayBuffer
+    ? (value as Uint8Array<ArrayBuffer>)
+    : new Uint8Array(value);
+}
+
+type FixedLengthStreamLike = {
+  readable: ReadableStream<Uint8Array>;
+  writable: WritableStream<Uint8Array>;
+};
+type FixedLengthStreamConstructor = new (
+  length: number,
+) => FixedLengthStreamLike;
+
+function getFixedLengthStreamConstructor():
+  | FixedLengthStreamConstructor
+  | undefined {
+  return (
+    globalThis as typeof globalThis & {
+      FixedLengthStream?: FixedLengthStreamConstructor;
+    }
+  ).FixedLengthStream;
+}
 
 export class ImageUploadError extends Error {
   constructor(
@@ -68,7 +93,7 @@ export async function validateAssociatedImages(
     objects.some(
       (object) =>
         !object ||
-        object.size > MAX_IMAGE_BYTES ||
+        object.size > MAX_STORED_IMAGE_BYTES ||
         !isAllowedImageType(object.httpMetadata?.contentType ?? ""),
     )
   )
@@ -79,54 +104,147 @@ export async function uploadImmutableProductImage(
   request: Request,
   bucket: R2Bucket,
   options: { now?: Date; createUuid?: () => string } = {},
-): Promise<{ key: string; url: string }> {
+): Promise<{ key: string }> {
   const contentType =
     request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ??
     "";
   if (!isAllowedImageType(contentType))
     throw new ImageUploadError("UNSUPPORTED_TYPE");
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_IMAGE_BYTES) throw new ImageUploadError("TOO_LARGE");
+  const contentLengthHeader = request.headers.get("content-length");
+  if (contentLengthHeader !== null) {
+    const contentLength = Number(contentLengthHeader);
+    if (
+      !Number.isSafeInteger(contentLength) ||
+      contentLength < 0 ||
+      contentLength > MAX_STORED_IMAGE_BYTES
+    )
+      throw new ImageUploadError("TOO_LARGE");
+  }
   if (!request.body) throw new ImageUploadError("EMPTY");
+
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
+  let firstChunk: Uint8Array<ArrayBuffer> | undefined;
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-    byteLength += value.byteLength;
-    if (byteLength > MAX_IMAGE_BYTES) {
-      await reader.cancel();
-      throw new ImageUploadError("TOO_LARGE");
+    if (done) {
+      reader.releaseLock();
+      throw new ImageUploadError("EMPTY");
     }
-    chunks.push(value);
+    if (value?.byteLength) {
+      firstChunk = toByteChunk(value);
+      break;
+    }
   }
-  if (!byteLength) throw new ImageUploadError("EMPTY");
-  // Chỉ cấp phát bộ đệm sau khi stream đã được giới hạn ở 5 MB.
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  chunks.forEach((chunk) => {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+  if (!firstChunk) {
+    reader.releaseLock();
+    throw new ImageUploadError("EMPTY");
+  }
+  if (firstChunk.byteLength > MAX_STORED_IMAGE_BYTES) {
+    try {
+      await reader.cancel();
+    } catch {
+      // Hủy reader là best effort; giới hạn vẫn được trả về cho client.
+    } finally {
+      reader.releaseLock();
+    }
+    throw new ImageUploadError("TOO_LARGE");
+  }
+
+  const initialChunk = firstChunk;
+  const byteCounter = { value: initialChunk.byteLength };
+  let firstChunkPending = true;
+  const boundedStream = new ReadableStream<Uint8Array>({
+    type: "bytes",
+    async pull(controller) {
+      if (firstChunkPending) {
+        firstChunkPending = false;
+        controller.enqueue(initialChunk);
+        return;
+      }
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          controller.close();
+          return;
+        }
+        const chunk = toByteChunk(value);
+        const nextLength = byteCounter.value + chunk.byteLength;
+        if (nextLength > MAX_STORED_IMAGE_BYTES) {
+          try {
+            await reader.cancel();
+          } catch {
+            // Việc hủy reader chỉ là best effort khi client đã ngắt kết nối.
+          }
+          reader.releaseLock();
+          controller.error(new ImageUploadError("TOO_LARGE"));
+          return;
+        }
+        byteCounter.value = nextLength;
+        controller.enqueue(chunk);
+      } catch (caught) {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Reader có thể đã tự giải phóng sau lỗi stream.
+        }
+        controller.error(caught);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } catch {
+        // R2 có thể đã hủy reader trước khi callback này chạy.
+      }
+    },
   });
 
   const now = options.now ?? new Date();
   const createUuid = options.createUuid ?? (() => crypto.randomUUID());
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const key = createImmutableImageKey(
-      contentType as AllowedImageType,
-      now,
-      createUuid(),
-    );
-    const uploaded = await bucket.put(key, bytes.buffer, {
-      onlyIf: new Headers({ "if-none-match": "*" }),
-      storageClass: "Standard",
-      httpMetadata: {
-        contentType,
-        cacheControl: "public, max-age=31536000, immutable",
-      },
+  const key = createImmutableImageKey(
+    contentType as AllowedImageType,
+    now,
+    createUuid(),
+  );
+  const putOptions = {
+    onlyIf: new Headers({ "if-none-match": "*" }),
+    storageClass: "Standard",
+    httpMetadata: {
+      contentType,
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+  } satisfies R2PutOptions;
+
+  let uploadValue: ReadableStream<Uint8Array> | Blob = boundedStream;
+  let streamPump: Promise<void> | undefined;
+  const FixedLengthStream = getFixedLengthStreamConstructor();
+  if (FixedLengthStream && contentLengthHeader !== null) {
+    // R2 cần biết trước độ dài stream; FixedLengthStream vẫn truyền dữ liệu theo luồng.
+    const fixedLength = new FixedLengthStream(Number(contentLengthHeader));
+    uploadValue = fixedLength.readable;
+    streamPump = boundedStream.pipeTo(fixedLength.writable).catch((caught) => {
+      if (caught instanceof ImageUploadError) throw caught;
+      throw new ImageUploadError("TOO_LARGE");
     });
-    if (uploaded) return { key, url: getPublicImageUrl(key) };
+  } else if (FixedLengthStream && contentLengthHeader === null) {
+    // Khi client không gửi Content-Length, chỉ giữ tối đa 1.5 MiB để tạo body có độ dài xác định cho R2.
+    uploadValue = await new Response(boundedStream).blob();
   }
+
+  let uploaded: R2Object | null;
+  if (streamPump) {
+    try {
+      uploaded = await bucket.put(key, uploadValue, putOptions);
+      await streamPump;
+    } catch (caught) {
+      await streamPump.catch(() => undefined);
+      throw caught;
+    }
+  } else {
+    uploaded = await bucket.put(key, uploadValue, putOptions);
+  }
+  // Tầng lưu trữ chỉ trả về khóa; API sẽ dựng URL theo môi trường của request.
+  if (uploaded) return { key };
   throw new ImageUploadError("KEY_COLLISION");
 }

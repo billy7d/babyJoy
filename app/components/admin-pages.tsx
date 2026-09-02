@@ -45,6 +45,12 @@ import {
   type PaginationMeta,
 } from "../../shared/pagination";
 import {
+  MAX_SOURCE_IMAGE_BYTES,
+  MAX_STORED_IMAGE_BYTES,
+  isAllowedImageType,
+} from "../../shared/images";
+import { optimizeProductImage } from "../lib/image-optimizer";
+import {
   CART_CHECKOUT_STATE_LABELS,
   CART_REQUEST_CHANNEL_LABELS,
   CART_REQUEST_SORT_OPTIONS,
@@ -87,6 +93,15 @@ type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string }
 type AdminProduct = Product & { adminStatus: string };
 type VariantErrors = Record<string, VariantFieldErrors>;
 type AdminProductsResponse = Partial<PaginatedResponse<AdminProductRow>>;
+
+function formatImageBytes(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+}
 
 function formatReservationRemaining(expiresAt: string | null | undefined, now = Date.now()) {
   if (!expiresAt) return "Chưa bắt đầu giữ hàng";
@@ -263,7 +278,11 @@ export function AdminProductsPage() {
                     return (
                       <tr key={product.id}>
                         <td>
-                          <img className="table-thumb" src={product.image} alt="" />
+                          <ProductImage
+                            product={product}
+                            className="table-thumb"
+                            alt=""
+                          />
                         </td>
                         <td>
                           <b>{product.name}</b>
@@ -525,19 +544,41 @@ export function ProductEditorPage() {
 
   const uploadFiles = async (files: FileList | null, makePrimary: boolean) => {
     if (!files?.length) return;
+    const selectedFiles = Array.from(files);
     setUploading(true);
-    setMessage("Đang tải ảnh lên R2...");
+    let uploadedCount = 0;
     try {
-      const uploaded: ProductImageRecord[] = [];
-      for (const file of Array.from(files)) {
-        if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
-          throw new Error("Chỉ hỗ trợ JPEG, PNG và WebP.");
-        if (file.size > 5 * 1024 * 1024)
-          throw new Error("Mỗi ảnh phải nhỏ hơn hoặc bằng 5MB.");
+      // Kiểm tra cả danh sách trước khi xử lý để file vượt 30 MiB bị chặn ngay.
+      for (const file of selectedFiles) {
+        if (!isAllowedImageType(file.type.toLowerCase()))
+          throw new Error("Chỉ hỗ trợ ảnh JPEG, PNG và WebP.");
+        if (file.size > MAX_SOURCE_IMAGE_BYTES)
+          throw new Error("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
+      }
+
+      let prependNext = makePrimary;
+      const optimizationSummaries: string[] = [];
+      for (const [index, file] of selectedFiles.entries()) {
+        setMessage(
+          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đang chuẩn bị ảnh...`,
+        );
+        await yieldToBrowser();
+        setMessage(
+          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đang tối ưu ảnh...`,
+        );
+        const optimized = await optimizeProductImage(file);
+        if (optimized.optimizedBytes > MAX_STORED_IMAGE_BYTES)
+          throw new Error("Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.");
+        optimizationSummaries.push(
+          `${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)} (${optimized.width}×${optimized.height})`,
+        );
+        setMessage(
+          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đã tối ưu ${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)}. Đang tải ảnh lên...`,
+        );
         const response = await fetch("/api/admin/images", {
           method: "POST",
-          headers: { "content-type": file.type },
-          body: file,
+          headers: { "content-type": optimized.mimeType },
+          body: optimized.blob,
         });
         const body = (await response.json()) as {
           key?: string;
@@ -546,21 +587,35 @@ export function ProductEditorPage() {
         };
         if (!response.ok || !body.key || !body.url)
           throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
-        uploaded.push({
+        const uploadedImage: ProductImageRecord = {
           r2Key: body.key,
           url: body.url,
           altText: editing?.name ?? "Ảnh sản phẩm BabyJoy",
           sortOrder: 0,
+        };
+        setImages((current) => {
+          const next = prependNext
+            ? [uploadedImage, ...current]
+            : [...current, uploadedImage];
+          return next.map((image, sortOrder) => ({ ...image, sortOrder }));
         });
+        prependNext = false;
+        uploadedCount += 1;
+        setMessage(
+          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đã tải ảnh lên`,
+        );
       }
-      setImages((current) =>
-        (makePrimary ? [...uploaded, ...current] : [...current, ...uploaded]).map(
-          (image, sortOrder) => ({ ...image, sortOrder }),
-        ),
+      setMessage(
+        `Đã tải ${uploadedCount} ảnh lên R2. ${optimizationSummaries.join("; ")} Hãy lưu sản phẩm để gắn ảnh.`,
       );
-      setMessage("Đã tải ảnh lên R2. Hãy lưu sản phẩm để gắn ảnh.");
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Tải ảnh thất bại.");
+      const messageText =
+        caught instanceof Error ? caught.message : "Tải ảnh thất bại.";
+      setMessage(
+        uploadedCount
+          ? `Đã tải ${uploadedCount}/${selectedFiles.length} ảnh. ${messageText}`
+          : messageText,
+      );
     } finally {
       setUploading(false);
     }
@@ -924,7 +979,7 @@ export function ProductEditorPage() {
                 <Icon>add_photo_alternate</Icon>
                 <b>Tải ảnh lên</b>
                 <span>hoặc kéo thả vào đây</span>
-                <small>PNG, JPG, WebP (Max 5MB)</small>
+                <small>PNG, JPG, WebP (tối đa 30 MiB/ảnh; tự tối ưu)</small>
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/webp"
@@ -2613,11 +2668,16 @@ export function AdminSettingsPage() {
   const uploadAvatar = async (file: File) => {
     setBusy(true);
     setError("");
+    setMessage("Đang tối ưu ảnh...");
     try {
+      const optimized = await optimizeProductImage(file);
+      setMessage(
+        `Đã tối ưu ${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)}. Đang tải ảnh lên...`,
+      );
       const response = await fetch("/api/admin/images", {
         method: "POST",
-        headers: { "content-type": file.type },
-        body: file,
+        headers: { "content-type": optimized.mimeType },
+        body: optimized.blob,
       });
       const body = (await response.json()) as {
         key?: string;

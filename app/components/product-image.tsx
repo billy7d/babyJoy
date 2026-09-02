@@ -1,9 +1,13 @@
 import { useEffect, useState, type ImgHTMLAttributes } from "react";
 import {
   PRODUCT_IMAGE_PLACEHOLDER,
-  getPublicImageUrl,
+  getProductImageUrl,
+  getProductImageUrlStrategy,
 } from "../../shared/images";
 import type { Product, ProductImageRecord } from "../lib/catalog";
+
+// DTO mới ưu tiên URL do API dựng; strategy build chỉ là fallback cho DTO cũ còn mỗi r2Key.
+const CLIENT_IMAGE_URL_STRATEGY = getProductImageUrlStrategy(import.meta.env.MODE);
 
 type ProductImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
   r2Key?: string | null;
@@ -18,7 +22,7 @@ function initialSource({
   url,
   legacySrc,
 }: Pick<ProductImageProps, "r2Key" | "url" | "legacySrc">) {
-  if (r2Key) return url || getPublicImageUrl(r2Key);
+  if (r2Key) return url || getProductImageUrl(r2Key, CLIENT_IMAGE_URL_STRATEGY);
   return url || legacySrc || PRODUCT_IMAGE_PLACEHOLDER;
 }
 
