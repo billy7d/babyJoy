@@ -1634,6 +1634,7 @@ export function CartShareGuidePage() {
   const [copyFeedback, setCopyFeedback] = useState("");
   const [clickGuardStale, setClickGuardStale] = useState(false);
   const [activationBusy, setActivationBusy] = useState(false);
+  const activationBusyRef = useRef(false);
   const [activationError, setActivationError] = useState("");
   const [activationIssue, setActivationIssue] = useState<ActivationIssue | null>(null);
   const checkoutConfig = useCheckoutConfig();
@@ -1730,7 +1731,7 @@ export function CartShareGuidePage() {
   }
 
   const activateAndOpenMessenger = async (acceptCurrentPrices = false) => {
-    if (activationBusy || !prepared) return;
+    if (activationBusyRef.current || activationBusy || !prepared) return;
     setActivationError("");
     setActivationIssue(null);
     const oldPublicCode = prepared.cartRequest.code;
@@ -1744,6 +1745,8 @@ export function CartShareGuidePage() {
       setClickGuardStale(true);
       return;
     }
+    // Ref khóa đồng bộ cả click kép trước khi React kịp render lại nút disabled.
+    activationBusyRef.current = true;
     setActivationBusy(true);
     try {
       const submissionToken =
@@ -1842,6 +1845,7 @@ export function CartShareGuidePage() {
         );
       }
     } finally {
+      activationBusyRef.current = false;
       setActivationBusy(false);
     }
   };
