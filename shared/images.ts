@@ -1,6 +1,9 @@
 export const PUBLIC_IMAGE_BASE_URL = "https://images.metraphuong.com";
 export const PRODUCT_IMAGE_PLACEHOLDER = "/images/logo.png";
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
+export const TARGET_IMAGE_BYTES = 900 * 1024;
+export const MAX_STORED_IMAGE_BYTES = Math.floor(1.5 * 1024 * 1024);
+export const MAX_IMAGE_LONG_EDGE = 1600;
 export const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
   "image/png",

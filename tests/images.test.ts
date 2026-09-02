@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { mapApiProduct } from "../app/lib/catalog-context";
 import {
-  MAX_IMAGE_BYTES,
+  MAX_STORED_IMAGE_BYTES,
   PRODUCT_IMAGE_PLACEHOLDER,
   getPublicImageUrl,
 } from "../shared/images";
@@ -10,21 +10,44 @@ import {
   ImageUploadError,
   normalizeProductImages,
   uploadImmutableProductImage,
+  validateAssociatedImages,
 } from "../workers/image-service";
 import { mapCartItemSnapshot } from "../workers/services";
 
-function fakeBucket() {
+async function consumeUploadBody(value: unknown) {
+  if (value instanceof ReadableStream) {
+    const reader = value.getReader();
+    let byteLength = 0;
+    while (true) {
+      const { done, value: chunk } = await reader.read();
+      if (done) return byteLength;
+      byteLength += chunk.byteLength;
+    }
+  }
+  if (value instanceof Blob) return value.size;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (typeof value === "string") return new TextEncoder().encode(value).byteLength;
+  return 0;
+}
+
+function fakeBucket(heads = new Map<string, R2Object>()) {
   const puts: Array<{
     key: string;
-    value: ArrayBuffer;
+    value: unknown;
     options: R2PutOptions;
+    byteLength: number;
   }> = [];
   return {
     puts,
     bucket: {
-      async put(key: string, value: ArrayBuffer, options: R2PutOptions) {
-        puts.push({ key, value, options });
+      async put(key: string, value: unknown, options: R2PutOptions) {
+        const byteLength = await consumeUploadBody(value);
+        puts.push({ key, value, options, byteLength });
         return { key } as R2Object;
+      },
+      async head(key: string) {
+        return heads.get(key) ?? null;
       },
     } as R2Bucket,
   };
@@ -90,7 +113,22 @@ describe("upload ảnh immutable", () => {
     ).rejects.toMatchObject<ImageUploadError>({ code: "UNSUPPORTED_TYPE" });
   });
 
-  it("từ chối ảnh lớn hơn 5 MB trước khi đọc body", async () => {
+  it("đưa bounded ReadableStream vào R2.put và đếm đủ body", async () => {
+    const { bucket, puts } = fakeBucket();
+    const result = await uploadImmutableProductImage(
+      new Request("https://example.test", {
+        method: "POST",
+        headers: { "content-type": "image/webp" },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }),
+      bucket,
+    );
+    expect(result.key).toContain("products/");
+    expect(puts[0].value).toBeInstanceOf(ReadableStream);
+    expect(puts[0].byteLength).toBe(4);
+  });
+
+  it("từ chối Content-Length lớn hơn 1.5 MiB trước khi đọc body", async () => {
     const { bucket } = fakeBucket();
     await expect(
       uploadImmutableProductImage(
@@ -98,13 +136,41 @@ describe("upload ảnh immutable", () => {
           method: "POST",
           headers: {
             "content-type": "image/webp",
-            "content-length": String(MAX_IMAGE_BYTES + 1),
+            "content-length": String(MAX_STORED_IMAGE_BYTES + 1),
           },
           body: new Uint8Array([1]),
         }),
         bucket,
       ),
     ).rejects.toMatchObject<ImageUploadError>({ code: "TOO_LARGE" });
+  });
+
+  it("từ chối stream thực tế vượt 1.5 MiB dù thiếu Content-Length", async () => {
+    const { bucket } = fakeBucket();
+    const request = new Request("https://example.test", {
+      method: "POST",
+      headers: { "content-type": "image/webp" },
+      body: new Blob([new Uint8Array(MAX_STORED_IMAGE_BYTES + 1)]),
+    });
+    request.headers.delete("content-length");
+    await expect(uploadImmutableProductImage(request, bucket)).rejects.toMatchObject<
+      ImageUploadError
+    >({ code: "TOO_LARGE" });
+  });
+
+  it("từ chối body rỗng mà không tạo R2 object", async () => {
+    const { bucket, puts } = fakeBucket();
+    await expect(
+      uploadImmutableProductImage(
+        new Request("https://example.test", {
+          method: "POST",
+          headers: { "content-type": "image/webp" },
+          body: new Uint8Array(),
+        }),
+        bucket,
+      ),
+    ).rejects.toMatchObject<ImageUploadError>({ code: "EMPTY" });
+    expect(puts).toHaveLength(0);
   });
 
   it("hai upload tạo hai key và luôn dùng create-only PUT", async () => {
@@ -131,6 +197,28 @@ describe("upload ảnh immutable", () => {
         (put) => new Headers(put.options.onlyIf).get("if-none-match") === "*",
       ),
     ).toBe(true);
+  });
+
+  it("association chỉ chấp nhận object không quá 1.5 MiB", async () => {
+    const key =
+      "products/2026-08-26/123e4567-e89b-42d3-a456-426614174000.webp";
+    const { bucket } = fakeBucket(
+      new Map([
+        [
+          key,
+          {
+            size: MAX_STORED_IMAGE_BYTES + 1,
+            httpMetadata: { contentType: "image/webp" },
+          } as R2Object,
+        ],
+      ]),
+    );
+    await expect(
+      validateAssociatedImages(
+        [{ r2Key: key, altText: "", sortOrder: 0 }],
+        bucket,
+      ),
+    ).rejects.toThrow("INVALID_IMAGE_REFERENCE");
   });
 });
 

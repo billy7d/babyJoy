@@ -13,7 +13,10 @@ import {
   uploadImmutableProductImage,
   validateAssociatedImages,
 } from "./image-service";
-import { getPublicImageUrl } from "../shared/images";
+import {
+  getPublicImageUrl,
+  MAX_STORED_IMAGE_BYTES,
+} from "../shared/images";
 import {
   findProductConflict,
   productConflictError,
@@ -756,7 +759,7 @@ async function uploadImage(request: Request, env: Env) {
         caught.code === "UNSUPPORTED_TYPE"
           ? "Định dạng ảnh không được hỗ trợ."
           : caught.code === "TOO_LARGE"
-            ? "Ảnh vượt quá 5MB."
+            ? `Ảnh tối ưu vượt quá ${MAX_STORED_IMAGE_BYTES / (1024 * 1024)} MB.`
             : caught.code === "KEY_COLLISION"
               ? "Không thể tạo khóa ảnh duy nhất."
               : "Tệp ảnh đang trống.";
