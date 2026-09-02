@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   composeCartShareText,
   deriveShareToken,
@@ -12,7 +12,14 @@ import {
   validateSellerMessengerUrl,
 } from "../workers/cart-share";
 import {
+  activateCartShareWithRecovery,
+  cartShareSubmissionKey,
+  cartShareErrorMessage,
+  CartShareApiError,
   copyAndOpenSeller,
+  getCartShareSubmissionToken,
+  invalidateCartShareSubmission,
+  prepareCartShareWithRecovery,
   runNativeCartShare,
 } from "../app/lib/cart-share";
 import { consumeRateLimit } from "../workers/rate-limit";
@@ -110,6 +117,78 @@ function prepareRequest(
     }),
   });
 }
+
+function createStorage() {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+}
+
+function installBrowserStorage() {
+  const localStorage = createStorage();
+  const sessionStorage = createStorage();
+  vi.stubGlobal("window", { localStorage, sessionStorage });
+  return { localStorage, sessionStorage };
+}
+
+function clientSuccess(code: string) {
+  return {
+    success: true,
+    cartRequest: {
+      code,
+      itemLineCount: 1,
+      totalQuantity: 1,
+      subtotalVnd: 100000,
+      promotionDiscountVnd: 0,
+      finalTotalVnd: 100000,
+      createdAt: "2026-09-02T00:00:00.000Z",
+      checkoutState: "READY_TO_SEND",
+      reservationStartedAt: null,
+      reservationExpiresAt: null,
+      reservationDurationMinutes: null,
+    },
+    share: {
+      title: `Giỏ hàng ${code}`,
+      text: `text-${code}`,
+      url: `https://metraphuong.com/c/token-${code}`,
+      copyText: `copy-${code}`,
+      expiresAt: "2026-10-02T00:00:00.000Z",
+    },
+    seller: {
+      displayName: "Nguyễn A",
+      label: "Người bán BabyJoy",
+      messengerUrl: "https://m.me/nguyena",
+      avatarKey: null,
+      avatarUrl: null,
+    },
+    serverNow: "2026-09-02T00:00:00.000Z",
+  };
+}
+
+function queuedFetcher(
+  queue: Array<{ status: number; body: unknown }>,
+  calls: Array<{ path: string; body: Record<string, unknown> }>,
+) {
+  return async (input: string, init: RequestInit) => {
+    calls.push({
+      path: input,
+      body: JSON.parse(String(init.body)) as Record<string, unknown>,
+    });
+    const next = queue.shift();
+    if (!next) throw new Error("TEST_RESPONSE_QUEUE_EMPTY");
+    return new Response(JSON.stringify(next.body), {
+      status: next.status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("Direct Seller Cart Share domain", () => {
   it("validate cart và chỉ cho phép URL m.me chính thức", () => {
@@ -361,6 +440,124 @@ describe("Direct seller client actions", () => {
     expect(await runNativeCartShare({ title: "T", text: "X", url: "https://example.com", share: async () => undefined })).toBe("SHARED");
     expect(await runNativeCartShare({ title: "T", text: "X", url: "https://example.com", share: async () => { throw new DOMException("cancel", "AbortError"); } })).toBe("CANCELLED");
     expect(await runNativeCartShare({ title: "T", text: "X", url: "https://example.com", share: async () => { throw new TypeError("failed"); } })).toBe("FAILED");
+  });
+});
+
+describe("Cancelled checkout recovery client", () => {
+  const items = [{ variantId: "variant-1", quantity: 1, displayedPrice: 100000 }];
+  const cancelled = {
+    success: false,
+    error: {
+      code: "ORDER_CANCELLED",
+      message: "Đơn hàng trước đã bị hủy. Hệ thống sẽ tạo lượt chốt giỏ hàng mới.",
+    },
+  };
+
+  it("giữ token cùng fingerprint và sinh token mới sau invalidate", () => {
+    installBrowserStorage();
+    const tokenA = getCartShareSubmissionToken("A");
+    expect(getCartShareSubmissionToken("A")).toBe(tokenA);
+    expect(invalidateCartShareSubmission("A", tokenA)).toBe(true);
+    const tokenB = getCartShareSubmissionToken("A");
+    expect(tokenB).not.toBe(tokenA);
+  });
+
+  it("prepare tự recovery đúng một lần khi token cũ đã CANCELLED", async () => {
+    const { localStorage, sessionStorage } = installBrowserStorage();
+    const tokenA = getCartShareSubmissionToken("A");
+    sessionStorage.setItem("babyjoy.preparedCartShare.v1", JSON.stringify({ stale: true }));
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    let recoveryStarted = 0;
+    const result = await prepareCartShareWithRecovery({
+      fingerprint: "A",
+      items,
+      fetcher: queuedFetcher([
+        { status: 409, body: cancelled },
+        { status: 201, body: clientSuccess("GH-B") },
+      ], calls),
+      onRecoveryStarted: () => { recoveryStarted += 1; },
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].path).toBe("/api/cart/share/prepare");
+    expect(calls[0].body.submissionToken).toBe(tokenA);
+    expect(calls[1].body.submissionToken).not.toBe(tokenA);
+    expect(result).toMatchObject({ recovered: true, submissionToken: calls[1].body.submissionToken });
+    expect(recoveryStarted).toBe(1);
+    expect(sessionStorage.getItem("babyjoy.preparedCartShare.v1")).toBeNull();
+    expect(JSON.parse(localStorage.getItem(cartShareSubmissionKey) ?? "{}").token).toBe(calls[1].body.submissionToken);
+  });
+
+  it("activate tự tạo attempt mới rồi prepare và activate lại khi có race CANCELLED", async () => {
+    installBrowserStorage();
+    const tokenA = getCartShareSubmissionToken("A");
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const recoveredCodes: string[] = [];
+    const result = await activateCartShareWithRecovery({
+      fingerprint: "A",
+      submissionToken: tokenA,
+      items,
+      fetcher: queuedFetcher([
+        { status: 409, body: cancelled },
+        { status: 201, body: clientSuccess("GH-B") },
+        { status: 200, body: { ...clientSuccess("GH-B"), cartRequest: { ...clientSuccess("GH-B").cartRequest, checkoutState: "WAITING_SELLER_CONFIRM", reservationExpiresAt: "2026-09-02T00:15:00.000Z" } } },
+      ], calls),
+      onRecoveredPrepare: (response) => { recoveredCodes.push(response.cartRequest.code); },
+    });
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/cart/share/activate",
+      "/api/cart/share/prepare",
+      "/api/cart/share/activate",
+    ]);
+    expect(calls[0].body.submissionToken).toBe(tokenA);
+    expect(calls[1].body.submissionToken).not.toBe(tokenA);
+    expect(calls[2].body.submissionToken).toBe(calls[1].body.submissionToken);
+    expect(result).toMatchObject({ recovered: true, submissionToken: calls[1].body.submissionToken });
+    expect(result.response.cartRequest.code).toBe("GH-B");
+    expect(recoveredCodes).toEqual(["GH-B"]);
+  });
+
+  it("không loop khi attempt mới vẫn trả ORDER_CANCELLED", async () => {
+    installBrowserStorage();
+    const tokenA = getCartShareSubmissionToken("A");
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    let caught: unknown;
+    try {
+      await activateCartShareWithRecovery({
+        fingerprint: "A",
+        submissionToken: tokenA,
+        items,
+        fetcher: queuedFetcher([
+          { status: 409, body: cancelled },
+          { status: 409, body: cancelled },
+        ], calls),
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ issue: { code: "ORDER_CANCELLED" } });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].path).toBe("/api/cart/share/prepare");
+  });
+
+  it("ẩn lỗi kỹ thuật và giữ thông báo nghiệp vụ an toàn", () => {
+    const fallback = "Chưa thể giữ hàng. Vui lòng thử lại.";
+    expect(
+      cartShareErrorMessage(
+        new CartShareApiError(
+          { code: "INVALID_ORDER_TRANSITION", message: "INVALID_ORDER_TRANSITION" },
+          409,
+          fallback,
+        ),
+        fallback,
+      ),
+    ).toBe(fallback);
+    expect(cartShareErrorMessage(new TypeError("Failed to fetch"), fallback)).toBe(fallback);
+    expect(
+      cartShareErrorMessage(
+        new CartShareApiError({ code: "UNKNOWN", message: "Vui lòng thử lại." }, 500, fallback),
+        fallback,
+      ),
+    ).toBe("Vui lòng thử lại.");
   });
 });
 

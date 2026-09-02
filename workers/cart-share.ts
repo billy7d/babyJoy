@@ -450,6 +450,13 @@ export async function prepareCartShare(request: Request, env: Env) {
   if (existing) {
     if (existing.contactChannel !== "SHARE")
       return failure("SUBMISSION_CONFLICT", "Mã gửi đã được sử dụng.", 409);
+    if (existing.checkoutState === "CANCELLED")
+      return failure(
+        "ORDER_CANCELLED",
+        "Đơn hàng trước đã bị hủy. Hệ thống sẽ tạo lượt chốt giỏ hàng mới.",
+        409,
+        { recoverable: true },
+      );
     const link = await loadLink(existing.id, env);
     if (!link)
       return failure("SHARE_LINK_MISSING", "Chưa thể khôi phục liên kết giỏ hàng.", 500);
@@ -744,7 +751,12 @@ export async function activateCartShare(request: Request, env: Env) {
     return failure("ORDER_ALREADY_CONFIRMED", "Đơn hàng đã được xác nhận.", 409);
   const retryAfterExpiry = existing.checkoutState === "EXPIRED";
   if (existing.checkoutState === "CANCELLED")
-    return failure("ORDER_CANCELLED", "Đơn hàng đã bị hủy. Vui lòng chốt lại giỏ hàng.", 409);
+    return failure(
+      "ORDER_CANCELLED",
+      "Đơn hàng trước đã bị hủy. Hệ thống sẽ tạo lượt chốt giỏ hàng mới.",
+      409,
+      { recoverable: true },
+    );
   if (existing.checkoutState !== "READY_TO_SEND" && !retryAfterExpiry)
     return failure("INVALID_ORDER_TRANSITION", "Giỏ hàng chưa sẵn sàng để gửi.", 409);
 

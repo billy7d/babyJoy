@@ -686,6 +686,151 @@ describe("Configurable inventory and promotion reservation", () => {
     expect(database.prepare("SELECT stock_on_hand, reserved_quantity FROM product_variants WHERE id = ?").get(variantId)).toEqual({ stock_on_hand: 1, reserved_quantity: 0 });
   });
 
+  it("CANCELLED là terminal và checkout lại dùng request, token, code, link và reservation mới", async () => {
+    setClock("2026-08-31T10:00:00.000Z");
+    const { database, env } = createEnv();
+    const { variantId } = seedVariant(database, "cancelled-retry", 1);
+    const tokenA = "cancelled-retry-a";
+    const tokenB = "cancelled-retry-b";
+
+    const preparedA = await prepare(env, tokenA, variantId);
+    expect(preparedA.status).toBe(201);
+    const preparedABody = (await preparedA.json()) as {
+      cartRequest: { code: string };
+      share: { url: string };
+    };
+    expect((await activate(env, tokenA, variantId)).status).toBe(200);
+    const rowA = requestRow(database, tokenA);
+
+    const cancelled = await api(
+      env,
+      `/api/admin/cart-requests/${rowA.id}/cancel`,
+      { method: "POST" },
+    );
+    expect(cancelled.status).toBe(200);
+    expect(requestRow(database, tokenA).checkoutState).toBe("CANCELLED");
+    expect(
+      database
+        .prepare("SELECT status, release_reason AS releaseReason FROM inventory_reservations WHERE cart_request_id = ?")
+        .get(rowA.id),
+    ).toEqual({ status: "RELEASED", releaseReason: "SELLER_CANCELLED" });
+    expect(
+      database.prepare("SELECT stock_on_hand, reserved_quantity FROM product_variants WHERE id = ?").get(variantId),
+    ).toEqual({ stock_on_hand: 1, reserved_quantity: 0 });
+
+    const stalePrepare = await prepare(env, tokenA, variantId);
+    expect(stalePrepare.status).toBe(409);
+    expect(await stalePrepare.json()).toMatchObject({
+      success: false,
+      error: { code: "ORDER_CANCELLED", recoverable: true },
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM cart_requests").get()).toEqual({ count: 1 });
+
+    const preparedB = await prepare(env, tokenB, variantId);
+    expect(preparedB.status).toBe(201);
+    const preparedBBody = (await preparedB.json()) as {
+      cartRequest: { code: string; checkoutState: string };
+      share: { url: string };
+    };
+    const rowB = requestRow(database, tokenB);
+    expect(rowB.id).not.toBe(rowA.id);
+    expect(preparedBBody.cartRequest).toMatchObject({ checkoutState: "READY_TO_SEND" });
+    expect(preparedBBody.cartRequest.code).not.toBe(preparedABody.cartRequest.code);
+    expect(preparedBBody.share.url).not.toBe(preparedABody.share.url);
+
+    const activatedB = await activate(env, tokenB, variantId);
+    expect(activatedB.status).toBe(200);
+    expect((await activatedB.json()).cartRequest).toMatchObject({
+      checkoutState: "WAITING_SELLER_CONFIRM",
+    });
+    expect(requestRow(database, tokenA).checkoutState).toBe("CANCELLED");
+    expect(requestRow(database, tokenB).checkoutState).toBe("WAITING_SELLER_CONFIRM");
+    expect(
+      database.prepare("SELECT status, release_reason AS releaseReason FROM inventory_reservations WHERE cart_request_id = ?").get(rowA.id),
+    ).toEqual({ status: "RELEASED", releaseReason: "SELLER_CANCELLED" });
+    expect(
+      database.prepare("SELECT status FROM inventory_reservations WHERE cart_request_id = ?").get(rowB.id),
+    ).toEqual({ status: "ACTIVE" });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_reservations WHERE status = 'ACTIVE'").get()).toEqual({ count: 1 });
+    expect(
+      database.prepare("SELECT stock_on_hand, reserved_quantity FROM product_variants WHERE id = ?").get(variantId),
+    ).toEqual({ stock_on_hand: 1, reserved_quantity: 1 });
+  });
+
+  it("checkout retry đánh giá lại inventory hiện tại và không tạo reservation giả khi hết hàng", async () => {
+    setClock("2026-08-31T10:00:00.000Z");
+    const { database, env } = createEnv();
+    const { variantId } = seedVariant(database, "cancelled-oos", 1);
+    await prepare(env, "cancelled-oos-a", variantId);
+    await activate(env, "cancelled-oos-a", variantId);
+    const rowA = requestRow(database, "cancelled-oos-a");
+    expect((await api(env, `/api/admin/cart-requests/${rowA.id}/cancel`, { method: "POST" })).status).toBe(200);
+    database.prepare("UPDATE product_variants SET stock_on_hand = 0 WHERE id = ?").run(variantId);
+
+    expect((await prepare(env, "cancelled-oos-b", variantId)).status).toBe(201);
+    const activationB = await activate(env, "cancelled-oos-b", variantId);
+    expect(activationB.status).toBe(409);
+    expect(await activationB.json()).toMatchObject({ error: { code: "INSUFFICIENT_STOCK" } });
+    expect(requestRow(database, "cancelled-oos-b").checkoutState).toBe("READY_TO_SEND");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_reservations WHERE status = 'ACTIVE'").get()).toEqual({ count: 0 });
+  });
+
+  it("checkout retry không dùng price snapshot hoặc promotion snapshot cũ", async () => {
+    setClock("2026-08-31T10:00:00.000Z");
+    const { database, env } = createEnv();
+    const { productId, variantId } = seedVariant(database, "cancelled-reprice", 1);
+    const promotionId = "cancelled-reprice-promotion";
+    database
+      .prepare(
+        `INSERT INTO promotions (
+          id, name, description, type, status, priority, stackable,
+          usage_count_total, config_json, created_at, updated_at
+        ) VALUES (?, 'Giảm retry', '', 'ORDER_FIXED_DISCOUNT', 'ACTIVE', 10, 0, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      )
+      .run(
+        promotionId,
+        JSON.stringify({ type: "ORDER_FIXED_DISCOUNT", minimumSubtotal: 1, discountAmount: 1000 }),
+      );
+    const tokenA = "cancelled-reprice-a";
+    const first = await prepare(env, tokenA, variantId);
+    expect(first.status).toBe(201);
+    expect((await first.json()).cartRequest.promotionDiscountVnd).toBe(1000);
+    await activate(env, tokenA, variantId);
+    const rowA = requestRow(database, tokenA);
+    expect((await api(env, `/api/admin/cart-requests/${rowA.id}/cancel`, { method: "POST" })).status).toBe(200);
+    database.prepare("UPDATE product_variants SET price_vnd = 120000 WHERE id = ? AND product_id = ?").run(variantId, productId);
+    database.prepare("UPDATE promotions SET status = 'INACTIVE' WHERE id = ?").run(promotionId);
+
+    const stalePrice = await prepare(env, "cancelled-reprice-b", variantId);
+    expect(stalePrice.status).toBe(409);
+    expect(await stalePrice.json()).toMatchObject({ error: { code: "PRICE_CHANGED" } });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM cart_requests WHERE submission_token = 'cancelled-reprice-b'").get()).toEqual({ count: 0 });
+
+    const accepted = await api(
+      env,
+      "/api/cart/share/prepare",
+      jsonInit("POST", {
+        submissionToken: "cancelled-reprice-b",
+        acceptCurrentPrices: true,
+        items: [{ variantId, quantity: 1, displayedPrice: 100000 }],
+      }),
+    );
+    expect(accepted.status).toBe(201);
+    const rowB = requestRow(database, "cancelled-reprice-b");
+    const acceptedBody = (await accepted.json()) as {
+      cartRequest: { promotionDiscountVnd: number; finalTotalVnd: number };
+    };
+    expect(acceptedBody.cartRequest).toMatchObject({
+      promotionDiscountVnd: 0,
+      finalTotalVnd: 120000,
+    });
+    expect(
+      database.prepare("SELECT unit_price_vnd AS priceVnd FROM cart_request_items WHERE cart_request_id = ?").get(rowB.id),
+    ).toEqual({ priceVnd: 120000 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM cart_request_promotions WHERE cart_request_id = ?").get(rowB.id)).toEqual({ count: 0 });
+    expect(requestRow(database, tokenA).checkoutState).toBe("CANCELLED");
+  });
+
   it("quà tặng vật lý cũng reserve và consume cùng một deadline", async () => {
     setClock(futureTestClock());
     const { database, env } = createEnv();

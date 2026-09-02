@@ -31,14 +31,19 @@ import {
   type PendingMessengerCart,
 } from "../lib/messenger-checkout";
 import {
+  activateCartShareWithRecovery,
+  buildPreparedCartShare,
   cartShareFingerprint,
-  clearPreparedCartShare,
+  cartShareErrorMessage,
   copyCartText,
+  CartShareApiError,
   getCartShareSubmissionToken,
+  prepareCartShareWithRecovery,
   recordSellerMessengerOpened,
   readPreparedCartShare,
   runWithCurrentPreparedCartShare,
   writePreparedCartShare,
+  type CartShareApiIssue,
   type PreparedCartShare,
   type SellerContact,
 } from "../lib/cart-share";
@@ -1169,53 +1174,45 @@ function DirectSellerShareControls({
       if (hasUnavailable)
         throw new Error("Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng.");
       if (!seller) throw new Error("Người bán chưa được cấu hình.");
-      if (forceNew) clearPreparedCartShare();
-      const submissionToken = getCartShareSubmissionToken(fingerprint, forceNew);
-      const response = await fetch("/api/cart/share/prepare", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          submissionToken,
-          acceptCurrentPrices,
-          items: lines.map(({ variant, quantity }) => ({
-            variantId: variant.id,
-            quantity,
-            displayedPrice: variant.priceVnd,
-          })),
-        }),
-      });
-      const body = (await response.json()) as
-        | Omit<PreparedCartShare, "fingerprint"> & { success: true }
-        | {
-            error?: {
-              code?: string;
-              message?: string;
-              items?: PriceChange[];
-            };
-          };
-      if (!response.ok || !("success" in body)) {
-        const issue = "error" in body ? body.error : undefined;
-        if (issue?.code === "PRICE_CHANGED" && issue.items?.length) {
-          setPriceChanges(issue.items);
-          setMessage("Giá của một số sản phẩm vừa thay đổi.");
-          return;
-        }
-        throw new Error(issue?.message || "Chưa thể chốt giỏ hàng.");
-      }
-      const value: PreparedCartShare = {
+      const result = await prepareCartShareWithRecovery({
         fingerprint,
-        submissionToken,
-        cartRequest: body.cartRequest,
-        share: body.share,
-        seller: body.seller,
-        serverNow: body.serverNow,
-      };
+        forceNew,
+        acceptCurrentPrices,
+        items: lines.map(({ variant, quantity }) => ({
+          variantId: variant.id,
+          quantity,
+          displayedPrice: variant.priceVnd,
+        })),
+      });
+      const value = buildPreparedCartShare(
+        fingerprint,
+        result.submissionToken,
+        result.response,
+      );
+      if (result.recovered) {
+        console.info(
+          JSON.stringify({
+            event: "cancelled_checkout_recovered",
+            ...(prepared?.cartRequest.code
+              ? { oldPublicCode: prepared.cartRequest.code }
+              : {}),
+            newPublicCode: value.cartRequest.code,
+          }),
+        );
+      }
       writePreparedCartShare(value);
       await showGuide(value);
     } catch (caught) {
-      setMessage(
-        caught instanceof Error ? caught.message : "Chưa thể chốt giỏ hàng.",
-      );
+      if (
+        caught instanceof CartShareApiError &&
+        caught.code === "PRICE_CHANGED" &&
+        caught.issue.items?.length
+      ) {
+        setPriceChanges(caught.issue.items);
+        setMessage("Giá của một số sản phẩm vừa thay đổi.");
+      } else {
+        setMessage(cartShareErrorMessage(caught, "Chưa thể chốt giỏ hàng."));
+      }
     } finally {
       setBusy(false);
     }
@@ -1529,22 +1526,7 @@ type PublicCartShareDto = {
   }>;
 };
 
-type ActivationGiftChange = {
-  productName?: string;
-  variantName?: string;
-  quantity: number;
-};
-
-type ActivationIssue = {
-  code?: string;
-  message?: string;
-  items?: PriceChange[];
-  variantIds?: string[];
-  subtotalVnd?: number;
-  discountTotalVnd?: number;
-  finalTotalVnd?: number;
-  gifts?: ActivationGiftChange[];
-};
+type ActivationIssue = CartShareApiIssue;
 
 export function PublicCartSharePage() {
   const { pathname } = useLocation();
@@ -1652,6 +1634,7 @@ export function CartShareGuidePage() {
   const [copyFeedback, setCopyFeedback] = useState("");
   const [clickGuardStale, setClickGuardStale] = useState(false);
   const [activationBusy, setActivationBusy] = useState(false);
+  const activationBusyRef = useRef(false);
   const [activationError, setActivationError] = useState("");
   const [activationIssue, setActivationIssue] = useState<ActivationIssue | null>(null);
   const checkoutConfig = useCheckoutConfig();
@@ -1694,8 +1677,21 @@ export function CartShareGuidePage() {
     return (
       <main className="cart-guide-unavailable">
         <Icon>content_paste_off</Icon>
-        <h1>Chưa có giỏ hàng để gửi</h1>
-        <p>Vui lòng quay lại giỏ hàng và chọn Chốt giỏ hàng.</p>
+        <h1>
+          {activationError
+            ? "Chưa thể tạo lượt chốt giỏ hàng mới"
+            : "Chưa có giỏ hàng để gửi"}
+        </h1>
+        <p>
+          {activationError
+            ? "Vui lòng quay lại giỏ hàng để kiểm tra và chốt lại theo thông tin hiện tại."
+            : "Vui lòng quay lại giỏ hàng và chọn Chốt giỏ hàng."}
+        </p>
+        {activationError && (
+          <p className="form-error" role="alert">
+            {activationError}
+          </p>
+        )}
         <Link className="btn primary" to="/cart">Quay lại giỏ hàng</Link>
       </main>
     );
@@ -1735,9 +1731,10 @@ export function CartShareGuidePage() {
   }
 
   const activateAndOpenMessenger = async (acceptCurrentPrices = false) => {
-    if (activationBusy || !prepared) return;
+    if (activationBusyRef.current || activationBusy || !prepared) return;
     setActivationError("");
     setActivationIssue(null);
+    const oldPublicCode = prepared.cartRequest.code;
     // Đọc lại localStorage tại thời điểm click để chặn thay đổi từ tab khác.
     const latestItems = parseStoredCart(window.localStorage.getItem(cartStorageKey));
     const allowed = runWithCurrentPreparedCartShare(prepared, latestItems,
@@ -1748,40 +1745,56 @@ export function CartShareGuidePage() {
       setClickGuardStale(true);
       return;
     }
+    // Ref khóa đồng bộ cả click kép trước khi React kịp render lại nút disabled.
+    activationBusyRef.current = true;
     setActivationBusy(true);
     try {
       const submissionToken =
         prepared.submissionToken ?? getCartShareSubmissionToken(prepared.fingerprint);
-      const response = await fetch("/api/cart/share/activate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          submissionToken,
-          acceptCurrentPrices,
-          items: latestItems.map((item) => ({
-            variantId: item.variantId,
-            quantity: item.quantity,
-            displayedPrice: findCurrentCartPrice(item.variantId, products, item.priceVnd),
-          })),
-        }),
-      });
-      const body = (await response.json()) as
-        | (Omit<PreparedCartShare, "fingerprint"> & { success: true })
-        | { error?: ActivationIssue };
-      if (!response.ok || !("success" in body)) {
-        const issue = "error" in body ? body.error : undefined;
-        setActivationIssue(issue ?? null);
-        setActivationError(issue?.message || "Chưa thể giữ hàng trước khi mở Messenger.");
-        return;
-      }
-      const next: PreparedCartShare = {
-        fingerprint: cartShareFingerprint(latestItems),
+      const result = await activateCartShareWithRecovery({
+        fingerprint: prepared.fingerprint,
         submissionToken,
-        cartRequest: body.cartRequest,
-        share: body.share,
-        seller: body.seller,
-        serverNow: body.serverNow,
-      };
+        acceptCurrentPrices,
+        items: latestItems.map((item) => ({
+          variantId: item.variantId,
+          quantity: item.quantity,
+          displayedPrice: findCurrentCartPrice(
+            item.variantId,
+            products,
+            item.priceVnd,
+          ),
+        })),
+        onRecoveryStarted: () => {
+          setPrepared(null);
+          setCopyStatus("FAILED");
+          setCopyFeedback("");
+        },
+        onRecoveredPrepare: (response, freshSubmissionToken) => {
+          const recovered = buildPreparedCartShare(
+            cartShareFingerprint(latestItems),
+            freshSubmissionToken,
+            response,
+          );
+          setPrepared(recovered);
+          setCopyStatus("FAILED");
+          setCopyFeedback("");
+          writePreparedCartShare(recovered);
+        },
+      });
+      if (result.recovered) {
+        console.info(
+          JSON.stringify({
+            event: "cancelled_checkout_recovered",
+            oldPublicCode,
+            newPublicCode: result.response.cartRequest.code,
+          }),
+        );
+      }
+      const next = buildPreparedCartShare(
+        cartShareFingerprint(latestItems),
+        result.submissionToken,
+        result.response,
+      );
       setPrepared(next);
       writePreparedCartShare(next);
       const copied = await copyCartText(next.share.copyText);
@@ -1818,10 +1831,21 @@ export function CartShareGuidePage() {
       );
       if (!allowed) setClickGuardStale(true);
     } catch (caught) {
-      setActivationError(
-        caught instanceof Error ? caught.message : "Chưa thể giữ hàng trước khi mở Messenger.",
-      );
+      if (caught instanceof CartShareApiError) {
+        setActivationIssue(caught.issue);
+        setActivationError(
+          cartShareErrorMessage(caught, "Chưa thể giữ hàng trước khi mở Messenger."),
+        );
+      } else {
+        setActivationError(
+          cartShareErrorMessage(
+            caught,
+            "Chưa thể giữ hàng trước khi mở Messenger.",
+          ),
+        );
+      }
     } finally {
+      activationBusyRef.current = false;
       setActivationBusy(false);
     }
   };
@@ -1886,7 +1910,7 @@ export function CartShareGuidePage() {
             copied={copied}
             feedback={copyFeedback}
             onCopy={() => void copyAgain()}
-           onMessenger={() => void activateAndOpenMessenger()}
+            onMessenger={() => void activateAndOpenMessenger()}
             onConfirmChanges={() => void activateAndOpenMessenger(true)}
             busy={activationBusy}
             error={activationError}
@@ -1902,13 +1926,13 @@ export function CartShareGuidePage() {
           copied={copied}
           feedback={copyFeedback}
           onCopy={() => void copyAgain()}
-           onMessenger={() => void activateAndOpenMessenger()}
-           onConfirmChanges={() => void activateAndOpenMessenger(true)}
-           busy={activationBusy}
-           error={activationError}
-           issue={activationIssue}
-           products={products}
-           reservationMinutes={reservationMinutes}
+          onMessenger={() => void activateAndOpenMessenger()}
+          onConfirmChanges={() => void activateAndOpenMessenger(true)}
+          busy={activationBusy}
+          error={activationError}
+          issue={activationIssue}
+          products={products}
+          reservationMinutes={reservationMinutes}
         />
       </div>
     </main>
