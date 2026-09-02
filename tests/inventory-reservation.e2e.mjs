@@ -144,8 +144,14 @@ async function activateCustomer(customer, label) {
     .locator(".cart-guide-actions button.btn.primary:visible")
     .first();
   await button.waitFor({ state: "visible" });
-  const [response] = await Promise.all([activationResponse, button.click()]);
-  const body = await response.json();
+  // Đọc body trước khi navigation sang Messenger làm response bị detach.
+  const responseWithBody = activationResponse.then(async (response) => ({
+    response,
+    body: JSON.parse((await response.body()).toString("utf8")),
+  }));
+  const { response, body } = await Promise.all([responseWithBody, button.click()]).then(
+    ([result]) => result,
+  );
   assert(response.status() < 500, label + " activation trả lỗi server " + response.status());
   return { response, body };
 }
