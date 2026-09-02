@@ -1,7 +1,6 @@
 import {
   MAX_STORED_IMAGE_BYTES,
   createImmutableImageKey,
-  getPublicImageUrl,
   isAllowedImageType,
   isImmutableProductImageKey,
   type AllowedImageType,
@@ -105,7 +104,7 @@ export async function uploadImmutableProductImage(
   request: Request,
   bucket: R2Bucket,
   options: { now?: Date; createUuid?: () => string } = {},
-): Promise<{ key: string; url: string }> {
+): Promise<{ key: string }> {
   const contentType =
     request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ??
     "";
@@ -245,6 +244,7 @@ export async function uploadImmutableProductImage(
   } else {
     uploaded = await bucket.put(key, uploadValue, putOptions);
   }
-  if (uploaded) return { key, url: getPublicImageUrl(key) };
+  // Tầng lưu trữ chỉ trả về khóa; API sẽ dựng URL theo môi trường của request.
+  if (uploaded) return { key };
   throw new ImageUploadError("KEY_COLLISION");
 }

@@ -4,6 +4,8 @@ import { mapApiProduct } from "../app/lib/catalog-context";
 import {
   MAX_STORED_IMAGE_BYTES,
   PRODUCT_IMAGE_PLACEHOLDER,
+  getProductImageUrl,
+  getProductImageUrlStrategy,
   getPublicImageUrl,
 } from "../shared/images";
 import {
@@ -54,15 +56,32 @@ function fakeBucket(heads = new Map<string, R2Object>()) {
 }
 
 describe("resolver ảnh R2", () => {
-  it("resolve khóa hợp lệ và encode từng segment", () => {
-    expect(getPublicImageUrl("products/2026-08-26/a b.webp")).toBe(
+  const key = "products/2026-08-26/a b.webp";
+
+  it("resolve production bằng custom domain và encode từng segment", () => {
+    expect(getProductImageUrl(key, "production")).toBe(
       "https://images.metraphuong.com/products/2026-08-26/a%20b.webp",
     );
   });
 
-  it("dùng placeholder cho khóa null hoặc đường dẫn không an toàn", () => {
+  it("resolve local qua /media mà không đổi khóa R2", () => {
+    expect(getProductImageUrl(key, "local")).toBe(
+      "/media/products/2026-08-26/a%20b.webp",
+    );
+  });
+
+  it("chọn strategy local cho development/test và production cho production", () => {
+    expect(getProductImageUrlStrategy("development")).toBe("local");
+    expect(getProductImageUrlStrategy("test")).toBe("local");
+    expect(getProductImageUrlStrategy("production")).toBe("production");
+  });
+
+  it("dùng placeholder cho khóa null hoặc đường dẫn không an toàn ở cả hai strategy", () => {
+    expect(getProductImageUrl(null, "local")).toBe(PRODUCT_IMAGE_PLACEHOLDER);
+    expect(getProductImageUrl("../secret.webp", "production")).toBe(
+      PRODUCT_IMAGE_PLACEHOLDER,
+    );
     expect(getPublicImageUrl(null)).toBe(PRODUCT_IMAGE_PLACEHOLDER);
-    expect(getPublicImageUrl("../secret.webp")).toBe(PRODUCT_IMAGE_PLACEHOLDER);
   });
 });
 
@@ -89,7 +108,6 @@ describe("upload ảnh immutable", () => {
       expect(result.key).toBe(
         `products/2026-08-26/123e4567-e89b-42d3-a456-426614174000.${extension}`,
       );
-      expect(result.url).toBe(`https://images.metraphuong.com/${result.key}`);
       expect(puts[0].options.httpMetadata).toMatchObject({
         contentType: mime,
         cacheControl: "public, max-age=31536000, immutable",

@@ -173,7 +173,7 @@ describe("Admin Product multi-variant", () => {
       r2Key: "products/keep.jpg",
       altText: "Ảnh giữ lại",
       sortOrder: 0,
-      url: "https://images.metraphuong.com/products/keep.jpg",
+      url: "/media/products/keep.jpg",
     });
     const publicRead = await api(env, "/api/products/multi-variant-update");
     const publicBody = (await publicRead.json()) as {
@@ -181,7 +181,7 @@ describe("Admin Product multi-variant", () => {
     };
     expect(publicBody.data?.images?.[0]).toMatchObject({
       r2Key: "products/keep.jpg",
-      url: "https://images.metraphuong.com/products/keep.jpg",
+      url: "/media/products/keep.jpg",
     });
   });
 

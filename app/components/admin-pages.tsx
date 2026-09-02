@@ -278,7 +278,11 @@ export function AdminProductsPage() {
                     return (
                       <tr key={product.id}>
                         <td>
-                          <img className="table-thumb" src={product.image} alt="" />
+                          <ProductImage
+                            product={product}
+                            className="table-thumb"
+                            alt=""
+                          />
                         </td>
                         <td>
                           <b>{product.name}</b>

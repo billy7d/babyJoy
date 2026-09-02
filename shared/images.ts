@@ -4,6 +4,7 @@ export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 export const TARGET_IMAGE_BYTES = 900 * 1024;
 export const MAX_STORED_IMAGE_BYTES = Math.floor(1.5 * 1024 * 1024);
 export const MAX_IMAGE_LONG_EDGE = 1600;
+export const LOCAL_IMAGE_BASE_PATH = "/media";
 export const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
   "image/png",
@@ -11,6 +12,7 @@ export const ALLOWED_IMAGE_TYPES = [
 ] as const;
 
 export type AllowedImageType = (typeof ALLOWED_IMAGE_TYPES)[number];
+export type ProductImageUrlStrategy = "local" | "production";
 
 export function normalizeR2Key(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -38,11 +40,28 @@ export function normalizeR2Key(value: unknown): string | null {
   return segments.join("/");
 }
 
-export function getPublicImageUrl(r2Key: unknown): string {
+export function getProductImageUrl(
+  r2Key: unknown,
+  strategy: ProductImageUrlStrategy,
+): string {
   const key = normalizeR2Key(r2Key);
   if (!key) return PRODUCT_IMAGE_PLACEHOLDER;
   const encodedPath = key.split("/").map(encodeURIComponent).join("/");
-  return `${PUBLIC_IMAGE_BASE_URL}/${encodedPath}`;
+  return strategy === "local"
+    ? `${LOCAL_IMAGE_BASE_PATH}/${encodedPath}`
+    : `${PUBLIC_IMAGE_BASE_URL}/${encodedPath}`;
+}
+
+export function getProductImageUrlStrategy(
+  environment: string,
+): ProductImageUrlStrategy {
+  return environment.trim().toLowerCase() === "production"
+    ? "production"
+    : "local";
+}
+
+export function getPublicImageUrl(r2Key: unknown): string {
+  return getProductImageUrl(r2Key, "production");
 }
 
 export function isAllowedImageType(value: string): value is AllowedImageType {

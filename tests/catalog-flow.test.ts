@@ -138,4 +138,12 @@ describe("admin product listing", () => {
     expect(adminProductMatchesStatus(hidden, "HIDDEN")).toBe(true);
     expect(adminProductMatchesStatus(hidden, "AVAILABLE")).toBe(false);
   });
+
+  it("dùng ProductImage chung và vẫn giữ class thumbnail cho ảnh R2", () => {
+    const source = readFileSync("app/components/admin-pages.tsx", "utf8");
+
+    expect(source).toContain('product={product}');
+    expect(source).toContain('className="table-thumb"');
+    expect(source).not.toContain('<img className="table-thumb" src={product.image}');
+  });
 });
