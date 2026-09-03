@@ -97,7 +97,9 @@ jobs:
       - name: Browser E2E
         env:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
-        run: npm run test:e2e
+        run: |
+          npm run test:e2e
+          npm run test:e2e:rich-description
 
       - name: Show server log on failure
         if: failure()
