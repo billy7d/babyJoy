@@ -242,12 +242,16 @@
 
 .product-description-image-controls > label {
   display: grid;
+  min-width: 0;
   gap: 4px;
 }
 
 .product-description-image-controls input {
-  min-width: min(360px, 100%);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 34px;
+  box-sizing: border-box;
   border: 1px solid #dacabe;
   border-radius: 7px;
   padding: 5px 8px;
@@ -434,11 +438,6 @@
   .product-description-image-controls {
     width: 100%;
     margin-top: 10px;
-  }
-
-  .product-description-image-controls input {
-    min-width: 0;
-    width: 100%;
   }
 
   .nutrition .product-rich-description {
