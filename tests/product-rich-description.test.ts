@@ -23,6 +23,103 @@ describe("Product rich description validator", () => {
     expect(normalizeProductDescriptionDocument({ version: 1, type: "doc", content: [] }).ok).toBe(true);
   });
 
+  it("chuẩn hóa ordered list attrs do Tiptap sinh ra", () => {
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "orderedList",
+          attrs: { start: 1, type: null },
+          content: [
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "Mục một" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.document.content[0]).toEqual({
+      type: "orderedList",
+      attrs: { start: 1 },
+      content: [
+        {
+          type: "listItem",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "Mục một" }],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("chuẩn hóa bullet list attrs rỗng do Tiptap sinh ra", () => {
+    const listItem = {
+      type: "listItem",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Mục bullet" }],
+        },
+      ],
+    };
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        { type: "bulletList", attrs: { type: null }, content: [listItem] },
+        { type: "bulletList", attrs: null, content: [listItem] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.document.content).toHaveLength(2);
+      for (const node of result.document.content) {
+        expect(node).toEqual({
+          type: "bulletList",
+          content: [listItem],
+        });
+      }
+    }
+  });
+
+  it("vẫn từ chối list attrs có giá trị tùy ý", () => {
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "bulletList",
+          attrs: { type: "disc" },
+          content: [
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "Không hợp lệ" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.issues.map((issue) => issue.code)).toContain("INVALID_ATTRIBUTES");
+  });
+
   it("từ chối version, node và mark không thuộc whitelist", () => {
     const result = normalizeProductDescriptionDocument({
       version: 100,

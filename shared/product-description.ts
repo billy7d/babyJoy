@@ -367,16 +367,24 @@ function validateBlockNode(
   if (value.type === "bulletList" || value.type === "orderedList") {
     if (!hasOnlyKeys(value, ["type", "attrs", "content"])) addIssue(issues, path, "UNKNOWN_ATTRIBUTE", "List chứa thuộc tính không được phép.");
     let attrs: { start?: number } | undefined;
-    if (value.type === "orderedList" && value.attrs !== undefined) {
-      if (!isRecord(value.attrs) || !hasOnlyKeys(value.attrs, ["start"])) {
-        addIssue(issues, `${path}.attrs`, "INVALID_ATTRIBUTES", "Thuộc tính numbered list không hợp lệ.");
-      } else if (value.attrs.start !== undefined && value.attrs.start !== null) {
-        const start = typeof value.attrs.start === "number" ? value.attrs.start : Number.NaN;
-        if (!Number.isSafeInteger(start) || start < 1) addIssue(issues, `${path}.attrs.start`, "INVALID_LIST_START", "Thứ tự numbered list không hợp lệ.");
-        else attrs = { start };
+    if (value.type === "orderedList") {
+      if (value.attrs !== undefined && value.attrs !== null) {
+        if (!isRecord(value.attrs) || !hasOnlyKeys(value.attrs, ["start", "type"])) {
+          addIssue(issues, `${path}.attrs`, "INVALID_ATTRIBUTES", "Thuộc tính numbered list không hợp lệ.");
+        } else if (value.attrs.type !== undefined && value.attrs.type !== null) {
+          addIssue(issues, `${path}.attrs.type`, "INVALID_ATTRIBUTES", "Thuộc tính numbered list không hợp lệ.");
+        } else if (value.attrs.start !== undefined && value.attrs.start !== null) {
+          const start = typeof value.attrs.start === "number" ? value.attrs.start : Number.NaN;
+          if (!Number.isSafeInteger(start) || start < 1) addIssue(issues, `${path}.attrs.start`, "INVALID_LIST_START", "Thứ tự numbered list không hợp lệ.");
+          else attrs = { start };
+        }
       }
-    } else if (value.attrs !== undefined) {
-      addIssue(issues, `${path}.attrs`, "UNKNOWN_ATTRIBUTE", "Bullet list không nhận thuộc tính tùy ý.");
+    } else if (value.attrs !== undefined && value.attrs !== null) {
+      if (!isRecord(value.attrs) || !hasOnlyKeys(value.attrs, ["type"])) {
+        addIssue(issues, `${path}.attrs`, "INVALID_ATTRIBUTES", "Thuộc tính bullet list không hợp lệ.");
+      } else if (value.attrs.type !== undefined && value.attrs.type !== null) {
+        addIssue(issues, `${path}.attrs.type`, "INVALID_ATTRIBUTES", "Thuộc tính bullet list không hợp lệ.");
+      }
     }
     if (!Array.isArray(value.content)) {
       addIssue(issues, `${path}.content`, "INVALID_CONTENT", "Danh sách không hợp lệ.");

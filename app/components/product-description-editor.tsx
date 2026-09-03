@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import TextAlign from "@tiptap/extension-text-align";
@@ -88,11 +88,24 @@ function editorDocument(value: ProductDescriptionDocument) {
   return { type: value.type, content: value.content };
 }
 
+function comparableDocumentValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(comparableDocumentValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, comparableDocumentValue(nested)]),
+  );
+}
+
 function isSameDocument(
   editorJson: unknown,
   value: ProductDescriptionDocument,
 ) {
-  return JSON.stringify(editorJson) === JSON.stringify(editorDocument(value));
+  return (
+    JSON.stringify(comparableDocumentValue(editorJson)) ===
+    JSON.stringify(comparableDocumentValue(editorDocument(value)))
+  );
 }
 
 function getErrorMessage(value: unknown) {
@@ -101,6 +114,24 @@ function getErrorMessage(value: unknown) {
   return typeof error?.message === "string"
     ? error.message
     : "Không thể tải ảnh lên. Vui lòng thử lại.";
+}
+
+type ProductDescriptionSelectionSnapshot = {
+  from: number;
+  to: number;
+};
+
+type ProductDescriptionFontSizeControlValue =
+  | ProductDescriptionFontSize
+  | "mixed";
+
+function isProductDescriptionFontSize(
+  value: unknown,
+): value is ProductDescriptionFontSize {
+  return (
+    typeof value === "string" &&
+    PRODUCT_DESCRIPTION_FONT_SIZES.includes(value as ProductDescriptionFontSize)
+  );
 }
 
 export function ProductDescriptionEditor({
@@ -113,6 +144,11 @@ export function ProductDescriptionEditor({
 }: ProductDescriptionEditorProps) {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
+  const selectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
+  const appliedTextStyleSelectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
+  const locallyEmittedDocumentsRef = useRef(
+    new WeakSet<ProductDescriptionDocument>(),
+  );
   const assetMap = useMemo(
     () => new Map(assets.map((asset) => [asset.id, asset])),
     [assets],
@@ -120,20 +156,50 @@ export function ProductDescriptionEditor({
 
   const editor = useEditor({
     immediatelyRender: false,
+    shouldRerenderOnTransaction: true,
     extensions: PRODUCT_DESCRIPTION_EDITOR_EXTENSIONS,
     content: editorDocument(value),
+    onSelectionUpdate: ({ editor: updatedEditor }) => {
+      const { from, to } = updatedEditor.state.selection;
+      selectionRef.current = { from, to };
+      const appliedSelection = appliedTextStyleSelectionRef.current;
+      if (
+        appliedSelection &&
+        (appliedSelection.from !== from || appliedSelection.to !== to)
+      ) {
+        appliedTextStyleSelectionRef.current = null;
+      }
+    },
     onUpdate: ({ editor: updatedEditor }) => {
+      const { from, to } = updatedEditor.state.selection;
+      selectionRef.current = { from, to };
       const normalized = normalizeProductDescriptionDocument({
         version: 1,
         ...updatedEditor.getJSON(),
       });
-      if (normalized.ok) onChange(normalized.document);
+      if (normalized.ok) {
+        locallyEmittedDocumentsRef.current.add(normalized.document);
+        onChange(normalized.document);
+      }
     },
   });
 
   useEffect(() => {
-    if (!editor || isSameDocument(editor.getJSON(), value)) return;
-    editor.commands.setContent(editorDocument(value), { emitUpdate: false });
+    if (!editor) return;
+    // React may commit an older locally-emitted controlled value after the
+    // editor has already produced newer transactions. Never replay any value
+    // that originated from this editor, otherwise rapid typing/toolbar actions
+    // can roll the ProseMirror document back and silently drop blocks.
+    if (locallyEmittedDocumentsRef.current.has(value)) return;
+    if (isSameDocument(editor.getJSON(), value)) return;
+    editor.commands.command(({ tr }) => {
+      const nextDocument = editor.schema.nodeFromJSON(editorDocument(value));
+      tr
+        .replaceWith(0, tr.doc.content.size, nextDocument.content)
+        .setMeta("preventUpdate", true)
+        .setMeta("addToHistory", false);
+      return true;
+    });
   }, [editor, value]);
 
   const uploadImage = useCallback(
@@ -146,6 +212,10 @@ export function ProductDescriptionEditor({
         setStatus("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
         return;
       }
+      const replacementAlt =
+        replacePosition !== undefined && editor
+          ? String(editor.state.doc.nodeAt(replacePosition)?.attrs.alt ?? "")
+          : undefined;
       setUploading(true);
       setStatus("Đang tải ảnh lên...");
       try {
@@ -188,7 +258,11 @@ export function ProductDescriptionEditor({
             editor.commands.setNodeSelection(replacePosition);
             editor.commands.updateAttributes("productDescriptionImage", {
               assetId: body.asset.id,
-              alt: body.asset.altText,
+              alt: replacementAlt ?? body.asset.altText,
+            });
+            editor.commands.setNodeSelection(replacePosition);
+            window.requestAnimationFrame(() => {
+              editor.commands.setNodeSelection(replacePosition);
             });
           }
         }
@@ -216,11 +290,85 @@ export function ProductDescriptionEditor({
     [assetMap, uploadImage],
   );
 
+  const applyTextStyle = (attrs: {
+    fontSize?: ProductDescriptionFontSize | null;
+    color?: ProductDescriptionColorToken | null;
+  }) => {
+    if (!editor) return;
+    const chain = editor.chain().focus();
+    const currentSelection = editor.state.selection;
+    let domSelectionSnapshot: ProductDescriptionSelectionSnapshot | null = null;
+    const domSelection = editor.view.dom.ownerDocument.getSelection();
+    if (
+      domSelection?.anchorNode &&
+      domSelection.focusNode &&
+      editor.view.dom.contains(domSelection.anchorNode) &&
+      editor.view.dom.contains(domSelection.focusNode)
+    ) {
+      try {
+        const anchor = editor.view.posAtDOM(
+          domSelection.anchorNode,
+          domSelection.anchorOffset,
+        );
+        const focus = editor.view.posAtDOM(
+          domSelection.focusNode,
+          domSelection.focusOffset,
+        );
+        domSelectionSnapshot = {
+          from: Math.min(anchor, focus),
+          to: Math.max(anchor, focus),
+        };
+      } catch {
+        domSelectionSnapshot = null;
+      }
+    }
+    const savedSelection =
+      domSelectionSnapshot ??
+      (currentSelection.empty && selectionRef.current
+        ? {
+            from: currentSelection.from,
+            to: currentSelection.to,
+          }
+        : selectionRef.current ?? {
+            from: currentSelection.from,
+            to: currentSelection.to,
+          });
+    const documentSize = editor.state.doc.content.size;
+    if (
+      savedSelection &&
+      savedSelection.from >= 0 &&
+      savedSelection.to <= documentSize
+    ) {
+      chain.setTextSelection(savedSelection);
+    }
+    chain.setMark("textStyle", attrs);
+    if (savedSelection.from !== savedSelection.to || attrs.fontSize === null) {
+      chain.removeEmptyTextStyle();
+    }
+    chain.run();
+    appliedTextStyleSelectionRef.current = savedSelection;
+    if (savedSelection.from !== savedSelection.to) {
+      window.requestAnimationFrame(() => {
+        const currentDocumentSize = editor.state.doc.content.size;
+        if (
+          savedSelection.from >= 0 &&
+          savedSelection.to <= currentDocumentSize
+        ) {
+          editor
+            .chain()
+            .focus()
+            .setTextSelection(savedSelection)
+            .run();
+        }
+      });
+    }
+  };
+
   const setFontSize = (fontSize: ProductDescriptionFontSize) => {
-    editor?.chain().focus().setMark("textStyle", { fontSize }).run();
+    applyTextStyle({ fontSize: fontSize === "normal" ? null : fontSize });
   };
   const setColor = (color: ProductDescriptionColorToken | null) => {
-    editor?.chain().focus().setMark("textStyle", { color }).run();
+    applyTextStyle({ color });
   };
   const currentHeading = [2, 3, 4].find((level) =>
     editor?.isActive("heading", { level }),
@@ -228,9 +376,36 @@ export function ProductDescriptionEditor({
   const currentColor = editor?.getAttributes("textStyle").color as
     | ProductDescriptionColorToken
     | undefined;
-  const currentFontSize = editor?.getAttributes("textStyle").fontSize as
-    | ProductDescriptionFontSize
-    | undefined;
+  const currentFontSize: ProductDescriptionFontSizeControlValue = (() => {
+    if (!editor) return "normal";
+    const { from, to, empty } = editor.state.selection;
+    if (empty) {
+      const appliedSelection = appliedTextStyleSelectionRef.current;
+      const marks =
+        appliedSelection &&
+        appliedSelection.from === from &&
+        appliedSelection.to === to
+          ? editor.state.storedMarks ?? editor.state.selection.$head.marks()
+          : editor.state.selection.$head.marks();
+      const fontSize = marks.find((mark) => mark.type.name === "textStyle")?.attrs
+        .fontSize;
+      return isProductDescriptionFontSize(fontSize) ? fontSize : "normal";
+    }
+    let resolved: ProductDescriptionFontSize | undefined;
+    let mixed = false;
+    editor.state.doc.nodesBetween(from, to, (node) => {
+      if (!node.isText) return;
+      const fontSize = node.marks.find(
+        (mark) => mark.type.name === "textStyle",
+      )?.attrs.fontSize;
+      const normalized = isProductDescriptionFontSize(fontSize)
+        ? fontSize
+        : "normal";
+      if (resolved === undefined) resolved = normalized;
+      else if (resolved !== normalized) mixed = true;
+    });
+    return mixed ? "mixed" : resolved ?? "normal";
+  })();
 
   return (
     <div className="product-description-editor">
@@ -266,6 +441,11 @@ export function ProductDescriptionEditor({
             disabled={!editor}
             onChange={(event) => setFontSize(event.target.value as ProductDescriptionFontSize)}
           >
+            {currentFontSize === "mixed" && (
+              <option value="mixed" disabled>
+                Nhiều kích thước
+              </option>
+            )}
             {PRODUCT_DESCRIPTION_FONT_SIZES.map((size) => (
               <option key={size} value={size}>
                 {size === "small" ? "Chữ nhỏ" : size === "normal" ? "Chữ thường" : size === "large" ? "Chữ lớn" : "Chữ rất lớn"}
@@ -307,8 +487,16 @@ export function ProductDescriptionEditor({
           />
         </label>
         <div className="product-description-toolbar-spacer" />
-        <button type="button" aria-label="Hoàn tác" disabled={!editor?.can().undo() || uploading} onClick={() => editor?.chain().focus().undo().run()}><Icon>undo</Icon></button>
-        <button type="button" aria-label="Làm lại" disabled={!editor?.can().redo() || uploading} onClick={() => editor?.chain().focus().redo().run()}><Icon>redo</Icon></button>
+        <button type="button" aria-label="Hoàn tác" disabled={!editor?.can().undo() || uploading} onClick={() => {
+          if (!editor) return;
+          editor.commands.undo();
+          window.requestAnimationFrame(() => editor.commands.focus());
+        }}><Icon>undo</Icon></button>
+        <button type="button" aria-label="Làm lại" disabled={!editor?.can().redo() || uploading} onClick={() => {
+          if (!editor) return;
+          editor.commands.redo();
+          window.requestAnimationFrame(() => editor.commands.focus());
+        }}><Icon>redo</Icon></button>
       </div>
       <ProductDescriptionImageNodeContext.Provider value={nodeContext}>
         <EditorContent editor={editor} className="product-description-content" />
