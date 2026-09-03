@@ -17,6 +17,10 @@ import {
   type ProductImageRecord,
   type Variant,
 } from "./catalog";
+import type {
+  ProductDescriptionAsset,
+  ProductDescriptionDocument,
+} from "../../shared/product-description";
 
 export type ApiProduct = {
   id: string;
@@ -31,6 +35,8 @@ export type ApiProduct = {
   archivedAt?: string | null;
   shortDescription?: string;
   description?: string;
+  descriptionContent?: ProductDescriptionDocument | null;
+  descriptionAssets?: ProductDescriptionAsset[];
   status?: string;
   featured?: number | boolean;
   categorySlug?: string | null;
@@ -137,6 +143,10 @@ export function mapApiProduct(row: ApiProduct): Product {
     brandSlug: row.brandSlug ?? null,
     shortDescription: row.shortDescription ?? fallback?.shortDescription ?? "",
     description: row.description ?? fallback?.description ?? "",
+    descriptionContent: row.descriptionContent ?? null,
+    descriptionAssets: Array.isArray(row.descriptionAssets)
+      ? row.descriptionAssets
+      : [],
     image: images[0]?.url ?? fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER,
     imageKey: images[0]?.r2Key ?? null,
     images,

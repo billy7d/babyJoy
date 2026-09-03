@@ -55,6 +55,7 @@ import {
   formatReservationDuration,
 } from "../../shared/reservation";
 import { ProductImage } from "./product-image";
+import { ProductRichDescription } from "./product-rich-description";
 import {
   cartDetails,
   Icon,
@@ -699,21 +700,7 @@ export function ProductDetailPage() {
   const variantPurchasable = Boolean(variant && isVariantPurchasable(variant));
   const productImages = product.images?.length
     ? product.images
-    : [
-        { r2Key: "", altText: product.name, sortOrder: 0, url: product.image },
-        {
-          r2Key: "",
-          altText: `${product.name} - ảnh phụ`,
-          sortOrder: 1,
-          url: "/images/featured-puree.jpg",
-        },
-        {
-          r2Key: "",
-          altText: `${product.name} - ảnh phụ`,
-          sortOrder: 2,
-          url: "/images/category-puree.jpg",
-        },
-      ];
+    : [{ r2Key: "", altText: product.name, sortOrder: 0, url: product.image }];
   const add = () => {
     if (!variant || !isVariantPurchasable(variant)) return;
     addItem(variant.id, quantity, product);
@@ -749,16 +736,15 @@ export function ProductDetailPage() {
         </div>
         <div className="detail-info">
           <div className="detail-breadcrumbs">
-            Trang chủ <Icon>chevron_right</Icon> Bột ăn dặm{" "}
-            <Icon>chevron_right</Icon> Vị Rau Củ Quả
+            Trang chủ <Icon>chevron_right</Icon> {product.brand || "Sản phẩm"}{" "}
+            <Icon>chevron_right</Icon> {product.name}
           </div>
           <div className="detail-tags">
-            <Tag>Hữu cơ</Tag>
-            <Tag tone="primary">6+ tháng</Tag>
-            <Tag tone="neutral">Không thêm đường</Tag>
+            {product.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            {product.age !== "Chưa xác định" && <Tag tone="primary">{product.age}</Tag>}
           </div>
           <h1>{product.name}</h1>
-          <p>{product.description}</p>
+          <p>{product.shortDescription || product.description}</p>
           <div className="detail-price">
             <Price value={variant?.priceVnd ?? 0} />
             {variant?.compareAtPriceVnd && (
@@ -828,33 +814,11 @@ export function ProductDetailPage() {
           </div>
         </div>
         <section className="nutrition">
-          <aside>
-            <h2>Câu chuyện & Dinh dưỡng</h2>
-            <a href="#farm">Hành trình từ nông trại</a>
-            <a href="#ingredients">Thành phần chi tiết</a>
-            <a href="#guide">Hướng dẫn pha chế</a>
-          </aside>
-          <div>
-            <h2>Cà rốt & Táo – vị ngọt tự nhiên cho bé</h2>
-            <p>{product.description}</p>
-            <img
-              src="/images/hero-desktop.jpg"
-              alt={`Nông trại hữu cơ ${STORE_BRAND} tại Đà Lạt`}
-            />
-            <div className="ingredients" id="ingredients">
-              <h3>Thành phần tự nhiên 100%</h3>
-              {[
-                "Táo hữu cơ (60%)",
-                "Cà rốt hữu cơ (40%)",
-                "Một chút nước cốt chanh để giữ độ tươi",
-              ].map((item) => (
-                <p key={item}>
-                  <Icon>check_circle</Icon>
-                  {item}
-                </p>
-              ))}
-            </div>
-          </div>
+          <ProductRichDescription
+            content={product.descriptionContent}
+            assets={product.descriptionAssets}
+            fallback={product.description}
+          />
         </section>
       </article>
       <div className="mobile-add-bar">
