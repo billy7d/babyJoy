@@ -44,6 +44,7 @@ import {
   cleanupExpiredReservations,
   getAdminCheckoutSettings,
   hasInventorySchema,
+  hasVariantRetirementSchema,
   listActiveReservations,
   listPromotionReservations,
   mapInventoryError,
@@ -295,13 +296,19 @@ async function hydrateProducts(
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const inventorySelect = inventorySchema
     ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
     : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
+  const activeVariantWhere = variantRetirementSchema
+    ? " AND archived_at IS NULL"
+    : "";
   const [variants, images, tags, categories] = await Promise.all([
     env.DB.prepare(
-      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
+      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, created_at`,
     )
       .bind(...ids)
       .all<ProductVariantRow>(),
@@ -426,6 +433,7 @@ function buildProductListQuery({
   includeHidden,
   status,
   inventorySchema,
+  variantRetirementSchema,
 }: {
   q: string;
   categories: string[];
@@ -438,13 +446,16 @@ function buildProductListQuery({
   includeHidden: boolean;
   status: ProductListStatus;
   inventorySchema: boolean;
+  variantRetirementSchema: boolean;
 }): ProductListQuery {
+  const activeVariantPredicate = (alias: string) =>
+    variantRetirementSchema ? ` AND ${alias}.archived_at IS NULL` : "";
   const where = includeHidden
     ? ["1 = 1"]
     : [
         "p.status != 'HIDDEN'",
         "p.archived_at IS NULL",
-        "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN')",
+        `EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN'${activeVariantPredicate("pv")})`,
       ];
   const values: Array<string | number> = [];
   if (includeHidden && status !== "ALL") {
@@ -453,7 +464,7 @@ function buildProductListQuery({
   }
   if (q) {
     where.push(
-      "(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?))",
+      `(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?${activeVariantPredicate("sv")}))`,
     );
     values.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
@@ -483,12 +494,12 @@ function buildProductListQuery({
   if (available)
     where.push(
       inventorySchema
-        ? "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity))"
-        : "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE')",
+        ? `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity)${activeVariantPredicate("av")})`
+        : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`,
     );
 
   const price =
-    "COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'), 0)";
+    `COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'${activeVariantPredicate("sv")}), 0)`;
   const orderSql =
     sort === "price_asc"
       ? `${price} ASC, p.sort_order ASC, p.name ASC, p.id ASC`
@@ -505,7 +516,10 @@ function buildProductListQuery({
 async function listProducts(request: Request, env: Env, includeHidden = false) {
   // Dọn lazy để catalog không giữ trạng thái tồn kho đã quá hạn khi cron trễ.
   await cleanupExpiredReservations(env);
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
   const url = new URL(request.url);
   const ageValue = url.searchParams.get("age");
@@ -530,6 +544,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
     inventorySchema,
+    variantRetirementSchema,
   });
   const count = await env.DB.prepare(
     `SELECT COUNT(DISTINCT p.id) AS totalItems
@@ -1073,12 +1088,18 @@ async function readAdminProductData(
     .bind(id)
     .first<Record<string, unknown>>();
   if (!product) return null;
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
+  const activeVariantWhere = variantRetirementSchema
+    ? " AND archived_at IS NULL"
+    : "";
   const variants = await env.DB.prepare(
     `SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
       ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
       : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
-     FROM product_variants WHERE product_id = ? ORDER BY sort_order, created_at, id`,
+     FROM product_variants WHERE product_id = ?${activeVariantWhere} ORDER BY sort_order, created_at, id`,
   )
     .bind(id)
     .all();
@@ -1150,30 +1171,67 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
 
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
 
   // Đọc toàn bộ ID trước transaction để phân biệt rõ update, insert và delete.
   const existingVariants = id
     ? await env.DB.prepare(
         `SELECT id${inventorySchema
           ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
-          : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
+          : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}${variantRetirementSchema
+          ? ", archived_at AS archivedAt"
+          : ", NULL AS archivedAt"}
          FROM product_variants WHERE product_id = ?`,
       )
         .bind(productId)
-        .all<{ id: string; trackInventory: number; stockOnHand: number; reservedQuantity: number }>()
+        .all<{
+          id: string;
+          trackInventory: number;
+          stockOnHand: number;
+          reservedQuantity: number;
+          archivedAt: string | null;
+        }>()
     : {
         results: [] as Array<{
           id: string;
           trackInventory: number;
           stockOnHand: number;
           reservedQuantity: number;
+          archivedAt: string | null;
         }>,
       };
   const existingVariantIds = new Set(
     existingVariants.results.map((variant) => variant.id),
   );
   const deletedVariantIds = new Set(body.deletedVariantIds);
+  const historicalVariantIds = new Set<string>();
+  if (variantRetirementSchema && id && deletedVariantIds.size) {
+    const placeholders = [...deletedVariantIds].map(() => "?").join(",");
+    const historical = await env.DB.prepare(
+      `SELECT DISTINCT variant_id AS variantId
+       FROM (
+         SELECT variant_id FROM inventory_movements
+         UNION ALL
+         SELECT variant_id FROM inventory_reservations
+         UNION ALL
+         SELECT variant_id FROM cart_request_items
+         UNION ALL
+         SELECT variant_id FROM cart_request_promotion_gifts
+       ) AS history
+       WHERE variant_id IN (${placeholders})`,
+    )
+      .bind(...deletedVariantIds)
+      .all<{ variantId: string }>();
+    historical.results.forEach((row) => historicalVariantIds.add(row.variantId));
+  }
+  const activeExistingVariantIds = new Set(
+    existingVariants.results
+      .filter((variant) => !variant.archivedAt)
+      .map((variant) => variant.id),
+  );
   if (!id && deletedVariantIds.size)
     return error(
       "VARIANT_OWNERSHIP",
@@ -1193,6 +1251,22 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
           variantId: variant.id,
           clientId: variant.clientId ?? null,
           message: "Phân loại không thuộc sản phẩm này.",
+        },
+      );
+    const current = variant.id
+      ? existingVariants.results.find((item) => item.id === variant.id)
+      : undefined;
+    if (current?.archivedAt)
+      return error(
+        "VARIANT_OWNERSHIP",
+        "Phân loại đã được lưu trữ và không còn chỉnh sửa được.",
+        422,
+        {
+          code: "VARIANT_OWNERSHIP",
+          field: "variantId",
+          variantId: variant.id,
+          clientId: variant.clientId ?? null,
+          message: "Phân loại đã được lưu trữ và không còn chỉnh sửa được.",
         },
       );
     if (variant.id && deletedVariantIds.has(variant.id))
@@ -1248,8 +1322,11 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     }
   }
   const newVariantCount = body.variants.filter((variant) => !variant.id).length;
+  const deletedActiveVariantCount = [...deletedVariantIds].filter((variantId) =>
+    activeExistingVariantIds.has(variantId),
+  ).length;
   const finalVariantCount =
-    existingVariantIds.size - deletedVariantIds.size + newVariantCount;
+    activeExistingVariantIds.size - deletedActiveVariantCount + newVariantCount;
   if (finalVariantCount < 1)
     return error(
       "AT_LEAST_ONE_VARIANT",
@@ -1325,7 +1402,8 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       .bind(...skuValues)
       .all<{ id: string; productId: string; sku: string }>();
     for (const row of skuRows.results) {
-      if (deletedVariantIds.has(row.id)) continue;
+      if (deletedVariantIds.has(row.id) && !historicalVariantIds.has(row.id))
+        continue;
       const incoming = body.variants.find((variant) => variant.sku === row.sku);
       const isSameVariant =
         incoming?.id === row.id && row.productId === productId;
@@ -1442,14 +1520,21 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       ),
     );
   }
-  // Xóa explicit trước khi ghi để cho phép tái sử dụng SKU vừa được giải phóng.
-  [...deletedVariantIds].forEach((variantId) =>
-    statements.push(
-      env.DB.prepare(
-        "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
-      ).bind(variantId, productId),
-    ),
-  );
+  // Chỉ xóa cứng variant chưa từng được tham chiếu; lịch sử phải giữ FK hợp lệ.
+  [...deletedVariantIds].forEach((variantId) => {
+    if (historicalVariantIds.has(variantId))
+      statements.push(
+        env.DB.prepare(
+          "UPDATE product_variants SET availability = 'HIDDEN', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ? AND product_id = ?",
+        ).bind(now, now, variantId, productId),
+      );
+    else
+      statements.push(
+        env.DB.prepare(
+          "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
+        ).bind(variantId, productId),
+      );
+  });
   body.variants.forEach((variant) => {
     if (variant.id) {
       const current = existingVariants.results.find((item) => item.id === variant.id);
@@ -1647,15 +1732,20 @@ async function duplicateAdminProduct(id: string, env: Env) {
     .first<Record<string, unknown>>();
   if (!source)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const variants = await env.DB.prepare(
-    "SELECT * FROM product_variants WHERE product_id = ? ORDER BY sort_order",
+    `SELECT * FROM product_variants WHERE product_id = ?${variantRetirementSchema
+      ? " AND archived_at IS NULL"
+      : ""} ORDER BY sort_order`,
   )
     .bind(id)
     .all<Record<string, unknown>>();
   const newId = crypto.randomUUID();
   const suffix = crypto.randomUUID().slice(0, 6);
   const now = new Date().toISOString();
-  const inventorySchema = await hasInventorySchema(env);
   const statements = [
     env.DB.prepare(
       "INSERT INTO products (id, name, slug, brand, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', 0, ?, ?, ?)",

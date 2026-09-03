@@ -11,7 +11,7 @@ import {
 } from "../shared/promotions";
 import type { PricedItem } from "./services";
 import { getPublicImageUrl } from "../shared/images";
-import { hasInventorySchema } from "./inventory";
+import { hasInventorySchema, hasVariantRetirementSchema } from "./inventory";
 
 export type PromotionCartRequestItem = {
   variantId: string;
@@ -105,6 +105,7 @@ type CanonicalVariantRow = {
   productName: string;
   productStatus: string;
   archivedAt: string | null;
+  variantArchivedAt: string | null;
   imageKey: string | null;
   trackInventory: number;
   stockOnHand: number;
@@ -204,10 +205,16 @@ async function loadCanonicalLines(
       insufficientStock: [] as string[],
     };
   const placeholders = items.map(() => "?").join(",");
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const archivedAtSelect = (await hasProductArchiveColumn(env))
     ? "p.archived_at AS archivedAt"
     : "NULL AS archivedAt";
+  const variantArchivedAtSelect = variantRetirementSchema
+    ? "v.archived_at AS variantArchivedAt"
+    : "NULL AS variantArchivedAt";
   const inventorySelect = inventorySchema
     ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
     : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
@@ -215,6 +222,7 @@ async function loadCanonicalLines(
     `SELECT v.id AS variantId, v.name AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability, p.id AS productId,
       p.name AS productName, p.status AS productStatus, ${archivedAtSelect},
+      ${variantArchivedAtSelect},
       ${inventorySelect},
       (SELECT r2_key FROM product_images
        WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey
@@ -259,6 +267,7 @@ async function loadCanonicalLines(
     if (
       row.productStatus !== "AVAILABLE" ||
       row.archivedAt ||
+      row.variantArchivedAt ||
       row.availability !== "AVAILABLE"
     )
       unavailable.push(item.variantId);
@@ -314,15 +323,24 @@ async function loadGiftCatalog(
 ) {
   const productIds = promotionGiftProductIds(promotions);
   if (!productIds.length) return [] as PromotionCatalogProduct[];
-  const archivedAtSelect = (await hasProductArchiveColumn(env))
+  const [hasProductArchive, inventorySchema, variantRetirementSchema] =
+    await Promise.all([
+      hasProductArchiveColumn(env),
+      hasInventorySchema(env),
+      hasVariantRetirementSchema(env),
+    ]);
+  const archivedAtSelect = hasProductArchive
     ? "p.archived_at AS archivedAt"
     : "NULL AS archivedAt";
-  const inventorySchema = await hasInventorySchema(env);
+  const variantArchivedAtSelect = variantRetirementSchema
+    ? "v.archived_at AS variantArchivedAt"
+    : "NULL AS variantArchivedAt";
   const rows = await env.DB.prepare(
     `SELECT p.id AS productId, p.name AS productName, p.status AS productStatus,
       ${archivedAtSelect},
       v.id AS variantId, v.name AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability,
+      ${variantArchivedAtSelect},
       ${inventorySchema
         ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
         : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"},
@@ -337,7 +355,11 @@ async function loadGiftCatalog(
        v.sort_order, v.created_at, v.id`,
   )
     .bind(...productIds)
-    .all<PromotionCatalogProduct & { sortOrder: number | null; archivedAt: string | null }>();
+    .all<PromotionCatalogProduct & {
+      sortOrder: number | null;
+      archivedAt: string | null;
+      variantArchivedAt: string | null;
+    }>();
   const selected = new Map<string, PromotionCatalogProduct>();
   rows.results.forEach((row) => {
     const availableQuantity = Math.max(
@@ -349,6 +371,7 @@ async function loadGiftCatalog(
       row.variantId &&
       row.productStatus === "AVAILABLE" &&
       !row.archivedAt &&
+      !row.variantArchivedAt &&
       row.availability === "AVAILABLE" &&
       (!row.trackInventory || availableQuantity > 0)
     )
