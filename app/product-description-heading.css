@@ -1,0 +1,79 @@
+.product-description-content .ProseMirror p,
+.product-description-content .ProseMirror ul,
+.product-description-content .ProseMirror ol {
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.product-description-content .ProseMirror h2,
+.product-description-content .ProseMirror h3,
+.product-description-content .ProseMirror h4 {
+  color: #3d2a20;
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.018em;
+  overflow-wrap: anywhere;
+}
+
+.product-description-content .ProseMirror h2 {
+  margin: 1.5rem 0 0.65rem;
+  font-size: clamp(1.75rem, 3vw, 2.25rem);
+}
+
+.product-description-content .ProseMirror h3 {
+  margin: 1.3rem 0 0.55rem;
+  font-size: clamp(1.45rem, 2.5vw, 1.8rem);
+}
+
+.product-description-content .ProseMirror h4 {
+  margin: 1.1rem 0 0.45rem;
+  font-size: clamp(1.2rem, 2vw, 1.45rem);
+}
+
+/* Heading semantics own the visual hierarchy. Inline font-size marks must not
+   shrink heading text back to paragraph-sized content. Color/emphasis marks
+   still work normally. */
+.product-description-content .ProseMirror h2 [data-font-size],
+.product-description-content .ProseMirror h3 [data-font-size],
+.product-description-content .ProseMirror h4 [data-font-size] {
+  font-size: inherit;
+}
+
+.product-rich-heading {
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.018em;
+}
+
+.product-rich-heading-2 {
+  font-size: clamp(1.75rem, 3vw, 2.25rem);
+}
+
+.product-rich-heading-3 {
+  font-size: clamp(1.45rem, 2.5vw, 1.8rem);
+}
+
+.product-rich-heading-4 {
+  font-size: clamp(1.2rem, 2vw, 1.45rem);
+}
+
+.product-rich-heading .product-rich-font-small,
+.product-rich-heading .product-rich-font-normal,
+.product-rich-heading .product-rich-font-large,
+.product-rich-heading .product-rich-font-extraLarge {
+  font-size: inherit;
+}
+
+@media (max-width: 639px) {
+  .product-description-content .ProseMirror h2 {
+    margin-top: 1.25rem;
+  }
+
+  .product-description-content .ProseMirror h3 {
+    margin-top: 1.1rem;
+  }
+
+  .product-description-content .ProseMirror h4 {
+    margin-top: 1rem;
+  }
+}
