@@ -108,13 +108,6 @@ function isSameDocument(
   );
 }
 
-function isSameDescriptionDocument(
-  left: ProductDescriptionDocument,
-  right: ProductDescriptionDocument,
-) {
-  return isSameDocument(editorDocument(left), right);
-}
-
 function getErrorMessage(value: unknown) {
   if (!value || typeof value !== "object") return "Không thể tải ảnh lên.";
   const error = (value as { error?: { message?: unknown } }).error;
@@ -153,7 +146,9 @@ export function ProductDescriptionEditor({
   const [status, setStatus] = useState("");
   const selectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const appliedTextStyleSelectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
-  const locallyEmittedDocumentRef = useRef<ProductDescriptionDocument | null>(null);
+  const locallyEmittedDocumentsRef = useRef(
+    new WeakSet<ProductDescriptionDocument>(),
+  );
   const assetMap = useMemo(
     () => new Map(assets.map((asset) => [asset.id, asset])),
     [assets],
@@ -183,7 +178,7 @@ export function ProductDescriptionEditor({
         ...updatedEditor.getJSON(),
       });
       if (normalized.ok) {
-        locallyEmittedDocumentRef.current = normalized.document;
+        locallyEmittedDocumentsRef.current.add(normalized.document);
         onChange(normalized.document);
       }
     },
@@ -191,14 +186,12 @@ export function ProductDescriptionEditor({
 
   useEffect(() => {
     if (!editor) return;
-    if (
-      locallyEmittedDocumentRef.current &&
-      isSameDescriptionDocument(locallyEmittedDocumentRef.current, value)
-    ) {
-      return;
-    }
+    // React may commit an older locally-emitted controlled value after the
+    // editor has already produced newer transactions. Never replay any value
+    // that originated from this editor, otherwise rapid typing/toolbar actions
+    // can roll the ProseMirror document back and silently drop blocks.
+    if (locallyEmittedDocumentsRef.current.has(value)) return;
     if (isSameDocument(editor.getJSON(), value)) return;
-    locallyEmittedDocumentRef.current = null;
     editor.commands.command(({ tr }) => {
       const nextDocument = editor.schema.nodeFromJSON(editorDocument(value));
       tr
