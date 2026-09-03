@@ -13,6 +13,7 @@ export const ALLOWED_IMAGE_TYPES = [
 
 export type AllowedImageType = (typeof ALLOWED_IMAGE_TYPES)[number];
 export type ProductImageUrlStrategy = "local" | "production";
+export type ImageKeyPurpose = "product-gallery" | "product-description";
 
 export function normalizeR2Key(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -80,8 +81,10 @@ export function createImmutableImageKey(
   contentType: AllowedImageType,
   now = new Date(),
   uuid: string = crypto.randomUUID(),
+  purpose: ImageKeyPurpose = "product-gallery",
 ): string {
-  return `products/${now.toISOString().slice(0, 10)}/${uuid}.${imageExtension(contentType)}`;
+  const prefix = purpose === "product-description" ? "product-descriptions" : "products";
+  return `${prefix}/${now.toISOString().slice(0, 10)}/${uuid}.${imageExtension(contentType)}`;
 }
 
 export function isImmutableProductImageKey(value: unknown): value is string {
@@ -89,6 +92,16 @@ export function isImmutableProductImageKey(value: unknown): value is string {
   return Boolean(
     key &&
     /^products\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(
+      key,
+    ),
+  );
+}
+
+export function isImmutableProductDescriptionImageKey(value: unknown): value is string {
+  const key = normalizeR2Key(value);
+  return Boolean(
+    key &&
+    /^product-descriptions\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(
       key,
     ),
   );

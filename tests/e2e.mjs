@@ -19,6 +19,7 @@ if (catalogIsEmpty) {
   await import("./empty-catalog.e2e.mjs");
   await import("./admin-product-stock.e2e.mjs");
   await import("./inventory-reservation.e2e.mjs");
+  await import("./product-rich-description.e2e.mjs");
   process.exit(0);
 }
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
@@ -283,5 +284,6 @@ try {
 
 await import("./admin-product-stock.e2e.mjs");
 await import("./inventory-reservation.e2e.mjs");
+await import("./product-rich-description.e2e.mjs");
 await browser.close();
 console.log(`E2E_OK routes=${visualRoutes.length * 2 + 6} viewports=390,768,1024,1440 cart-persistence=pass filter-url=pass admin-hard-navigation=pass multi-variant-admin-cart=pass`);

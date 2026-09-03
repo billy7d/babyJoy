@@ -181,6 +181,18 @@ export async function hasInventorySchema(env: Env) {
   return (await inspectInventorySchema(env)).available;
 }
 
+export async function hasVariantRetirementSchema(env: Env) {
+  try {
+    const column = await env.DB.prepare(
+      "SELECT name FROM pragma_table_info('product_variants') WHERE name = 'archived_at'",
+    ).first<{ name: string }>();
+    return Boolean(column?.name);
+  } catch {
+    // Giữ tương thích với DB chưa apply migration retire variant.
+    return false;
+  }
+}
+
 function isoNow(value: Date | string) {
   const timestamp = typeof value === "string" ? Date.parse(value) : value.getTime();
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString();

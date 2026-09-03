@@ -51,6 +51,12 @@ import {
 } from "../../shared/images";
 import { optimizeProductImage } from "../lib/image-optimizer";
 import {
+  legacyDescriptionToDocument,
+  type ProductDescriptionAsset,
+  type ProductDescriptionDocument,
+} from "../../shared/product-description";
+import { ProductDescriptionEditor } from "./product-description-editor";
+import {
   CART_CHECKOUT_STATE_LABELS,
   CART_REQUEST_CHANNEL_LABELS,
   CART_REQUEST_SORT_OPTIONS,
@@ -449,6 +455,12 @@ export function ProductEditorPage() {
     }) | null
   >(null);
   const [images, setImages] = useState<ProductImageRecord[]>([]);
+  const [descriptionContent, setDescriptionContent] =
+    useState<ProductDescriptionDocument>(() => legacyDescriptionToDocument(""));
+  const [descriptionAssets, setDescriptionAssets] = useState<
+    ProductDescriptionAsset[]
+  >([]);
+  const [descriptionUploadSessionId] = useState(() => crypto.randomUUID());
   const [variants, setVariants] = useState<EditableVariant[]>(() => [
     createDraftVariant(),
   ]);
@@ -478,6 +490,8 @@ export function ProductEditorPage() {
         setVariants([createDraftVariant()]);
         setDeletedVariantIds([]);
         setVariantErrors({});
+        setDescriptionContent(legacyDescriptionToDocument(""));
+        setDescriptionAssets([]);
       }
       const requests: Promise<Response>[] = [
         fetch("/api/admin/tags"),
@@ -529,6 +543,11 @@ export function ProductEditorPage() {
         setDeletedVariantIds([]);
         setVariantErrors({});
         setImages(product.images ?? []);
+        setDescriptionContent(
+          product.descriptionContent ??
+            legacyDescriptionToDocument(product.description),
+        );
+        setDescriptionAssets(product.descriptionAssets ?? []);
         setFeatured(Boolean(product.featured));
         setBestSeller(Boolean(product.isBestSeller));
         setVisible(product.status !== "HIDDEN");
@@ -707,7 +726,9 @@ export function ProductEditorPage() {
       isBestSeller: bestSeller,
       bestSellerRank: bestSeller ? Number(form.get("bestSellerRank")) : null,
       shortDescription: form.get("shortDescription"),
-      description: form.get("description"),
+      description: form.get("description") ?? "",
+      descriptionContent,
+      descriptionUploadSessionId,
       status: visible ? "AVAILABLE" : "HIDDEN",
       featured,
       sortOrder: Number(form.get("sortOrder")),
@@ -744,6 +765,11 @@ export function ProductEditorPage() {
               setVariants(body.data.variants.map(toEditableVariant));
               setDeletedVariantIds([]);
               setVariantErrors({});
+              setDescriptionContent(
+                body.data.descriptionContent ??
+                  legacyDescriptionToDocument(body.data.description),
+              );
+              setDescriptionAssets(body.data.descriptionAssets ?? []);
             }
           }
         }
@@ -842,14 +868,23 @@ export function ProductEditorPage() {
                   placeholder="Tóm tắt công dụng hoặc đặc điểm nổi bật..."
                 />
               </label>
-              <label>
-                Mô tả chi tiết
-                <textarea
-                  name="description"
-                  defaultValue={editing?.description}
-                  placeholder="Nhập chi tiết thành phần, hướng dẫn sử dụng, bảo quản..."
+              <div>
+                <span>Mô tả chi tiết</span>
+                <ProductDescriptionEditor
+                  value={descriptionContent}
+                  productId={editing?.id}
+                  uploadSessionId={descriptionUploadSessionId}
+                  assets={descriptionAssets}
+                  onChange={setDescriptionContent}
+                  onAsset={(asset) =>
+                    setDescriptionAssets((current) =>
+                      current.some((item) => item.id === asset.id)
+                        ? current
+                        : [...current, asset],
+                    )
+                  }
                 />
-              </label>
+              </div>
             </EditorCard>
             <EditorCard
               icon="view_list"

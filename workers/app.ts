@@ -14,6 +14,18 @@ import {
   validateAssociatedImages,
 } from "./image-service";
 import {
+  cleanupOrphanedProductDescriptionAssets,
+  hasProductDescriptionSchema,
+  imageUploadErrorStatus,
+  listProductDescriptionAssets,
+  mapProductDescriptionAssets,
+  prepareProductDescriptionAssetPersistence,
+  uploadProductDescriptionAsset,
+  validateProductDescriptionAssets,
+  ProductDescriptionAssetError,
+  type ProductDescriptionAssetRow,
+} from "./product-description-assets";
+import {
   getProductImageUrl,
   getProductImageUrlStrategy,
   getPublicImageUrl,
@@ -44,6 +56,7 @@ import {
   cleanupExpiredReservations,
   getAdminCheckoutSettings,
   hasInventorySchema,
+  hasVariantRetirementSchema,
   listActiveReservations,
   listPromotionReservations,
   mapInventoryError,
@@ -99,6 +112,14 @@ import {
   buildCartRequestListQuery,
   parseCartRequestListParams,
 } from "./cart-requests";
+import {
+  extractProductDescriptionText,
+  getProductDescriptionImageNodes,
+  normalizeProductDescriptionDocument,
+  parseProductDescriptionContent,
+  type ProductDescriptionDocument,
+  type ProductDescriptionValidationIssue,
+} from "../shared/product-description";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -136,11 +157,20 @@ function error(
   return json({ success: false, error: { code, message, details } }, status);
 }
 
-async function readBoundedJson(request: Request) {
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > 64 * 1024) throw new Error("PAYLOAD_TOO_LARGE");
+async function readBoundedJson(request: Request, maxBytes = 64 * 1024) {
+  const contentLengthHeader = request.headers.get("content-length");
+  if (contentLengthHeader !== null) {
+    const contentLength = Number(contentLengthHeader);
+    if (
+      !Number.isSafeInteger(contentLength) ||
+      contentLength < 0 ||
+      contentLength > maxBytes
+    )
+      throw new Error("PAYLOAD_TOO_LARGE");
+  }
   const text = await request.text();
-  if (text.length > 64 * 1024) throw new Error("PAYLOAD_TOO_LARGE");
+  if (new TextEncoder().encode(text).byteLength > maxBytes)
+    throw new Error("PAYLOAD_TOO_LARGE");
   return JSON.parse(text) as unknown;
 }
 
@@ -259,6 +289,7 @@ type ProductRow = {
   archivedAt: string | null;
   shortDescription: string;
   description: string;
+  descriptionContent?: string | null;
   status: string;
   featured: number;
   sortOrder: number;
@@ -291,17 +322,26 @@ async function hydrateProducts(
   rows: ProductRow[],
   env: Env,
   imageUrlStrategy: ProductImageUrlStrategy,
+  includeDescription = false,
 ) {
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
+  const descriptionSchema =
+    includeDescription && (await hasProductDescriptionSchema(env));
   const inventorySelect = inventorySchema
     ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
     : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
+  const activeVariantWhere = variantRetirementSchema
+    ? " AND archived_at IS NULL"
+    : "";
   const [variants, images, tags, categories] = await Promise.all([
     env.DB.prepare(
-      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
+      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, created_at`,
     )
       .bind(...ids)
       .all<ProductVariantRow>(),
@@ -324,6 +364,16 @@ async function hydrateProducts(
       .bind(...ids)
       .all<ProductCategoryRow>(),
   ]);
+  const descriptionAssetRows = descriptionSchema
+    ? await listProductDescriptionAssets(env, ids, imageUrlStrategy)
+    : [];
+  const descriptionAssetsByProduct = new Map<string, ProductDescriptionAssetRow[]>();
+  descriptionAssetRows.forEach((asset) => {
+    if (!asset.productId) return;
+    const current = descriptionAssetsByProduct.get(asset.productId) ?? [];
+    current.push(asset);
+    descriptionAssetsByProduct.set(asset.productId, current);
+  });
   return rows.map((product) => ({
     ...product,
     variants: variants.results
@@ -361,6 +411,29 @@ async function hydrateProducts(
     categorySlugs: categories.results
       .filter((category) => category.productId === product.id)
       .map((category) => category.slug),
+    ...(includeDescription
+      ? (() => {
+          const assets = descriptionAssetsByProduct.get(product.id) ?? [];
+          const content = parseProductDescriptionContent(
+            product.descriptionContent,
+            { assetIds: new Set(assets.map((asset) => asset.id)) },
+          );
+          if (product.descriptionContent && !content)
+            console.error(
+              JSON.stringify({
+                message: "invalid product description content",
+                productId: product.id,
+              }),
+            );
+          return {
+            descriptionContent: content,
+            descriptionAssets: mapProductDescriptionAssets(
+              assets,
+              imageUrlStrategy,
+            ),
+          };
+        })()
+      : {}),
   }));
 }
 
@@ -426,6 +499,7 @@ function buildProductListQuery({
   includeHidden,
   status,
   inventorySchema,
+  variantRetirementSchema,
 }: {
   q: string;
   categories: string[];
@@ -438,13 +512,16 @@ function buildProductListQuery({
   includeHidden: boolean;
   status: ProductListStatus;
   inventorySchema: boolean;
+  variantRetirementSchema: boolean;
 }): ProductListQuery {
+  const activeVariantPredicate = (alias: string) =>
+    variantRetirementSchema ? ` AND ${alias}.archived_at IS NULL` : "";
   const where = includeHidden
     ? ["1 = 1"]
     : [
         "p.status != 'HIDDEN'",
         "p.archived_at IS NULL",
-        "EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN')",
+        `EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN'${activeVariantPredicate("pv")})`,
       ];
   const values: Array<string | number> = [];
   if (includeHidden && status !== "ALL") {
@@ -453,7 +530,7 @@ function buildProductListQuery({
   }
   if (q) {
     where.push(
-      "(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?))",
+      `(p.name LIKE ? OR COALESCE(b.name, p.brand, '') LIKE ? OR EXISTS (SELECT 1 FROM product_variants sv WHERE sv.product_id = p.id AND sv.sku LIKE ?${activeVariantPredicate("sv")}))`,
     );
     values.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
@@ -483,12 +560,12 @@ function buildProductListQuery({
   if (available)
     where.push(
       inventorySchema
-        ? "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity))"
-        : "EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE')",
+        ? `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity)${activeVariantPredicate("av")})`
+        : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`,
     );
 
   const price =
-    "COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'), 0)";
+    `COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'${activeVariantPredicate("sv")}), 0)`;
   const orderSql =
     sort === "price_asc"
       ? `${price} ASC, p.sort_order ASC, p.name ASC, p.id ASC`
@@ -505,7 +582,10 @@ function buildProductListQuery({
 async function listProducts(request: Request, env: Env, includeHidden = false) {
   // Dọn lazy để catalog không giữ trạng thái tồn kho đã quá hạn khi cron trễ.
   await cleanupExpiredReservations(env);
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
   const url = new URL(request.url);
   const ageValue = url.searchParams.get("age");
@@ -530,6 +610,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
     inventorySchema,
+    variantRetirementSchema,
   });
   const count = await env.DB.prepare(
     `SELECT COUNT(DISTINCT p.id) AS totalItems
@@ -576,12 +657,14 @@ async function getProduct(
   imageUrlStrategy: ProductImageUrlStrategy,
 ) {
   await cleanupExpiredReservations(env);
+  const descriptionSchema = await hasProductDescriptionSchema(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
       p.archived_at AS archivedAt, p.short_description AS shortDescription,
-      p.description, p.status, p.featured, p.sort_order AS sortOrder,
+      p.description, ${descriptionSchema ? "p.description_content" : "NULL"} AS descriptionContent,
+      p.status, p.featured, p.sort_order AS sortOrder,
       (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
         WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order LIMIT 1) AS categorySlug
      FROM products p LEFT JOIN brands b ON b.id = p.brand_id
@@ -591,7 +674,12 @@ async function getProduct(
     .first<ProductRow>();
   if (!product)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
-  const [hydrated] = await hydrateProducts([product], env, imageUrlStrategy);
+  const [hydrated] = await hydrateProducts(
+    [product],
+    env,
+    imageUrlStrategy,
+    true,
+  );
   hydrated.variants = hydrated.variants.filter(
     (variant) => variant.availability !== "HIDDEN",
   );
@@ -792,6 +880,49 @@ async function uploadImage(request: Request, env: Env) {
   }
 }
 
+async function uploadDescriptionImage(request: Request, env: Env) {
+  if (!(await hasProductDescriptionSchema(env)))
+    return error(
+      "DESCRIPTION_SCHEMA_UNAVAILABLE",
+      "Mô tả rich chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  const productId = request.headers.get("x-product-id")?.trim() || null;
+  const uploadSessionId =
+    request.headers.get("x-upload-session-id")?.trim() ?? "";
+  try {
+    const result = await uploadProductDescriptionAsset(
+      request,
+      env,
+      productId,
+      uploadSessionId,
+      getProductImageUrlStrategy(env.ENVIRONMENT),
+    );
+    return json({ success: true, ...result }, 201);
+  } catch (caught) {
+    if (
+      caught instanceof ImageUploadError ||
+      caught instanceof ProductDescriptionAssetError
+    ) {
+      const status = imageUploadErrorStatus(caught);
+      const message =
+        caught instanceof ImageUploadError && caught.code === "UNSUPPORTED_TYPE"
+          ? "Định dạng ảnh không được hỗ trợ."
+          : caught instanceof ImageUploadError && caught.code === "TOO_LARGE"
+            ? `Ảnh tối ưu vượt quá ${MAX_STORED_IMAGE_BYTES / (1024 * 1024)} MB.`
+            : caught instanceof ProductDescriptionAssetError &&
+                caught.code === "PRODUCT_NOT_FOUND"
+              ? "Không tìm thấy sản phẩm."
+              : caught instanceof ProductDescriptionAssetError &&
+                  caught.code === "ASSET_OWNERSHIP"
+                ? "Asset ảnh mô tả không thuộc sản phẩm này."
+                : "Thông tin ảnh mô tả chưa hợp lệ.";
+      return error(caught.code, message, status);
+    }
+    throw caught;
+  }
+}
+
 type AdminProductInput = {
   name?: string;
   slug?: string;
@@ -802,6 +933,8 @@ type AdminProductInput = {
   bestSellerRank?: number | null;
   shortDescription?: string;
   description?: string;
+  descriptionContent?: unknown;
+  descriptionUploadSessionId?: string;
   status?: string;
   featured?: boolean;
   sortOrder?: number;
@@ -843,6 +976,12 @@ class AdminProductValidationError extends Error {
     readonly status = 422,
   ) {
     super(issue.message);
+  }
+}
+
+class AdminProductDescriptionValidationError extends Error {
+  constructor(readonly issues: ProductDescriptionValidationIssue[]) {
+    super("INVALID_PRODUCT_DESCRIPTION");
   }
 }
 
@@ -1037,6 +1176,40 @@ function validateAdminProduct(input: unknown) {
     invalid("Danh sách tag không hợp lệ.");
   const images =
     body.images === undefined ? undefined : normalizeProductImages(body.images);
+  const hasDescriptionContent = Object.prototype.hasOwnProperty.call(
+    body,
+    "descriptionContent",
+  );
+  let descriptionContent: ProductDescriptionDocument | null | undefined;
+  if (hasDescriptionContent) {
+    if (body.descriptionContent === null) {
+      descriptionContent = null;
+    } else {
+      const normalized = normalizeProductDescriptionDocument(
+        body.descriptionContent,
+      );
+      if (!normalized.ok)
+        throw new AdminProductDescriptionValidationError(normalized.issues);
+      descriptionContent = normalized.document;
+    }
+  }
+  const descriptionUploadSessionId =
+    body.descriptionUploadSessionId === undefined
+      ? undefined
+      : typeof body.descriptionUploadSessionId === "string"
+        ? body.descriptionUploadSessionId.trim()
+        : "";
+  if (
+    body.descriptionUploadSessionId !== undefined &&
+    !descriptionUploadSessionId
+  )
+    throw new AdminProductDescriptionValidationError([
+      {
+        path: "$.descriptionUploadSessionId",
+        code: "INVALID_UPLOAD_SESSION",
+        message: "Phiên tải ảnh mô tả không hợp lệ.",
+      },
+    ]);
   return {
     ...body,
     name,
@@ -1053,6 +1226,8 @@ function validateAdminProduct(input: unknown) {
     categoryIds,
     tagIds: body.tagIds,
     images,
+    descriptionContent,
+    descriptionUploadSessionId,
   };
 }
 
@@ -1062,23 +1237,31 @@ async function readAdminProductData(
   imageUrlStrategy: ProductImageUrlStrategy,
 ) {
   await cleanupExpiredReservations(env);
+  const descriptionSchema = await hasProductDescriptionSchema(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
       p.archived_at AS archivedAt, p.short_description AS shortDescription,
-      p.description, p.status, p.featured, p.sort_order AS sortOrder
+      p.description, ${descriptionSchema ? "p.description_content" : "NULL"} AS descriptionContent,
+      p.status, p.featured, p.sort_order AS sortOrder
      FROM products p LEFT JOIN brands b ON b.id = p.brand_id WHERE p.id = ?`,
   )
     .bind(id)
     .first<Record<string, unknown>>();
   if (!product) return null;
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
+  const activeVariantWhere = variantRetirementSchema
+    ? " AND archived_at IS NULL"
+    : "";
   const variants = await env.DB.prepare(
     `SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
       ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
       : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
-     FROM product_variants WHERE product_id = ? ORDER BY sort_order, created_at, id`,
+     FROM product_variants WHERE product_id = ?${activeVariantWhere} ORDER BY sort_order, created_at, id`,
   )
     .bind(id)
     .all();
@@ -1097,8 +1280,27 @@ async function readAdminProductData(
   )
     .bind(id)
     .all<Omit<ProductImageRow, "productId">>();
+  const descriptionAssetRows = descriptionSchema
+    ? await listProductDescriptionAssets(env, [id], imageUrlStrategy)
+    : [];
+  const descriptionContent = parseProductDescriptionContent(
+    product.descriptionContent,
+    { assetIds: new Set(descriptionAssetRows.map((asset) => asset.id)) },
+  );
+  if (product.descriptionContent && !descriptionContent)
+    console.error(
+      JSON.stringify({
+        message: "invalid admin product description content",
+        productId: id,
+      }),
+    );
   return {
     ...product,
+    descriptionContent,
+    descriptionAssets: mapProductDescriptionAssets(
+      descriptionAssetRows,
+      imageUrlStrategy,
+    ),
     variants: variants.results.map((variant) => ({
       ...variant,
       trackInventory: Boolean(variant.trackInventory),
@@ -1127,11 +1329,28 @@ async function getAdminProduct(
   return json({ data: product });
 }
 
-async function saveAdminProduct(request: Request, env: Env, id?: string) {
+async function saveAdminProduct(
+  request: Request,
+  env: Env,
+  id?: string,
+) {
   let body: ReturnType<typeof validateAdminProduct>;
   try {
-    body = validateAdminProduct(await readBoundedJson(request));
+    body = validateAdminProduct(await readBoundedJson(request, 512 * 1024));
   } catch (caught) {
+    if (caught instanceof Error && caught.message === "PAYLOAD_TOO_LARGE")
+      return error(
+        "PAYLOAD_TOO_LARGE",
+        "Dữ liệu sản phẩm vượt giới hạn cho phép.",
+        413,
+      );
+    if (caught instanceof AdminProductDescriptionValidationError)
+      return error(
+        "INVALID_PRODUCT_DESCRIPTION",
+        "Nội dung mô tả sản phẩm chưa hợp lệ.",
+        422,
+        caught.issues,
+      );
     if (caught instanceof AdminProductValidationError)
       return error(
         caught.issue.code,
@@ -1150,30 +1369,111 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
   if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
 
-  const inventorySchema = await hasInventorySchema(env);
+  const descriptionContentProvided = body.descriptionContent !== undefined;
+  const descriptionSchema = descriptionContentProvided
+    ? await hasProductDescriptionSchema(env)
+    : false;
+  if (descriptionContentProvided && !descriptionSchema)
+    return error(
+      "DESCRIPTION_SCHEMA_UNAVAILABLE",
+      "Mô tả rich chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  let descriptionAssetRows: ProductDescriptionAssetRow[] = [];
+  if (descriptionContentProvided && body.descriptionContent) {
+    try {
+      const validation = await validateProductDescriptionAssets(
+        env,
+        body.descriptionContent,
+        productId,
+        body.descriptionUploadSessionId ?? null,
+      );
+      descriptionAssetRows = validation.rows;
+      if (
+        !id &&
+        getProductDescriptionImageNodes(body.descriptionContent).length > 0 &&
+        !body.descriptionUploadSessionId
+      )
+        return error(
+          "INVALID_PRODUCT_DESCRIPTION",
+          "Ảnh mô tả của sản phẩm mới cần có phiên tải ảnh hợp lệ.",
+          422,
+        );
+    } catch (caught) {
+      if (caught instanceof ProductDescriptionAssetError) {
+        const status =
+          caught.code === "DESCRIPTION_SCHEMA_UNAVAILABLE" ? 409 : 422;
+        return error(
+          "INVALID_PRODUCT_DESCRIPTION",
+          "Một ảnh trong mô tả không hợp lệ hoặc không thuộc sản phẩm này.",
+          status,
+        );
+      }
+      throw caught;
+    }
+  }
+
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
 
   // Đọc toàn bộ ID trước transaction để phân biệt rõ update, insert và delete.
   const existingVariants = id
     ? await env.DB.prepare(
         `SELECT id${inventorySchema
           ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
-          : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
+          : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}${variantRetirementSchema
+          ? ", archived_at AS archivedAt"
+          : ", NULL AS archivedAt"}
          FROM product_variants WHERE product_id = ?`,
       )
         .bind(productId)
-        .all<{ id: string; trackInventory: number; stockOnHand: number; reservedQuantity: number }>()
+        .all<{
+          id: string;
+          trackInventory: number;
+          stockOnHand: number;
+          reservedQuantity: number;
+          archivedAt: string | null;
+        }>()
     : {
         results: [] as Array<{
           id: string;
           trackInventory: number;
           stockOnHand: number;
           reservedQuantity: number;
+          archivedAt: string | null;
         }>,
       };
   const existingVariantIds = new Set(
     existingVariants.results.map((variant) => variant.id),
   );
   const deletedVariantIds = new Set(body.deletedVariantIds);
+  const historicalVariantIds = new Set<string>();
+  if (variantRetirementSchema && id && deletedVariantIds.size) {
+    const placeholders = [...deletedVariantIds].map(() => "?").join(",");
+    const historical = await env.DB.prepare(
+      `SELECT DISTINCT variant_id AS variantId
+       FROM (
+         SELECT variant_id FROM inventory_movements
+         UNION ALL
+         SELECT variant_id FROM inventory_reservations
+         UNION ALL
+         SELECT variant_id FROM cart_request_items
+         UNION ALL
+         SELECT variant_id FROM cart_request_promotion_gifts
+       ) AS history
+       WHERE variant_id IN (${placeholders})`,
+    )
+      .bind(...deletedVariantIds)
+      .all<{ variantId: string }>();
+    historical.results.forEach((row) => historicalVariantIds.add(row.variantId));
+  }
+  const activeExistingVariantIds = new Set(
+    existingVariants.results
+      .filter((variant) => !variant.archivedAt)
+      .map((variant) => variant.id),
+  );
   if (!id && deletedVariantIds.size)
     return error(
       "VARIANT_OWNERSHIP",
@@ -1193,6 +1493,22 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
           variantId: variant.id,
           clientId: variant.clientId ?? null,
           message: "Phân loại không thuộc sản phẩm này.",
+        },
+      );
+    const current = variant.id
+      ? existingVariants.results.find((item) => item.id === variant.id)
+      : undefined;
+    if (current?.archivedAt)
+      return error(
+        "VARIANT_OWNERSHIP",
+        "Phân loại đã được lưu trữ và không còn chỉnh sửa được.",
+        422,
+        {
+          code: "VARIANT_OWNERSHIP",
+          field: "variantId",
+          variantId: variant.id,
+          clientId: variant.clientId ?? null,
+          message: "Phân loại đã được lưu trữ và không còn chỉnh sửa được.",
         },
       );
     if (variant.id && deletedVariantIds.has(variant.id))
@@ -1248,8 +1564,11 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     }
   }
   const newVariantCount = body.variants.filter((variant) => !variant.id).length;
+  const deletedActiveVariantCount = [...deletedVariantIds].filter((variantId) =>
+    activeExistingVariantIds.has(variantId),
+  ).length;
   const finalVariantCount =
-    existingVariantIds.size - deletedVariantIds.size + newVariantCount;
+    activeExistingVariantIds.size - deletedActiveVariantCount + newVariantCount;
   if (finalVariantCount < 1)
     return error(
       "AT_LEAST_ONE_VARIANT",
@@ -1325,7 +1644,8 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       .bind(...skuValues)
       .all<{ id: string; productId: string; sku: string }>();
     for (const row of skuRows.results) {
-      if (deletedVariantIds.has(row.id)) continue;
+      if (deletedVariantIds.has(row.id) && !historicalVariantIds.has(row.id))
+        continue;
       const incoming = body.variants.find((variant) => variant.sku === row.sku);
       const isSameVariant =
         incoming?.id === row.id && row.productId === productId;
@@ -1372,48 +1692,105 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
     }
   }
   const now = new Date().toISOString();
-  const statements = id
-    ? [
-        env.DB.prepare(
-          "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
-        ).bind(
-          body.name,
-          body.slug,
-          body.brandId,
-          body.brandId,
-          body.minAgeMonths,
-          body.isBestSeller,
-          body.bestSellerRank,
-          body.shortDescription ?? "",
-          body.description ?? "",
-          body.status,
-          body.status,
-          body.featured,
-          body.sortOrder,
-          now,
-          productId,
-        ),
-      ]
-    : [
-        env.DB.prepare(
-          "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ",
-        ).bind(
-          productId,
-          body.name,
-          body.slug,
-          body.brandId,
-          body.minAgeMonths,
-          body.isBestSeller,
-          body.bestSellerRank,
-          body.shortDescription ?? "",
-          body.description ?? "",
-          body.status,
-          body.featured,
-          body.sortOrder,
-          now,
-          now,
-        ),
-      ];
+  const legacyDescription = body.descriptionContent
+    ? extractProductDescriptionText(body.descriptionContent)
+    : body.description ?? "";
+  const richDescriptionJson = body.descriptionContent
+    ? JSON.stringify(body.descriptionContent)
+    : null;
+  const productStatement = id
+    ? env.DB.prepare(
+        descriptionContentProvided && descriptionSchema
+          ? "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, description_content = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?"
+          : "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+      ).bind(
+        ...(descriptionContentProvided && descriptionSchema
+          ? [
+              body.name,
+              body.slug,
+              body.brandId,
+              body.brandId,
+              body.minAgeMonths,
+              body.isBestSeller,
+              body.bestSellerRank,
+              body.shortDescription ?? "",
+              legacyDescription,
+              richDescriptionJson,
+              body.status,
+              body.status,
+              body.featured,
+              body.sortOrder,
+              now,
+              productId,
+            ]
+          : [
+              body.name,
+              body.slug,
+              body.brandId,
+              body.brandId,
+              body.minAgeMonths,
+              body.isBestSeller,
+              body.bestSellerRank,
+              body.shortDescription ?? "",
+              legacyDescription,
+              body.status,
+              body.status,
+              body.featured,
+              body.sortOrder,
+              now,
+              productId,
+            ]),
+      )
+    : env.DB.prepare(
+        descriptionContentProvided && descriptionSchema
+          ? "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, description_content, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          : "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind(
+        ...(descriptionContentProvided && descriptionSchema
+          ? [
+              productId,
+              body.name,
+              body.slug,
+              body.brandId,
+              body.minAgeMonths,
+              body.isBestSeller,
+              body.bestSellerRank,
+              body.shortDescription ?? "",
+              legacyDescription,
+              richDescriptionJson,
+              body.status,
+              body.featured,
+              body.sortOrder,
+              now,
+              now,
+            ]
+          : [
+              productId,
+              body.name,
+              body.slug,
+              body.brandId,
+              body.minAgeMonths,
+              body.isBestSeller,
+              body.bestSellerRank,
+              body.shortDescription ?? "",
+              legacyDescription,
+              body.status,
+              body.featured,
+              body.sortOrder,
+              now,
+              now,
+            ]),
+      );
+  const descriptionPersistence = descriptionContentProvided
+    ? await prepareProductDescriptionAssetPersistence(
+        env,
+        productId,
+        body.descriptionContent ?? null,
+        descriptionAssetRows,
+        now,
+      )
+    : { statements: [] as D1PreparedStatement[], removed: [] as ProductDescriptionAssetRow[] };
+  const statements = [productStatement, ...descriptionPersistence.statements];
   if (body.categoryIds !== undefined) {
     statements.push(
       env.DB.prepare(
@@ -1442,14 +1819,21 @@ async function saveAdminProduct(request: Request, env: Env, id?: string) {
       ),
     );
   }
-  // Xóa explicit trước khi ghi để cho phép tái sử dụng SKU vừa được giải phóng.
-  [...deletedVariantIds].forEach((variantId) =>
-    statements.push(
-      env.DB.prepare(
-        "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
-      ).bind(variantId, productId),
-    ),
-  );
+  // Chỉ xóa cứng variant chưa từng được tham chiếu; lịch sử phải giữ FK hợp lệ.
+  [...deletedVariantIds].forEach((variantId) => {
+    if (historicalVariantIds.has(variantId))
+      statements.push(
+        env.DB.prepare(
+          "UPDATE product_variants SET availability = 'HIDDEN', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ? AND product_id = ?",
+        ).bind(now, now, variantId, productId),
+      );
+    else
+      statements.push(
+        env.DB.prepare(
+          "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
+        ).bind(variantId, productId),
+      );
+  });
   body.variants.forEach((variant) => {
     if (variant.id) {
       const current = existingVariants.results.find((item) => item.id === variant.id);
@@ -1647,18 +2031,26 @@ async function duplicateAdminProduct(id: string, env: Env) {
     .first<Record<string, unknown>>();
   if (!source)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
   const variants = await env.DB.prepare(
-    "SELECT * FROM product_variants WHERE product_id = ? ORDER BY sort_order",
+    `SELECT * FROM product_variants WHERE product_id = ?${variantRetirementSchema
+      ? " AND archived_at IS NULL"
+      : ""} ORDER BY sort_order`,
   )
     .bind(id)
     .all<Record<string, unknown>>();
   const newId = crypto.randomUUID();
   const suffix = crypto.randomUUID().slice(0, 6);
   const now = new Date().toISOString();
-  const inventorySchema = await hasInventorySchema(env);
+  const descriptionSchema = await hasProductDescriptionSchema(env);
   const statements = [
     env.DB.prepare(
-      "INSERT INTO products (id, name, slug, brand, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', 0, ?, ?, ?)",
+      descriptionSchema
+        ? "INSERT INTO products (id, name, slug, brand, short_description, description, description_content, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, 'HIDDEN', 0, ?, ?, ?)"
+        : "INSERT INTO products (id, name, slug, brand, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'HIDDEN', 0, ?, ?, ?)",
     ).bind(
       newId,
       `${source.name} (Bản sao)`,
@@ -2301,6 +2693,11 @@ async function handleApi(
     return retryMessengerDelivery(retryMessengerMatch[1], env);
   if (request.method === "POST" && path === "/api/admin/images")
     return uploadImage(request, env);
+  if (
+    request.method === "POST" &&
+    path === "/api/admin/product-description-assets"
+  )
+    return uploadDescriptionImage(request, env);
   const imageMatch = path.match(/^\/api\/admin\/images\/([^/]+)$/);
   if (request.method === "DELETE" && imageMatch)
     return deleteImage(imageMatch[1], env);
@@ -2403,5 +2800,18 @@ export default {
   },
   async scheduled(controller, env) {
     await runInventoryCleanupCron(env, new Date(controller.scheduledTime));
+    try {
+      await cleanupOrphanedProductDescriptionAssets(
+        env,
+        new Date(controller.scheduledTime),
+      );
+    } catch (caught) {
+      console.error(
+        JSON.stringify({
+          message: "product description asset cleanup failed",
+          errorType: caught instanceof Error ? caught.name : "UNKNOWN",
+        }),
+      );
+    }
   },
 } satisfies ExportedHandler<Env>;

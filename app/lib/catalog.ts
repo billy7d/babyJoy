@@ -1,3 +1,8 @@
+import type {
+  ProductDescriptionAsset,
+  ProductDescriptionDocument,
+} from "../../shared/product-description";
+
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
 
@@ -32,6 +37,8 @@ export type Product = {
   brandSlug?: string | null;
   shortDescription: string;
   description: string;
+  descriptionContent?: ProductDescriptionDocument | null;
+  descriptionAssets?: ProductDescriptionAsset[];
   image: string;
   imageKey?: string | null;
   images?: ProductImageRecord[];

@@ -10,6 +10,7 @@ import {
   type PromotionStatus,
   type PromotionType,
 } from "../shared/promotions";
+import { hasVariantRetirementSchema } from "./inventory";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -412,10 +413,14 @@ export async function listPromotionOptions(request: Request, env: Env) {
   const selectedClause = selectedIds.length
     ? ` OR p.id IN (${selectedIds.map(() => "?").join(",")})`
     : "";
+  const variantRetirementSchema = await hasVariantRetirementSchema(env);
+  const activeVariantPriceFilter = variantRetirementSchema
+    ? " AND pv.archived_at IS NULL"
+    : "";
   const rows = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, p.status,
       (SELECT r2_key FROM product_images WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey,
-      (SELECT MIN(price_vnd) FROM product_variants WHERE product_id = p.id) AS priceVnd
+      (SELECT MIN(price_vnd) FROM product_variants pv WHERE pv.product_id = p.id${activeVariantPriceFilter}) AS priceVnd
      FROM products p
      WHERE (${queryClause}${selectedClause})
      ORDER BY p.name, p.id LIMIT 100`,

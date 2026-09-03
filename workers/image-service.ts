@@ -103,7 +103,11 @@ export async function validateAssociatedImages(
 export async function uploadImmutableProductImage(
   request: Request,
   bucket: R2Bucket,
-  options: { now?: Date; createUuid?: () => string } = {},
+  options: {
+    now?: Date;
+    createUuid?: () => string;
+    purpose?: "product-gallery" | "product-description";
+  } = {},
 ): Promise<{ key: string }> {
   const contentType =
     request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ??
@@ -206,6 +210,7 @@ export async function uploadImmutableProductImage(
     contentType as AllowedImageType,
     now,
     createUuid(),
+    options.purpose,
   );
   const putOptions = {
     onlyIf: new Headers({ "if-none-match": "*" }),
