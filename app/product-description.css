@@ -57,6 +57,11 @@
   opacity: 0.55;
 }
 
+.product-description-image-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .product-description-toolbar-group,
 .product-description-color-menu {
   display: inline-flex;
@@ -150,33 +155,36 @@
 }
 
 .product-description-image-node {
-  position: relative;
+  display: block;
+  width: 100%;
   max-width: 100%;
   margin-block: 18px;
   overflow: visible;
 }
 
-.product-description-image-node[data-align="left"] {
-  display: flex;
-  justify-content: flex-start;
+.product-description-image-node[data-align="left"] .product-description-image-preview {
+  margin-right: auto;
+  margin-left: 0;
 }
 
-.product-description-image-node[data-align="center"] {
-  display: flex;
-  justify-content: center;
+.product-description-image-node[data-align="center"] .product-description-image-preview {
+  margin-right: auto;
+  margin-left: auto;
 }
 
-.product-description-image-node[data-align="right"] {
-  display: flex;
-  justify-content: flex-end;
+.product-description-image-node[data-align="right"] .product-description-image-preview {
+  margin-right: 0;
+  margin-left: auto;
 }
 
 .product-description-image-preview {
   max-width: 100%;
+  box-sizing: border-box;
 }
 
 .product-description-image-preview img {
   display: block;
+  width: 100%;
   max-width: 100%;
   height: auto;
   border-radius: 12px;
@@ -204,13 +212,13 @@
 }
 
 .product-description-image-controls {
-  position: absolute;
-  z-index: 2;
-  top: calc(100% + 8px);
-  left: 0;
   display: grid;
   gap: 8px;
-  width: min(760px, 100%);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 10px 0 0;
   padding: 10px;
   border: 1px solid #d7c2b3;
   border-radius: 12px;
@@ -246,10 +254,43 @@
   font: inherit;
 }
 
+.product-description-content .ProseMirror [data-font-size="small"] {
+  font-size: 0.875rem;
+}
+
+.product-description-content .ProseMirror [data-font-size="normal"] {
+  font-size: 1rem;
+}
+
+.product-description-content .ProseMirror [data-font-size="large"] {
+  font-size: 1.25rem;
+}
+
+.product-description-content .ProseMirror [data-font-size="extraLarge"] {
+  font-size: 1.5rem;
+}
+
+.product-description-content .ProseMirror [data-color="primary"] {
+  color: #7a4b2a;
+}
+
+.product-description-content .ProseMirror [data-color="muted"] {
+  color: #8d8178;
+}
+
+.product-description-content .ProseMirror [data-color="dark"] {
+  color: #2e241f;
+}
+
+.product-description-content .ProseMirror [data-color="accent"] {
+  color: #d27c48;
+}
+
 .product-rich-description {
   display: grid;
   gap: 18px;
   min-width: 0;
+  font-size: 1rem;
   color: #47362b;
 }
 
@@ -267,6 +308,10 @@
   max-width: 100%;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.nutrition .product-rich-description .product-rich-paragraph {
+  font-size: 1rem;
 }
 
 .product-rich-heading {
@@ -387,7 +432,6 @@
   }
 
   .product-description-image-controls {
-    position: static;
     width: 100%;
     margin-top: 10px;
   }

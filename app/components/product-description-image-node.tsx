@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type MouseEvent } from "react";
+import { createContext, useContext, type MouseEvent } from "react";
 import { Node } from "@tiptap/core";
 import {
   NodeViewWrapper,
@@ -68,14 +68,20 @@ export function ProductDescriptionImageNodeView({
   selected,
 }: NodeViewProps) {
   const context = useContext(ProductDescriptionImageNodeContext);
-  const [showControls, setShowControls] = useState(false);
   const rawPosition = getPos();
   const position = typeof rawPosition === "number" ? rawPosition : 0;
   const asset = context?.assets.get(String(node.attrs.assetId));
   const alignment = node.attrs.alignment as ProductDescriptionImageAlignment;
   const size = node.attrs.size as ProductDescriptionImageSize;
   const alt = String(node.attrs.alt ?? asset?.altText ?? "");
-  const controlsVisible = selected || showControls;
+  const selectNode = () => {
+    editor.commands.setNodeSelection(position);
+  };
+  const updateImageAttributes = (attributes: Record<string, unknown>) => {
+    updateAttributes(attributes);
+    selectNode();
+    window.requestAnimationFrame(selectNode);
+  };
   return (
     <NodeViewWrapper
       className={`product-description-image-node${selected ? " is-selected" : ""}`}
@@ -83,9 +89,9 @@ export function ProductDescriptionImageNodeView({
       data-size={size}
       data-asset-id={String(node.attrs.assetId ?? "")}
       onMouseDown={(event: MouseEvent<HTMLDivElement>) => {
+        if ((event.target as HTMLElement).closest(".product-description-image-controls")) return;
         event.preventDefault();
-        setShowControls(true);
-        editor.commands.setNodeSelection(position);
+        selectNode();
       }}
     >
       <div className="product-description-image-preview">
@@ -95,8 +101,13 @@ export function ProductDescriptionImageNodeView({
           <span role="status">Ảnh mô tả chưa sẵn sàng</span>
         )}
       </div>
-      {controlsVisible && (
-        <div className="product-description-image-controls" aria-label="Điều khiển ảnh mô tả">
+      {selected && (
+        <div
+          className="product-description-image-controls"
+          aria-label="Điều khiển ảnh mô tả"
+          onMouseDownCapture={(event: MouseEvent<HTMLDivElement>) => event.stopPropagation()}
+          onMouseDown={(event: MouseEvent<HTMLDivElement>) => event.stopPropagation()}
+        >
           <div className="product-description-image-control-group">
             <span>Căn ảnh</span>
             {(["left", "center", "right"] as const).map((value) => (
@@ -105,7 +116,10 @@ export function ProductDescriptionImageNodeView({
                 type="button"
                 aria-label={`Căn ảnh ${value === "left" ? "trái" : value === "center" ? "giữa" : "phải"}`}
                 aria-pressed={alignment === value}
-                onClick={() => updateAttributes({ alignment: value })}
+                aria-disabled={size === "full"}
+                disabled={size === "full"}
+                title={size === "full" ? "Ảnh toàn chiều rộng không cần căn vị trí" : undefined}
+                onClick={() => updateImageAttributes({ alignment: value })}
               >
                 {value === "left" ? "Trái" : value === "center" ? "Giữa" : "Phải"}
               </button>
@@ -119,7 +133,7 @@ export function ProductDescriptionImageNodeView({
                 type="button"
                 aria-label={`Kích thước ảnh ${value}`}
                 aria-pressed={size === value}
-                onClick={() => updateAttributes({ size: value })}
+                onClick={() => updateImageAttributes({ size: value })}
               >
                 {value === "small"
                   ? "Nhỏ"
@@ -136,7 +150,7 @@ export function ProductDescriptionImageNodeView({
             <input
               value={alt}
               maxLength={250}
-              onChange={(event) => updateAttributes({ alt: event.target.value })}
+              onChange={(event) => updateImageAttributes({ alt: event.target.value })}
             />
           </label>
           <div className="product-description-image-control-actions">
@@ -163,7 +177,10 @@ export function ProductDescriptionImageNodeView({
                 aria-label="Thay ảnh mô tả"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-                  if (file && context) context.replaceImage(position, file);
+                  if (file && context) {
+                    selectNode();
+                    context.replaceImage(position, file);
+                  }
                   event.currentTarget.value = "";
                 }}
               />
@@ -208,6 +225,11 @@ export const ProductDescriptionImage = Node.create({
     ];
   },
   addNodeView() {
-    return ReactNodeViewRenderer(ProductDescriptionImageNodeView);
+    return ReactNodeViewRenderer(ProductDescriptionImageNodeView, {
+      stopEvent: ({ event }) => {
+        const target = event.target as HTMLElement | null;
+        return Boolean(target?.closest(".product-description-image-controls"));
+      },
+    });
   },
 });

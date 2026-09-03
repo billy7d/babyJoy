@@ -368,8 +368,10 @@ function validateBlockNode(
     if (!hasOnlyKeys(value, ["type", "attrs", "content"])) addIssue(issues, path, "UNKNOWN_ATTRIBUTE", "List chứa thuộc tính không được phép.");
     let attrs: { start?: number } | undefined;
     if (value.type === "orderedList" && value.attrs !== undefined) {
-      if (!isRecord(value.attrs) || !hasOnlyKeys(value.attrs, ["start"])) {
+      if (!isRecord(value.attrs) || !hasOnlyKeys(value.attrs, ["start", "type"])) {
         addIssue(issues, `${path}.attrs`, "INVALID_ATTRIBUTES", "Thuộc tính numbered list không hợp lệ.");
+      } else if (value.attrs.type !== undefined && value.attrs.type !== null) {
+        addIssue(issues, `${path}.attrs.type`, "INVALID_ATTRIBUTES", "Thuộc tính numbered list không hợp lệ.");
       } else if (value.attrs.start !== undefined && value.attrs.start !== null) {
         const start = typeof value.attrs.start === "number" ? value.attrs.start : Number.NaN;
         if (!Number.isSafeInteger(start) || start < 1) addIssue(issues, `${path}.attrs.start`, "INVALID_LIST_START", "Thứ tự numbered list không hợp lệ.");
