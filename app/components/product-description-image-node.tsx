@@ -45,9 +45,7 @@ function moveImageNode(
   const currentEnd = currentStart + current.nodeSize;
   const adjacentEnd = adjacentStart + adjacent.nodeSize;
   const ordered = offset < 0 ? [current, adjacent] : [adjacent, current];
-  const nextPosition =
-    offset < 0 ? adjacentStart : currentStart + adjacent.nodeSize;
-  const moved = editor
+  editor
     .chain()
     .focus()
     .command(({ tr }) => {
@@ -59,12 +57,6 @@ function moveImageNode(
       return true;
     })
     .run();
-  if (!moved) return;
-  editor.commands.setNodeSelection(nextPosition);
-  window.requestAnimationFrame(() => {
-    if (nextPosition <= editor.state.doc.content.size)
-      editor.commands.setNodeSelection(nextPosition);
-  });
 }
 
 export function ProductDescriptionImageNodeView({
@@ -82,10 +74,6 @@ export function ProductDescriptionImageNodeView({
   const alignment = node.attrs.alignment as ProductDescriptionImageAlignment;
   const size = node.attrs.size as ProductDescriptionImageSize;
   const alt = String(node.attrs.alt ?? asset?.altText ?? "");
-  const resolvedPosition = editor.state.doc.resolve(position);
-  const parentIndex = resolvedPosition.index();
-  const canMoveUp = parentIndex > 0;
-  const canMoveDown = parentIndex < resolvedPosition.parent.childCount - 1;
   const selectNode = () => {
     editor.commands.setNodeSelection(position);
   };
@@ -169,7 +157,6 @@ export function ProductDescriptionImageNodeView({
             <button
               type="button"
               aria-label="Đưa ảnh lên"
-              disabled={!canMoveUp}
               onClick={() => moveImageNode(editor, position, -1)}
             >
               <Icon>arrow_upward</Icon> Đưa lên
@@ -177,7 +164,6 @@ export function ProductDescriptionImageNodeView({
             <button
               type="button"
               aria-label="Đưa ảnh xuống"
-              disabled={!canMoveDown}
               onClick={() => moveImageNode(editor, position, 1)}
             >
               <Icon>arrow_downward</Icon> Đưa xuống
