@@ -10,8 +10,100 @@ export const PRODUCT_DESCRIPTION_FONT_SIZES = [
   "large",
   "extraLarge",
 ] as const;
-export type ProductDescriptionFontSize =
+export type ProductDescriptionLegacyFontSize =
   (typeof PRODUCT_DESCRIPTION_FONT_SIZES)[number];
+
+export const PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS = [
+  8,
+  9,
+  10,
+  10.5,
+  11,
+  12,
+  14,
+  16,
+  18,
+  20,
+  22,
+  24,
+  26,
+  28,
+  36,
+  48,
+  72,
+] as const;
+export const PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT = 8;
+export const PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT = 72;
+export type ProductDescriptionPointFontSize = `${number}pt`;
+export type ProductDescriptionFontSize =
+  | ProductDescriptionLegacyFontSize
+  | ProductDescriptionPointFontSize;
+
+const PRODUCT_DESCRIPTION_LEGACY_FONT_SIZE_POINTS: Record<
+  ProductDescriptionLegacyFontSize,
+  number
+> = {
+  small: 10.5,
+  normal: 12,
+  large: 15,
+  extraLarge: 18,
+};
+
+export function parseProductDescriptionPointFontSize(
+  value: unknown,
+): number | null {
+  if (typeof value !== "string" || !/^(?:[1-9]\d?)(?:\.5)?pt$/.test(value))
+    return null;
+  const points = Number(value.slice(0, -2));
+  if (
+    !Number.isFinite(points) ||
+    points < PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT ||
+    points > PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT ||
+    !Number.isInteger(points * 2)
+  )
+    return null;
+  return points;
+}
+
+export function createProductDescriptionPointFontSize(
+  points: number,
+): ProductDescriptionPointFontSize | null {
+  if (
+    !Number.isFinite(points) ||
+    points < PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT ||
+    points > PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT ||
+    !Number.isInteger(points * 2)
+  )
+    return null;
+  return `${Number(points.toFixed(1))}pt` as ProductDescriptionPointFontSize;
+}
+
+export function isProductDescriptionFontSize(
+  value: unknown,
+): value is ProductDescriptionFontSize {
+  return (
+    (typeof value === "string" &&
+      PRODUCT_DESCRIPTION_FONT_SIZES.includes(
+        value as ProductDescriptionLegacyFontSize,
+      )) ||
+    parseProductDescriptionPointFontSize(value) !== null
+  );
+}
+
+export function productDescriptionFontSizeToPoints(
+  value: ProductDescriptionFontSize | null | undefined,
+): number | null {
+  if (!value) return null;
+  if (
+    PRODUCT_DESCRIPTION_FONT_SIZES.includes(
+      value as ProductDescriptionLegacyFontSize,
+    )
+  )
+    return PRODUCT_DESCRIPTION_LEGACY_FONT_SIZE_POINTS[
+      value as ProductDescriptionLegacyFontSize
+    ];
+  return parseProductDescriptionPointFontSize(value);
+}
 
 export const PRODUCT_DESCRIPTION_COLOR_TOKENS = [
   "primary",
@@ -82,7 +174,7 @@ export type ProductDescriptionParagraphNode = {
 
 export type ProductDescriptionHeadingNode = {
   type: "heading";
-  attrs: ProductDescriptionTextBlockAttrs & { level: 2 | 3 | 4 };
+  attrs: ProductDescriptionTextBlockAttrs & { level: 1 | 2 | 3 | 4 };
   content?: ProductDescriptionInlineNode[];
 };
 
@@ -256,15 +348,10 @@ function validateMarks(
     const normalized: ProductDescriptionTextStyleAttributes = {};
     const rawFontSize = attrs?.fontSize;
     if (rawFontSize !== undefined && rawFontSize !== null) {
-      if (
-        typeof rawFontSize !== "string" ||
-        !PRODUCT_DESCRIPTION_FONT_SIZES.includes(
-          rawFontSize as ProductDescriptionFontSize,
-        )
-      ) {
+      if (!isProductDescriptionFontSize(rawFontSize)) {
         addIssue(issues, `${markPath}.attrs.fontSize`, "INVALID_FONT_SIZE", "Kích thước chữ không hợp lệ.");
       } else {
-        normalized.fontSize = rawFontSize as ProductDescriptionFontSize;
+        normalized.fontSize = rawFontSize;
       }
     }
     const rawColor = attrs?.color;
@@ -344,7 +431,7 @@ function validateBlockNode(
   if (value.type === "heading") {
     if (!hasOnlyKeys(value, ["type", "attrs", "content"])) addIssue(issues, path, "UNKNOWN_ATTRIBUTE", "Heading chứa thuộc tính không được phép.");
     if (!isRecord(value.attrs)) {
-      addIssue(issues, `${path}.attrs`, "INVALID_HEADING", "Heading phải có level H2, H3 hoặc H4.");
+      addIssue(issues, `${path}.attrs`, "INVALID_HEADING", "Heading phải có level H1, H2, H3 hoặc H4.");
       return null;
     }
     const attrs = validateTextBlockAttrs(
@@ -354,8 +441,8 @@ function validateBlockNode(
       ["level"],
     );
     const rawLevel = value.attrs.level;
-    if (rawLevel !== 2 && rawLevel !== 3 && rawLevel !== 4) {
-      addIssue(issues, `${path}.attrs.level`, "INVALID_HEADING", "Heading chỉ hỗ trợ H2, H3 hoặc H4.");
+    if (rawLevel !== 1 && rawLevel !== 2 && rawLevel !== 3 && rawLevel !== 4) {
+      addIssue(issues, `${path}.attrs.level`, "INVALID_HEADING", "Heading chỉ hỗ trợ H1, H2, H3 hoặc H4.");
       return null;
     }
     return {

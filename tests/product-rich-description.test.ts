@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  createProductDescriptionPointFontSize,
   extractProductDescriptionText,
   normalizeProductDescriptionDocument,
+  parseProductDescriptionPointFontSize,
+  productDescriptionFontSizeToPoints,
   type ProductDescriptionDocument,
 } from "../shared/product-description";
 
 const validImageId = "pda_123e4567-e89b-12d3-a456-426614174000";
 
 describe("Product rich description validator", () => {
-  it("chấp nhận document rỗng và heading H2-H4", () => {
+  it("chấp nhận document rỗng và heading H1-H4", () => {
     expect(
       normalizeProductDescriptionDocument({
         version: 1,
         type: "doc",
         content: [
+          { type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "H1" }] },
           { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "H2" }] },
           { type: "heading", attrs: { level: 3 }, content: [{ type: "text", text: "H3" }] },
           { type: "heading", attrs: { level: 4 }, content: [{ type: "text", text: "H4" }] },
@@ -21,6 +25,50 @@ describe("Product rich description validator", () => {
       }).ok,
     ).toBe(true);
     expect(normalizeProductDescriptionDocument({ version: 1, type: "doc", content: [] }).ok).toBe(true);
+  });
+
+  it("hỗ trợ font-size theo point kiểu Word và giữ tương thích token cũ", () => {
+    expect(parseProductDescriptionPointFontSize("8pt")).toBe(8);
+    expect(parseProductDescriptionPointFontSize("13.5pt")).toBe(13.5);
+    expect(parseProductDescriptionPointFontSize("72pt")).toBe(72);
+    expect(parseProductDescriptionPointFontSize("7.5pt")).toBeNull();
+    expect(parseProductDescriptionPointFontSize("72.5pt")).toBeNull();
+    expect(parseProductDescriptionPointFontSize("13.2pt")).toBeNull();
+    expect(createProductDescriptionPointFontSize(24)).toBe("24pt");
+    expect(createProductDescriptionPointFontSize(24.5)).toBe("24.5pt");
+    expect(createProductDescriptionPointFontSize(24.2)).toBeNull();
+    expect(productDescriptionFontSizeToPoints("small")).toBe(10.5);
+    expect(productDescriptionFontSizeToPoints("normal")).toBe(12);
+    expect(productDescriptionFontSizeToPoints("large")).toBe(15);
+    expect(productDescriptionFontSizeToPoints("extraLarge")).toBe(18);
+
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Point size",
+              marks: [{ type: "textStyle", attrs: { fontSize: "13.5pt" } }],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Legacy size",
+              marks: [{ type: "textStyle", attrs: { fontSize: "large" } }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
   });
 
   it("chuẩn hóa ordered list attrs do Tiptap sinh ra", () => {
@@ -125,7 +173,7 @@ describe("Product rich description validator", () => {
       version: 100,
       type: "doc",
       content: [
-        { type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Không được" }] },
+        { type: "heading", attrs: { level: 5 }, content: [{ type: "text", text: "Không được" }] },
         { type: "script", attrs: { html: "alert(1)" } },
         { type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "javascript:alert(1)" } }] }] },
       ],
@@ -154,7 +202,7 @@ describe("Product rich description validator", () => {
                   { type: "bold" },
                   { type: "italic" },
                   { type: "underline" },
-                  { type: "textStyle", attrs: { fontSize: "large", color: "primary" } },
+                  { type: "textStyle", attrs: { fontSize: "24pt", color: "primary" } },
                 ],
               },
             ],
@@ -191,7 +239,7 @@ describe("Product rich description validator", () => {
       version: 1,
       type: "doc",
       content: [
-        { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Tiêu đề" }] },
+        { type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Tiêu đề" }] },
         { type: "paragraph", content: [{ type: "text", text: "Đoạn văn" }, { type: "hardBreak" }, { type: "text", text: "tiếp" }] },
         { type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Táo" }] }] }, { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Cà rốt" }] }] }] },
         { type: "productDescriptionImage", attrs: { assetId: validImageId, alignment: "center", size: "medium", alt: "Không đưa alt vào text" } },
