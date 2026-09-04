@@ -116,6 +116,8 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.type("Comma format sample");
   await page.keyboard.press("Enter");
+  await page.keyboard.type("Custom 27.5 format sample");
+  await page.keyboard.press("Enter");
   await page.keyboard.type("Color and size retention");
   await page.keyboard.press("Enter");
   for (const text of [
@@ -347,11 +349,15 @@ try {
   await fontSizeInput.press("Enter");
   assert((await fontSizeInput.inputValue()) === "13.5", "Input không chuẩn hóa dấu phẩy thành dấu chấm");
   assert((await commaParagraph.locator('[data-font-size="13.5pt"]').count()) === 1, "Input dấu phẩy không lưu point chính xác");
+  const customPointParagraph = await selectWholeParagraph(editor, "Custom 27.5 format sample");
+  await fontSizeInput.fill("27.5");
+  await fontSizeInput.press("Enter");
+  assert((await customPointParagraph.locator('[data-font-size="27.5pt"]').count()) === 1, "Input 27.5 không lưu point chính xác");
   for (const invalidPoint of ["7.5", "72.5"]) {
     await fontSizeInput.fill(invalidPoint);
     await fontSizeInput.press("Enter");
     assert((await fontSizeInput.getAttribute("aria-invalid")) === "true", `Point ngoài miền ${invalidPoint} chưa bị từ chối`);
-    assert((await commaParagraph.locator('[data-font-size="13.5pt"]').count()) === 1, `Point ngoài miền ${invalidPoint} đã thay đổi document`);
+    assert((await customPointParagraph.locator('[data-font-size="27.5pt"]').count()) === 1, `Point ngoài miền ${invalidPoint} đã thay đổi document`);
   }
 
   const coloredParagraph = await selectWholeParagraph(editor, "Color and size retention");
@@ -490,6 +496,8 @@ try {
   assert(persistedPartial?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "17.5pt"), "Persisted custom partial font size không đúng");
   const persistedComma = persistedTexts.find((node) => node.text === "Comma format sample");
   assert(persistedComma?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "13.5pt"), "Persisted comma point font size không đúng");
+  const persistedCustomPoint = persistedTexts.find((node) => node.text === "Custom 27.5 format sample");
+  assert(persistedCustomPoint?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "27.5pt"), "Persisted 27.5 point font size không đúng");
   const persistedMultiA = persistedTexts.find((node) => node.text === "FGHI");
   const persistedMultiB = persistedTexts.find((node) => typeof node.text === "string" && node.text.startsWith("Multi B J") && node.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large"));
   assert(persistedMultiA?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large") && persistedMultiB, "Persisted multi-paragraph font size không đúng");
