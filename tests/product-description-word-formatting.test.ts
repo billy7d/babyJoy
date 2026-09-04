@@ -22,17 +22,27 @@ describe("Product rich description Word-like formatting", () => {
     expect(css).toContain(".product-rich-heading-1");
   });
 
-  it("offers Microsoft Word-style point presets instead of semantic-only size labels", () => {
+  it("offers an editable Microsoft Word-style point-size combobox with presets", () => {
     const editor = readProjectFile("app/components/product-description-editor.tsx");
     const shared = readProjectFile("shared/product-description.ts");
+    const css = readProjectFile("app/product-description.css");
 
     expect(shared).toContain("PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS");
     for (const size of [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]) {
       expect(shared).toContain(`  ${size},`);
     }
     expect(editor).toContain('title="Kích thước chữ theo point (pt)"');
+    expect(editor).toContain('aria-label="Nhập kích thước chữ"');
+    expect(editor).toContain('inputMode="decimal"');
+    expect(editor).toContain('aria-label="Kích thước chữ"');
     expect(editor).toContain('value={`${points}pt`}');
-    expect(editor).toContain("{points} pt");
+    expect(editor).toContain("{points}");
+    expect(editor).toContain("commitFontSizeInput");
+    expect(editor).toContain("createProductDescriptionPointFontSize");
+    expect(editor).toContain('.replace(",", ".")');
+    expect(editor).toContain("theo bước 0,5 pt");
+    expect(css).toContain(".product-description-font-size-combobox");
+    expect(css).toContain(".product-description-font-size-combobox.is-invalid");
   });
 
   it("renders point sizes as safe inline CSS in both editor and storefront", () => {
