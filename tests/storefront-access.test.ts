@@ -244,6 +244,7 @@ describe("storefront access credentials", () => {
     expect(isStorefrontProtectedHtmlPath("/c/share-token")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/images/logo.png")).toBe(false);
     expect(isStorefrontProtectedApiPath("/api/products/slug")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/content-pages/shipping-policy")).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/admin/products")).toBe(false);
     expect(isStorefrontProtectedApiPath("/api/cart/share/token")).toBe(false);
     expect(isStorefrontProtectedApiPath("/api/meta/messenger/webhook")).toBe(false);

@@ -120,6 +120,12 @@ import {
   type ProductDescriptionDocument,
   type ProductDescriptionValidationIssue,
 } from "../shared/product-description";
+import {
+  getAdminContentPage,
+  listAdminContentPages,
+  getPublicContentPage,
+  saveAdminContentPage,
+} from "./content-pages";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -888,6 +894,8 @@ async function uploadDescriptionImage(request: Request, env: Env) {
       409,
     );
   const productId = request.headers.get("x-product-id")?.trim() || null;
+  const contentPageSlug =
+    request.headers.get("x-content-page-slug")?.trim() || null;
   const uploadSessionId =
     request.headers.get("x-upload-session-id")?.trim() ?? "";
   try {
@@ -897,6 +905,7 @@ async function uploadDescriptionImage(request: Request, env: Env) {
       productId,
       uploadSessionId,
       getProductImageUrlStrategy(env.ENVIRONMENT),
+      contentPageSlug,
     );
     return json({ success: true, ...result }, 201);
   } catch (caught) {
@@ -914,6 +923,9 @@ async function uploadDescriptionImage(request: Request, env: Env) {
                 caught.code === "PRODUCT_NOT_FOUND"
               ? "Không tìm thấy sản phẩm."
               : caught instanceof ProductDescriptionAssetError &&
+                  caught.code === "CONTENT_PAGE_NOT_FOUND"
+                ? "Không tìm thấy trang nội dung."
+                : caught instanceof ProductDescriptionAssetError &&
                   caught.code === "ASSET_OWNERSHIP"
                 ? "Asset ảnh mô tả không thuộc sản phẩm này."
                 : "Thông tin ảnh mô tả chưa hợp lệ.";
@@ -2477,6 +2489,12 @@ async function handleApi(
     );
   if (request.method === "GET" && path === "/api/checkout-config")
     return checkoutConfigResponse(env);
+  const publicContentPageMatch = path.match(/^\/api\/content-pages\/([^/]+)$/);
+  if (request.method === "GET" && publicContentPageMatch)
+    return getPublicContentPage(
+      decodeURIComponent(publicContentPageMatch[1]),
+      env,
+    );
   if (request.method === "POST" && path === "/api/cart/evaluate")
     return evaluateCart(request, env);
   if (request.method === "POST" && path === "/api/cart/share/prepare")
@@ -2511,6 +2529,22 @@ async function handleApi(
         ? authorization.payload.email
         : undefined;
   }
+  if (request.method === "GET" && path === "/api/admin/content-pages")
+    return listAdminContentPages(env);
+  const adminContentPageMatch = path.match(
+    /^\/api\/admin\/content-pages\/([^/]+)$/,
+  );
+  if (request.method === "GET" && adminContentPageMatch)
+    return getAdminContentPage(
+      decodeURIComponent(adminContentPageMatch[1]),
+      env,
+    );
+  if (request.method === "PUT" && adminContentPageMatch)
+    return saveAdminContentPage(
+      request,
+      decodeURIComponent(adminContentPageMatch[1]),
+      env,
+    );
   if (request.method === "GET" && path === "/api/admin/access-links")
     return listAccessLinks(request, env);
   if (request.method === "POST" && path === "/api/admin/access-links")

@@ -7,6 +7,7 @@ import type {
   ProductDescriptionTextStyleAttributes,
 } from "../../shared/product-description";
 import {
+  isExternalProductDescriptionLink,
   normalizeProductDescriptionDocument,
   parseProductDescriptionPointFontSize,
   PRODUCT_DESCRIPTION_COLOR_TOKENS,
@@ -46,6 +47,20 @@ function markText(
   if (mark.type === "bold") return <strong key={key}>{value}</strong>;
   if (mark.type === "italic") return <em key={key}>{value}</em>;
   if (mark.type === "underline") return <u key={key}>{value}</u>;
+  if (mark.type === "link") {
+    const external = isExternalProductDescriptionLink(mark.attrs.href);
+    return (
+      <a
+        key={key}
+        href={mark.attrs.href}
+        {...(external
+          ? { target: "_blank", rel: "noopener noreferrer" }
+          : {})}
+      >
+        {value}
+      </a>
+    );
+  }
   const attrs = mark.attrs;
   const color = attrs?.color;
   const safeColor = color

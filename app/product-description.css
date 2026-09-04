@@ -344,6 +344,18 @@
   color: #d27c48;
 }
 
+.product-description-content .ProseMirror a,
+.product-rich-description a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
+.product-description-content .ProseMirror a {
+  cursor: pointer;
+}
+
 .product-rich-description {
   display: grid;
   gap: 18px;

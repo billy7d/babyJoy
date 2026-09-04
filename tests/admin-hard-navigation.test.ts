@@ -18,6 +18,14 @@ const rootSource = readFileSync(
   new URL("../app/root.tsx", import.meta.url),
   "utf8",
 );
+const footerSource = readFileSync(
+  new URL("../app/components/ui.tsx", import.meta.url),
+  "utf8",
+);
+const contentPageSource = readFileSync(
+  new URL("../app/components/content-pages.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("admin hard navigation với storefront gate", () => {
   it("cho phép React Router lấy manifest và giữ storefront API bị khóa", () => {
@@ -42,5 +50,17 @@ describe("admin hard navigation với storefront gate", () => {
     expect(rootSource).toContain('message: "route render error"');
     expect(rootSource).toContain("redactedRouteErrorPath");
     expect(rootSource).toContain("errorType");
+  });
+
+  it("giữ footer support links là SPA links và dùng chung content page UI", () => {
+    expect(footerSource).toContain('<Link to="/shipping-policy">');
+    expect(footerSource).toContain('<Link to="/buying-guide">');
+    expect(footerSource).toContain('<Link to="/returns-refunds">');
+    expect(footerSource).not.toContain('href="#shipping"');
+    expect(footerSource).not.toContain('href="#guide"');
+    expect(footerSource).not.toContain('href="#returns"');
+    expect(contentPageSource).toContain("export function PublicContentPage");
+    expect(contentPageSource).toContain("ProductDescriptionEditor");
+    expect(contentPageSource).toContain("ProductRichDescription");
   });
 });

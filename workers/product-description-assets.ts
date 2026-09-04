@@ -10,6 +10,7 @@ import {
   type ProductDescriptionAsset,
   type ProductDescriptionDocument,
 } from "../shared/product-description";
+import { isContentPageSlug } from "../shared/content-pages";
 import {
   ImageUploadError,
   uploadImmutableProductImage,
@@ -22,6 +23,7 @@ export type ProductDescriptionAssetRow = {
   r2Key: string;
   altText: string;
   claimedAt: string | null;
+  contentPageSlug?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -32,6 +34,8 @@ export class ProductDescriptionAssetError extends Error {
       | "DESCRIPTION_SCHEMA_UNAVAILABLE"
       | "INVALID_UPLOAD_SESSION"
       | "PRODUCT_NOT_FOUND"
+      | "CONTENT_PAGE_NOT_FOUND"
+      | "INVALID_OWNER"
       | "INVALID_ALT_TEXT"
       | "INVALID_ASSET_REFERENCE"
       | "ASSET_OWNERSHIP",
@@ -60,6 +64,17 @@ export async function hasProductDescriptionSchema(env: Env) {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'product_description_assets'",
     ).first<{ name: string }>();
     return Boolean(column?.name && table?.name);
+  } catch {
+    return false;
+  }
+}
+
+export async function hasContentPageAssetSchema(env: Env) {
+  try {
+    const column = await env.DB.prepare(
+      "SELECT name FROM pragma_table_info('product_description_assets') WHERE name = 'content_page_slug'",
+    ).first<{ name: string }>();
+    return Boolean(column?.name);
   } catch {
     return false;
   }
@@ -106,14 +121,27 @@ export async function uploadProductDescriptionAsset(
   productId: string | null,
   uploadSessionId: string,
   imageUrlStrategy: ProductImageUrlStrategy,
+  contentPageSlug: string | null = null,
 ) {
   if (!isSafeUploadSessionId(uploadSessionId))
     throw new ProductDescriptionAssetError("INVALID_UPLOAD_SESSION");
+  if (productId && contentPageSlug)
+    throw new ProductDescriptionAssetError("INVALID_OWNER");
   if (productId) {
     const product = await env.DB.prepare("SELECT id FROM products WHERE id = ?")
       .bind(productId)
       .first<{ id: string }>();
     if (!product) throw new ProductDescriptionAssetError("PRODUCT_NOT_FOUND");
+  }
+  if (contentPageSlug) {
+    if (!(await hasContentPageAssetSchema(env)) || !isContentPageSlug(contentPageSlug))
+      throw new ProductDescriptionAssetError("CONTENT_PAGE_NOT_FOUND");
+    const page = await env.DB.prepare(
+      "SELECT slug FROM content_pages WHERE slug = ?",
+    )
+      .bind(contentPageSlug)
+      .first<{ slug: string }>();
+    if (!page) throw new ProductDescriptionAssetError("CONTENT_PAGE_NOT_FOUND");
   }
   const altText = normalizeAltText(request.headers.get("x-alt-text"));
   let uploaded: { key: string };
@@ -128,11 +156,19 @@ export async function uploadProductDescriptionAsset(
   const now = new Date().toISOString();
   try {
     await env.DB.prepare(
-      `INSERT INTO product_description_assets
-       (id, product_id, upload_session_id, r2_key, alt_text, claimed_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+      contentPageSlug
+        ? `INSERT INTO product_description_assets
+         (id, product_id, content_page_slug, upload_session_id, r2_key, alt_text, claimed_at, created_at, updated_at)
+        VALUES (?, NULL, ?, ?, ?, ?, NULL, ?, ?)`
+        : `INSERT INTO product_description_assets
+         (id, product_id, upload_session_id, r2_key, alt_text, claimed_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
     )
-      .bind(id, null, uploadSessionId, uploaded.key, altText, now, now)
+      .bind(
+        ...(contentPageSlug
+          ? [id, contentPageSlug, uploadSessionId, uploaded.key, altText, now, now]
+          : [id, null, uploadSessionId, uploaded.key, altText, now, now]),
+      )
       .run();
   } catch (caught) {
     // Nếu D1 từ chối metadata thì không để lại object upload không thể sở hữu.
@@ -161,10 +197,13 @@ export async function validateProductDescriptionAssets(
   const nodes = getProductDescriptionImageNodes(document);
   const ids = [...new Set(nodes.map((node) => node.attrs.assetId))];
   if (!ids.length) return { rows: [] as ProductDescriptionAssetRow[], ids };
+  const pageAssetSchema = await hasContentPageAssetSchema(env);
   const result = await env.DB.prepare(
     `SELECT id, product_id AS productId, upload_session_id AS uploadSessionId,
       r2_key AS r2Key, alt_text AS altText, claimed_at AS claimedAt,
-      created_at AS createdAt, updated_at AS updatedAt
+      created_at AS createdAt, updated_at AS updatedAt${
+        pageAssetSchema ? ", content_page_slug AS contentPageSlug" : ""
+      }
      FROM product_description_assets WHERE id IN (${assetPlaceholders(ids)})`,
   )
     .bind(...ids)
@@ -173,9 +212,11 @@ export async function validateProductDescriptionAssets(
   for (const id of ids) {
     const row = byId.get(id);
     if (!row) throw new ProductDescriptionAssetError("INVALID_ASSET_REFERENCE");
-    const ownedByProduct = row.productId === productId;
+    const ownedByProduct =
+      row.productId === productId && row.contentPageSlug == null;
     const ownedBySession =
       row.productId === null &&
+      row.contentPageSlug == null &&
       uploadSessionId !== null &&
       row.uploadSessionId === uploadSessionId;
     if (!ownedByProduct && !ownedBySession)
@@ -193,6 +234,125 @@ export async function validateProductDescriptionAssets(
   return { rows: ids.map((id) => byId.get(id)!), ids };
 }
 
+export async function listContentPageDescriptionAssets(
+  env: Env,
+  slug: string,
+): Promise<ProductDescriptionAssetRow[]> {
+  if (!(await hasContentPageAssetSchema(env))) return [];
+  const rows = await env.DB.prepare(
+    `SELECT id, product_id AS productId, content_page_slug AS contentPageSlug,
+      upload_session_id AS uploadSessionId, r2_key AS r2Key, alt_text AS altText,
+      claimed_at AS claimedAt, created_at AS createdAt, updated_at AS updatedAt
+     FROM product_description_assets
+     WHERE content_page_slug = ? AND product_id IS NULL
+     ORDER BY created_at, id`,
+  )
+    .bind(slug)
+    .all<ProductDescriptionAssetRow>();
+  return rows.results;
+}
+
+export async function validateContentPageDescriptionAssets(
+  env: Env,
+  document: ProductDescriptionDocument,
+  slug: string,
+  uploadSessionId: string | null,
+) {
+  if (!(await hasContentPageAssetSchema(env)))
+    throw new ProductDescriptionAssetError("DESCRIPTION_SCHEMA_UNAVAILABLE");
+  if (uploadSessionId !== null && !isSafeUploadSessionId(uploadSessionId))
+    throw new ProductDescriptionAssetError("INVALID_UPLOAD_SESSION");
+  const nodes = getProductDescriptionImageNodes(document);
+  const ids = [...new Set(nodes.map((node) => node.attrs.assetId))];
+  if (!ids.length) return { rows: [] as ProductDescriptionAssetRow[], ids };
+  const result = await env.DB.prepare(
+    `SELECT id, product_id AS productId, content_page_slug AS contentPageSlug,
+      upload_session_id AS uploadSessionId, r2_key AS r2Key, alt_text AS altText,
+      claimed_at AS claimedAt, created_at AS createdAt, updated_at AS updatedAt
+     FROM product_description_assets WHERE id IN (${assetPlaceholders(ids)})`,
+  )
+    .bind(...ids)
+    .all<ProductDescriptionAssetRow>();
+  const byId = new Map(result.results.map((row) => [row.id, row]));
+  for (const id of ids) {
+    const row = byId.get(id);
+    if (!row) throw new ProductDescriptionAssetError("INVALID_ASSET_REFERENCE");
+    const ownedByPage =
+      row.productId === null && row.contentPageSlug === slug;
+    const ownedBySession =
+      row.productId === null &&
+      row.contentPageSlug == null &&
+      uploadSessionId !== null &&
+      row.uploadSessionId === uploadSessionId;
+    if (!ownedByPage && !ownedBySession)
+      throw new ProductDescriptionAssetError("ASSET_OWNERSHIP");
+    if (!isImmutableProductDescriptionImageKey(row.r2Key))
+      throw new ProductDescriptionAssetError("INVALID_ASSET_REFERENCE");
+    const object = await env.PRODUCT_IMAGES.head(row.r2Key);
+    if (
+      !object ||
+      object.size > MAX_STORED_IMAGE_BYTES ||
+      !isAllowedImageType(object.httpMetadata?.contentType ?? "")
+    )
+      throw new ProductDescriptionAssetError("INVALID_ASSET_REFERENCE");
+  }
+  return { rows: ids.map((id) => byId.get(id)!), ids };
+}
+
+export async function prepareContentPageDescriptionAssetPersistence(
+  env: Env,
+  slug: string,
+  document: ProductDescriptionDocument | null,
+  imageNodes: ProductDescriptionAssetRow[],
+  now: string,
+): Promise<ProductDescriptionAssetPersistence> {
+  const current = await env.DB.prepare(
+    `SELECT id, product_id AS productId, content_page_slug AS contentPageSlug,
+      upload_session_id AS uploadSessionId, r2_key AS r2Key, alt_text AS altText,
+      claimed_at AS claimedAt, created_at AS createdAt, updated_at AS updatedAt
+     FROM product_description_assets
+     WHERE content_page_slug = ? AND product_id IS NULL`,
+  )
+    .bind(slug)
+    .all<ProductDescriptionAssetRow>();
+  const referencedIds = new Set(imageNodes.map((row) => row.id));
+  const removed = current.results.filter((row) => !referencedIds.has(row.id));
+  const statements: D1PreparedStatement[] = [];
+  removed.forEach((row) => {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE product_description_assets
+         SET content_page_slug = NULL, claimed_at = NULL, updated_at = ?
+         WHERE id = ? AND content_page_slug = ? AND product_id IS NULL`,
+      ).bind(now, row.id, slug),
+    );
+  });
+  imageNodes.forEach((row) => {
+    const node = document
+      ? getProductDescriptionImageNodes(document).find(
+          (item) => item.attrs.assetId === row.id,
+        )
+      : undefined;
+    statements.push(
+      env.DB.prepare(
+        `UPDATE product_description_assets
+         SET content_page_slug = ?, claimed_at = ?, alt_text = ?, updated_at = ?
+         WHERE id = ? AND product_id IS NULL
+           AND (content_page_slug = ? OR (content_page_slug IS NULL AND upload_session_id = ?))`,
+      ).bind(
+        slug,
+        now,
+        node?.attrs.alt ?? row.altText,
+        now,
+        row.id,
+        slug,
+        row.uploadSessionId,
+      ),
+    );
+  });
+  return { statements, removed };
+}
+
 export type ProductDescriptionAssetPersistence = {
   statements: D1PreparedStatement[];
   removed: ProductDescriptionAssetRow[];
@@ -205,6 +365,7 @@ export async function prepareProductDescriptionAssetPersistence(
   imageNodes: ProductDescriptionAssetRow[],
   now: string,
 ): Promise<ProductDescriptionAssetPersistence> {
+  const pageAssetSchema = await hasContentPageAssetSchema(env);
   const current = await env.DB.prepare(
     `SELECT id, product_id AS productId, upload_session_id AS uploadSessionId,
       r2_key AS r2Key, alt_text AS altText, claimed_at AS claimedAt,
@@ -232,7 +393,7 @@ export async function prepareProductDescriptionAssetPersistence(
     statements.push(
       env.DB.prepare(
         `UPDATE product_description_assets
-         SET product_id = ?, claimed_at = ?, alt_text = ?, updated_at = ?
+         SET product_id = ?, ${pageAssetSchema ? "content_page_slug = NULL, " : ""}claimed_at = ?, alt_text = ?, updated_at = ?
          WHERE id = ? AND (product_id = ? OR (product_id IS NULL AND upload_session_id = ?))`,
       ).bind(
         productId,
@@ -273,13 +434,15 @@ export async function cleanupOrphanedProductDescriptionAssets(
   now = new Date(),
 ) {
   if (!(await hasProductDescriptionSchema(env))) return { count: 0 };
+  const pageAssetSchema = await hasContentPageAssetSchema(env);
   const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const result = await env.DB.prepare(
     `SELECT id, product_id AS productId, upload_session_id AS uploadSessionId,
       r2_key AS r2Key, alt_text AS altText, claimed_at AS claimedAt,
       created_at AS createdAt, updated_at AS updatedAt
      FROM product_description_assets
-     WHERE product_id IS NULL AND claimed_at IS NULL AND updated_at < ?
+     WHERE product_id IS NULL${pageAssetSchema ? " AND content_page_slug IS NULL" : ""}
+       AND claimed_at IS NULL AND updated_at < ?
      ORDER BY updated_at, id LIMIT 100`,
   )
     .bind(cutoff)
@@ -297,6 +460,7 @@ export function imageUploadErrorStatus(error: ProductDescriptionAssetError | Ima
     return 422;
   }
   if (error.code === "PRODUCT_NOT_FOUND") return 404;
+  if (error.code === "CONTENT_PAGE_NOT_FOUND") return 404;
   if (error.code === "ASSET_OWNERSHIP") return 403;
   if (error.code === "DESCRIPTION_SCHEMA_UNAVAILABLE") return 409;
   return 422;
