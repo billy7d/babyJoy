@@ -15,6 +15,7 @@ import {
   PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT,
   PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT,
   PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS,
+  PRODUCT_DESCRIPTION_FONT_SIZES,
   type ProductDescriptionAsset,
   type ProductDescriptionColorToken,
   type ProductDescriptionDocument,
@@ -438,6 +439,11 @@ export function ProductDescriptionEditor({
     currentFontSize === "mixed"
       ? null
       : productDescriptionFontSizeToPoints(currentFontSize);
+  const currentPointIsPreset =
+    currentPointSize !== null &&
+    (PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS as readonly number[]).includes(
+      currentPointSize,
+    );
 
   useEffect(() => {
     if (fontSizeEditingRef.current) return;
@@ -507,7 +513,7 @@ export function ProductDescriptionEditor({
             type="text"
             inputMode="decimal"
             autoComplete="off"
-            aria-label="Kích thước chữ"
+            aria-label="Nhập kích thước chữ"
             aria-invalid={fontSizeInvalid}
             aria-describedby={fontSizeInvalid ? "product-description-font-size-help" : undefined}
             placeholder={currentFontSize === "mixed" ? "—" : undefined}
@@ -539,22 +545,37 @@ export function ProductDescriptionEditor({
             }}
           />
           <select
-            aria-label="Chọn kích thước chữ"
-            value=""
+            aria-label="Kích thước chữ"
+            value={currentFontSize}
             disabled={!editor}
             onChange={(event) => {
-              const fontSize = createProductDescriptionPointFontSize(Number(event.target.value));
-              if (!fontSize) return;
-              setFontSizeDraft(event.target.value);
+              const fontSize = event.target.value as ProductDescriptionFontSize;
+              if (!isProductDescriptionFontSize(fontSize)) return;
+              const points = productDescriptionFontSizeToPoints(fontSize);
+              setFontSizeDraft(points === null ? "" : String(points));
               setFontSizeInvalid(false);
               setStatus("");
               setFontSize(fontSize);
             }}
           >
-            <option value="" disabled hidden>⌄</option>
+            {currentFontSize === "mixed" && (
+              <option value="mixed" disabled>
+                Nhiều kích thước
+              </option>
+            )}
+            {currentPointSize !== null && !currentPointIsPreset && (
+              <option value={`${currentPointSize}pt`}>
+                {currentPointSize}
+              </option>
+            )}
             {PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS.map((points) => (
-              <option key={`${points}pt`} value={String(points)}>
+              <option key={`${points}pt`} value={`${points}pt`}>
                 {points}
+              </option>
+            ))}
+            {PRODUCT_DESCRIPTION_FONT_SIZES.map((size) => (
+              <option key={`legacy-${size}`} value={size} hidden>
+                {size === "small" ? "10.5" : size === "normal" ? "12" : size === "large" ? "15" : "18"}
               </option>
             ))}
           </select>
