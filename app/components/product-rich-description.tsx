@@ -9,6 +9,7 @@ import type {
 import {
   isExternalProductDescriptionLink,
   normalizeProductDescriptionDocument,
+  productDescriptionColorToHex,
   parseProductDescriptionPointFontSize,
   PRODUCT_DESCRIPTION_COLOR_TOKENS,
 } from "../../shared/product-description";
@@ -18,17 +19,6 @@ type ProductRichDescriptionProps = {
   assets?: ProductDescriptionAsset[];
   fallback: string;
 };
-
-const colorValues: Record<string, string> = {
-  primary: "#7a4b2a",
-  muted: "#8d8178",
-  dark: "#2e241f",
-  accent: "#d27c48",
-};
-
-function isSafeHexColor(value: string) {
-  return /^#[0-9a-f]{3,4}(?:[0-9a-f]{2})?$/i.test(value);
-}
 
 function textStyleClass(attrs: ProductDescriptionTextStyleAttributes | undefined) {
   if (!attrs) return "";
@@ -63,9 +53,8 @@ function markText(
   }
   const attrs = mark.attrs;
   const color = attrs?.color;
-  const safeColor = color
-    ? colorValues[color] ?? (isSafeHexColor(color) ? color : undefined)
-    : undefined;
+  // Chỉ đưa màu đã được normalizer kiểm tra vào inline style của public renderer.
+  const safeColor = productDescriptionColorToHex(color);
   const pointSize = attrs?.fontSize
     ? parseProductDescriptionPointFontSize(attrs.fontSize)
     : null;

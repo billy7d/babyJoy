@@ -108,14 +108,37 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.type(marker);
   await page.keyboard.press("Shift+Home");
+  const colorControl = page.getByRole("button", { name: "Màu chữ" });
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  const colorHexInput = page.getByRole("textbox", { name: "Mã màu HEX" });
+  await colorHexInput.fill("A45B3D");
+  await colorHexInput.press("Enter");
+  await page.waitForTimeout(120);
+  assert(
+    (await editor.locator('[data-color="#A45B3D"]').filter({ hasText: marker }).count()) === 1,
+    "CMS editor không apply được HEX custom cho selection",
+  );
+  const markerParagraph = editor.locator("p").filter({ hasText: marker }).first();
+  await markerParagraph.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
   page.once("dialog", (dialog) => dialog.accept("https://example.com"));
   await page.getByRole("button", { name: "Thêm liên kết" }).click();
   assert(
     await editor.locator('a[href="https://example.com"]').count() === 1,
     "Admin editor không áp dụng được liên kết an toàn",
   );
+  await page.waitForTimeout(120);
   await page.getByRole("button", { name: "LƯU THAY ĐỔI" }).click();
   await page.getByRole("status").filter({ hasText: "Đã lưu thay đổi" }).waitFor();
+
+  await page.goto(`${baseUrl}/admin/content-pages/shipping-policy/edit`, { waitUntil: "domcontentloaded" });
+  await page.locator(".product-description-content .ProseMirror").waitFor();
+  assert(
+    (await page.locator('.product-description-content [data-color="#A45B3D"]').filter({ hasText: marker }).count()) === 1,
+    "CMS editor reload mất HEX custom",
+  );
 
   await page.goto(`${baseUrl}/shipping-policy`, { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: `${originalPage.title} E2E` }).waitFor();
@@ -130,6 +153,9 @@ try {
     await publicLink.getAttribute("rel") === "noopener noreferrer",
     "Liên kết ngoài thiếu rel an toàn",
   );
+  const publicColor = page.locator('.product-rich-description [data-color="#A45B3D"]').filter({ hasText: marker });
+  assert(await publicColor.count() === 1, "CMS storefront mất HEX custom");
+  assert(await publicColor.evaluate((node) => getComputedStyle(node).color) === "rgb(164, 91, 61)", "CMS storefront render sai HEX custom");
   await page.reload({ waitUntil: "domcontentloaded" });
   assert(
     (await page.locator(".product-rich-description").innerText()).includes(marker),

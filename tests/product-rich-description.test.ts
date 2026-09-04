@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  addProductDescriptionRecentColor,
   createProductDescriptionPointFontSize,
   extractProductDescriptionText,
+  normalizeProductDescriptionColor,
   normalizeProductDescriptionDocument,
+  normalizeProductDescriptionHexColor,
   normalizeProductDescriptionLinkHref,
   parseProductDescriptionPointFontSize,
   productDescriptionFontSizeToPoints,
@@ -12,6 +15,54 @@ import {
 const validImageId = "pda_123e4567-e89b-12d3-a456-426614174000";
 
 describe("Product rich description validator", () => {
+  it("chuẩn hóa HEX cho màu chữ và từ chối giá trị không an toàn", () => {
+    expect(normalizeProductDescriptionHexColor("#FFFFFF")).toBe("#FFFFFF");
+    expect(normalizeProductDescriptionHexColor("FFFFFF")).toBe("#FFFFFF");
+    expect(normalizeProductDescriptionHexColor("#fff")).toBe("#FFFFFF");
+    expect(normalizeProductDescriptionHexColor("a45b3d")).toBe("#A45B3D");
+    for (const invalidColor of ["#GGGGGG", "12345", "red123", "#FFFFFF80"])
+      expect(normalizeProductDescriptionHexColor(invalidColor)).toBeNull();
+    expect(normalizeProductDescriptionColor("accent")).toBe("accent");
+
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Màu tùy chỉnh",
+              marks: [{ type: "textStyle", attrs: { color: "#b66542" } }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok)
+      expect(result.document.content[0]).toMatchObject({
+        content: [
+          {
+            marks: [{ type: "textStyle", attrs: { color: "#B66542" } }],
+          },
+        ],
+      });
+  });
+
+  it("deduplicate recent colors và giới hạn tám màu mới nhất", () => {
+    const current = Array.from({ length: 8 }, (_, index) =>
+      `#${String(index + 1).padStart(2, "0")}0000`,
+    );
+    expect(addProductDescriptionRecentColor(current, "#010000")).toEqual([
+      "#010000",
+      ...current.slice(1),
+    ]);
+    expect(addProductDescriptionRecentColor(current, "#A45B3D")).toHaveLength(8);
+    expect(addProductDescriptionRecentColor(current, "#GGGGGG")).toEqual(current);
+  });
+
   it("chấp nhận document rỗng và heading H1-H4", () => {
     expect(
       normalizeProductDescriptionDocument({
@@ -253,6 +304,75 @@ describe("Product rich description validator", () => {
       { assetIds: new Set([validImageId]) },
     );
     expect(result.ok).toBe(true);
+  });
+
+  it("đổi và xóa màu mà vẫn giữ bold, italic và link", () => {
+    const colored = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Giữ định dạng",
+              marks: [
+                { type: "bold" },
+                { type: "italic" },
+                { type: "link", attrs: { href: "https://example.com" } },
+                { type: "textStyle", attrs: { color: "#a45b3d" } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(colored.ok).toBe(true);
+    if (colored.ok)
+      expect(colored.document.content[0]).toMatchObject({
+        content: [
+          {
+            marks: [
+              { type: "bold" },
+              { type: "italic" },
+              { type: "link" },
+              { type: "textStyle", attrs: { color: "#A45B3D" } },
+            ],
+          },
+        ],
+      });
+
+    const reset = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Bỏ màu",
+              marks: [
+                { type: "bold" },
+                { type: "italic" },
+                { type: "link", attrs: { href: "https://example.com" } },
+                { type: "textStyle", attrs: { color: null } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(reset.ok).toBe(true);
+    if (reset.ok)
+      expect(reset.document.content[0]).toMatchObject({
+        content: [
+          {
+            marks: [{ type: "bold" }, { type: "italic" }, { type: "link" }],
+          },
+        ],
+      });
   });
 
   it("từ chối màu, cỡ chữ, alignment và asset không an toàn", () => {

@@ -11,16 +11,17 @@ import {
   isExternalProductDescriptionLink,
   isProductDescriptionFontSize,
   normalizeProductDescriptionLinkHref,
+  normalizeProductDescriptionColor,
   normalizeProductDescriptionDocument,
   parseProductDescriptionPointFontSize,
+  productDescriptionColorToHex,
   productDescriptionFontSizeToPoints,
-  PRODUCT_DESCRIPTION_COLOR_TOKENS,
   PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT,
   PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT,
   PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS,
   PRODUCT_DESCRIPTION_FONT_SIZES,
   type ProductDescriptionAsset,
-  type ProductDescriptionColorToken,
+  type ProductDescriptionColorValue,
   type ProductDescriptionDocument,
   type ProductDescriptionFontSize,
 } from "../../shared/product-description";
@@ -34,6 +35,7 @@ import {
   ProductDescriptionImage,
   ProductDescriptionImageNodeContext,
 } from "./product-description-image-node";
+import { TextColorControl } from "./text-color-control";
 import { Icon } from "./ui";
 
 const ProductDescriptionSemanticTextStyle = TextStyle.extend({
@@ -58,9 +60,34 @@ const ProductDescriptionSemanticTextStyle = TextStyle.extend({
       },
       color: {
         default: null,
-        parseHTML: (element: HTMLElement) => element.getAttribute("data-color"),
-        renderHTML: (attributes: { color?: string | null }) =>
-          attributes.color ? { "data-color": attributes.color } : {},
+        parseHTML: (element: HTMLElement) =>
+          normalizeProductDescriptionColor(
+            element.getAttribute("data-color") ?? element.style.color,
+          ),
+        renderHTML: (attributes: {
+          fontSize?: ProductDescriptionFontSize | null;
+          color?: ProductDescriptionColorValue | null;
+        }) => {
+          const pointSize = parseProductDescriptionPointFontSize(
+            attributes.fontSize,
+          );
+          // Gộp các style an toàn vào một thuộc tính để fontSize và color không ghi đè nhau.
+          const fontSizeStyle =
+            pointSize !== null ? `font-size: ${pointSize}pt;` : "";
+          const normalizedColor = normalizeProductDescriptionColor(
+            attributes.color,
+          );
+          const colorHex = productDescriptionColorToHex(normalizedColor);
+          const colorStyle = colorHex ? `color: ${colorHex};` : "";
+          const style = `${fontSizeStyle}${colorStyle}`;
+          return {
+            ...(attributes.fontSize
+              ? { "data-font-size": attributes.fontSize }
+              : {}),
+            ...(normalizedColor ? { "data-color": normalizedColor } : {}),
+            ...(style ? { style } : {}),
+          };
+        },
       },
     };
   },
@@ -160,6 +187,13 @@ type ProductDescriptionSelectionSnapshot = {
 type ProductDescriptionFontSizeControlValue =
   | ProductDescriptionFontSize
   | "mixed";
+
+function textStyleColorFromMarks(
+  marks: readonly { type: { name: string }; attrs: { color?: unknown } }[],
+) {
+  const textStyle = marks.find((mark) => mark.type.name === "textStyle");
+  return normalizeProductDescriptionColor(textStyle?.attrs.color);
+}
 
 export function ProductDescriptionEditor({
   value,
@@ -326,7 +360,7 @@ export function ProductDescriptionEditor({
 
   const applyTextStyle = (attrs: {
     fontSize?: ProductDescriptionFontSize | null;
-    color?: ProductDescriptionColorToken | null;
+    color?: ProductDescriptionColorValue | null;
   }) => {
     if (!editor) return;
     const chain = editor.chain().focus();
@@ -375,10 +409,7 @@ export function ProductDescriptionEditor({
     ) {
       chain.setTextSelection(savedSelection);
     }
-    chain.setMark("textStyle", attrs);
-    if (savedSelection.from !== savedSelection.to || attrs.fontSize === null) {
-      chain.removeEmptyTextStyle();
-    }
+    chain.setMark("textStyle", attrs).removeEmptyTextStyle();
     chain.run();
     appliedTextStyleSelectionRef.current = savedSelection;
     if (savedSelection.from !== savedSelection.to) {
@@ -401,7 +432,7 @@ export function ProductDescriptionEditor({
   const setFontSize = (fontSize: ProductDescriptionFontSize) => {
     applyTextStyle({ fontSize: fontSize === "normal" ? null : fontSize });
   };
-  const setColor = (color: ProductDescriptionColorToken | null) => {
+  const setColor = (color: ProductDescriptionColorValue | null) => {
     applyTextStyle({ color });
   };
   const preventToolbarFocus = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -440,9 +471,31 @@ export function ProductDescriptionEditor({
   const currentHeading = [1, 2, 3, 4].find((level) =>
     editor?.isActive("heading", { level }),
   ) as 1 | 2 | 3 | 4 | undefined;
-  const currentColor = editor?.getAttributes("textStyle").color as
-    | ProductDescriptionColorToken
-    | undefined;
+  const currentColor = (() => {
+    if (!editor) return null;
+    const { from, to, empty } = editor.state.selection;
+    if (empty) {
+      const appliedSelection = appliedTextStyleSelectionRef.current;
+      const marks =
+        appliedSelection &&
+        appliedSelection.from === from &&
+        appliedSelection.to === to
+          ? editor.state.storedMarks ?? editor.state.selection.$head.marks()
+          : editor.state.selection.$head.marks();
+      return textStyleColorFromMarks(marks);
+    }
+    let resolved: ProductDescriptionColorValue | null | undefined;
+    let hasText = false;
+    let mixed = false;
+    editor.state.doc.nodesBetween(from, to, (node) => {
+      if (!node.isText) return;
+      hasText = true;
+      const color = textStyleColorFromMarks(node.marks);
+      if (resolved === undefined) resolved = color;
+      else if (resolved !== color) mixed = true;
+    });
+    return mixed ? "mixed" as const : hasText ? resolved ?? null : null;
+  })();
   const currentFontSize: ProductDescriptionFontSizeControlValue = (() => {
     if (!editor) return "normal";
     const { from, to, empty } = editor.state.selection;
@@ -640,13 +693,12 @@ export function ProductDescriptionEditor({
         <span id="product-description-font-size-help" className="sr-only">
           Nhập kích thước từ {PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT} đến {PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT} pt, theo bước 0,5 pt.
         </span>
-        <div className="product-description-color-menu" aria-label="Màu chữ">
-          <span className="sr-only">Màu chữ</span>
-          <button type="button" aria-label="Màu mặc định" aria-pressed={!currentColor} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => setColor(null)}>A</button>
-          {PRODUCT_DESCRIPTION_COLOR_TOKENS.map((color) => (
-            <button key={color} type="button" className={`color-${color}`} aria-label={`Màu ${color}`} aria-pressed={currentColor === color} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => setColor(color)}>{color === "primary" ? "Nâu" : color === "muted" ? "Nhạt" : color === "dark" ? "Đậm" : "Nhấn"}</button>
-          ))}
-        </div>
+        <TextColorControl
+          currentColor={currentColor}
+          disabled={!editor}
+          onApply={setColor}
+          onReset={() => setColor(null)}
+        />
         <div className="product-description-toolbar-group" aria-label="Căn chỉnh">
           {(["left", "center", "right", "justify"] as const).map((alignment) => (
             <button key={alignment} type="button" aria-label={`Căn ${alignment === "left" ? "trái" : alignment === "center" ? "giữa" : alignment === "right" ? "phải" : "đều"}`} aria-pressed={editor?.isActive({ textAlign: alignment })} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().setTextAlign(alignment).run()}>
