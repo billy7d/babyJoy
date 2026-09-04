@@ -1,10 +1,11 @@
 .product-description-content .ProseMirror p,
 .product-description-content .ProseMirror ul,
 .product-description-content .ProseMirror ol {
-  font-size: 1rem;
+  font-size: 12pt;
   line-height: 1.65;
 }
 
+.product-description-content .ProseMirror h1,
 .product-description-content .ProseMirror h2,
 .product-description-content .ProseMirror h3,
 .product-description-content .ProseMirror h4 {
@@ -15,24 +16,30 @@
   overflow-wrap: anywhere;
 }
 
+.product-description-content .ProseMirror h1 {
+  margin: 1.7rem 0 0.75rem;
+  font-size: 28pt;
+}
+
 .product-description-content .ProseMirror h2 {
   margin: 1.5rem 0 0.65rem;
-  font-size: clamp(1.75rem, 3vw, 2.25rem);
+  font-size: 24pt;
 }
 
 .product-description-content .ProseMirror h3 {
   margin: 1.3rem 0 0.55rem;
-  font-size: clamp(1.45rem, 2.5vw, 1.8rem);
+  font-size: 18pt;
 }
 
 .product-description-content .ProseMirror h4 {
   margin: 1.1rem 0 0.45rem;
-  font-size: clamp(1.2rem, 2vw, 1.45rem);
+  font-size: 14pt;
 }
 
-/* Heading semantics own the visual hierarchy. Inline font-size marks must not
-   shrink heading text back to paragraph-sized content. Color/emphasis marks
-   still work normally. */
+/* Heading semantics own the default visual hierarchy. Legacy semantic font-size
+   marks must not shrink heading text back to paragraph-sized content. New point
+   sizes render as an explicit inline style, matching Word-style manual overrides. */
+.product-description-content .ProseMirror h1 [data-font-size],
 .product-description-content .ProseMirror h2 [data-font-size],
 .product-description-content .ProseMirror h3 [data-font-size],
 .product-description-content .ProseMirror h4 [data-font-size] {
@@ -45,16 +52,20 @@
   letter-spacing: -0.018em;
 }
 
+.product-rich-heading-1 {
+  font-size: 28pt;
+}
+
 .product-rich-heading-2 {
-  font-size: clamp(1.75rem, 3vw, 2.25rem);
+  font-size: 24pt;
 }
 
 .product-rich-heading-3 {
-  font-size: clamp(1.45rem, 2.5vw, 1.8rem);
+  font-size: 18pt;
 }
 
 .product-rich-heading-4 {
-  font-size: clamp(1.2rem, 2vw, 1.45rem);
+  font-size: 14pt;
 }
 
 .product-rich-heading .product-rich-font-small,
@@ -65,6 +76,10 @@
 }
 
 @media (max-width: 639px) {
+  .product-description-content .ProseMirror h1 {
+    margin-top: 1.4rem;
+  }
+
   .product-description-content .ProseMirror h2 {
     margin-top: 1.25rem;
   }

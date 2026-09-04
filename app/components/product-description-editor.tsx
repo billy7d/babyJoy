@@ -6,8 +6,15 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import Placeholder from "@tiptap/extension-placeholder";
 import {
+  createProductDescriptionPointFontSize,
+  isProductDescriptionFontSize,
   normalizeProductDescriptionDocument,
+  parseProductDescriptionPointFontSize,
+  productDescriptionFontSizeToPoints,
   PRODUCT_DESCRIPTION_COLOR_TOKENS,
+  PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT,
+  PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT,
+  PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS,
   PRODUCT_DESCRIPTION_FONT_SIZES,
   type ProductDescriptionAsset,
   type ProductDescriptionColorToken,
@@ -33,10 +40,18 @@ const ProductDescriptionSemanticTextStyle = TextStyle.extend({
         default: null,
         parseHTML: (element: HTMLElement) =>
           element.getAttribute("data-font-size"),
-        renderHTML: (attributes: { fontSize?: string | null }) =>
-          attributes.fontSize
-            ? { "data-font-size": attributes.fontSize }
-            : {},
+        renderHTML: (attributes: { fontSize?: string | null }) => {
+          if (!attributes.fontSize) return {};
+          const pointSize = parseProductDescriptionPointFontSize(
+            attributes.fontSize,
+          );
+          return {
+            "data-font-size": attributes.fontSize,
+            ...(pointSize !== null
+              ? { style: `font-size: ${pointSize}pt;` }
+              : {}),
+          };
+        },
       },
       color: {
         default: null,
@@ -55,7 +70,7 @@ const PRODUCT_DESCRIPTION_EDITOR_EXTENSIONS = [
     codeBlock: false,
     dropcursor: false,
     gapcursor: false,
-    heading: { levels: [2, 3, 4] },
+    heading: { levels: [1, 2, 3, 4] },
     horizontalRule: false,
     link: false,
     strike: false,
@@ -74,6 +89,16 @@ const PRODUCT_DESCRIPTION_EDITOR_EXTENSIONS = [
   }),
   ProductDescriptionImage,
 ];
+
+const PRODUCT_DESCRIPTION_HEADING_DEFAULT_FONT_SIZE: Record<
+  1 | 2 | 3 | 4,
+  ProductDescriptionFontSize
+> = {
+  1: "28pt",
+  2: "24pt",
+  3: "18pt",
+  4: "14pt",
+};
 
 export type ProductDescriptionEditorProps = {
   value: ProductDescriptionDocument;
@@ -125,15 +150,6 @@ type ProductDescriptionFontSizeControlValue =
   | ProductDescriptionFontSize
   | "mixed";
 
-function isProductDescriptionFontSize(
-  value: unknown,
-): value is ProductDescriptionFontSize {
-  return (
-    typeof value === "string" &&
-    PRODUCT_DESCRIPTION_FONT_SIZES.includes(value as ProductDescriptionFontSize)
-  );
-}
-
 export function ProductDescriptionEditor({
   value,
   productId,
@@ -144,6 +160,10 @@ export function ProductDescriptionEditor({
 }: ProductDescriptionEditorProps) {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
+  const [fontSizeDraft, setFontSizeDraft] = useState("");
+  const [fontSizeInvalid, setFontSizeInvalid] = useState(false);
+  const fontSizeEditingRef = useRef(false);
+  const skipNextFontSizeBlurRef = useRef(false);
   const selectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const appliedTextStyleSelectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const locallyEmittedDocumentsRef = useRef(
@@ -370,9 +390,9 @@ export function ProductDescriptionEditor({
   const setColor = (color: ProductDescriptionColorToken | null) => {
     applyTextStyle({ color });
   };
-  const currentHeading = [2, 3, 4].find((level) =>
+  const currentHeading = [1, 2, 3, 4].find((level) =>
     editor?.isActive("heading", { level }),
-  );
+  ) as 1 | 2 | 3 | 4 | undefined;
   const currentColor = editor?.getAttributes("textStyle").color as
     | ProductDescriptionColorToken
     | undefined;
@@ -389,23 +409,74 @@ export function ProductDescriptionEditor({
           : editor.state.selection.$head.marks();
       const fontSize = marks.find((mark) => mark.type.name === "textStyle")?.attrs
         .fontSize;
-      return isProductDescriptionFontSize(fontSize) ? fontSize : "normal";
+      if (isProductDescriptionFontSize(fontSize)) return fontSize;
+      return currentHeading
+        ? PRODUCT_DESCRIPTION_HEADING_DEFAULT_FONT_SIZE[currentHeading]
+        : "normal";
     }
     let resolved: ProductDescriptionFontSize | undefined;
     let mixed = false;
-    editor.state.doc.nodesBetween(from, to, (node) => {
+    editor.state.doc.nodesBetween(from, to, (node, _pos, parent) => {
       if (!node.isText) return;
       const fontSize = node.marks.find(
         (mark) => mark.type.name === "textStyle",
       )?.attrs.fontSize;
+      const parentHeadingLevel =
+        parent?.type.name === "heading" &&
+        [1, 2, 3, 4].includes(parent.attrs.level)
+          ? (parent.attrs.level as 1 | 2 | 3 | 4)
+          : undefined;
       const normalized = isProductDescriptionFontSize(fontSize)
         ? fontSize
-        : "normal";
+        : parentHeadingLevel
+          ? PRODUCT_DESCRIPTION_HEADING_DEFAULT_FONT_SIZE[parentHeadingLevel]
+          : "normal";
       if (resolved === undefined) resolved = normalized;
       else if (resolved !== normalized) mixed = true;
     });
     return mixed ? "mixed" : resolved ?? "normal";
   })();
+  const currentPointSize =
+    currentFontSize === "mixed"
+      ? null
+      : productDescriptionFontSizeToPoints(currentFontSize);
+  const currentPointIsPreset =
+    currentPointSize !== null &&
+    (PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS as readonly number[]).includes(
+      currentPointSize,
+    );
+
+  useEffect(() => {
+    if (fontSizeEditingRef.current) return;
+    setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+    setFontSizeInvalid(false);
+  }, [currentFontSize, currentPointSize]);
+
+  const commitFontSizeInput = (rawValue: string) => {
+    const normalizedInput = rawValue
+      .trim()
+      .replace(",", ".")
+      .replace(/\s*pt$/i, "");
+    if (!normalizedInput) {
+      setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+      setFontSizeInvalid(false);
+      return false;
+    }
+    const fontSize = createProductDescriptionPointFontSize(Number(normalizedInput));
+    if (!fontSize) {
+      setFontSizeInvalid(true);
+      setStatus(
+        `Kích thước chữ phải từ ${PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT} đến ${PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT} pt, theo bước 0,5 pt.`,
+      );
+      return false;
+    }
+    const points = productDescriptionFontSizeToPoints(fontSize);
+    setFontSizeDraft(points === null ? normalizedInput : String(points));
+    setFontSizeInvalid(false);
+    setStatus("");
+    setFontSize(fontSize);
+    return true;
+  };
 
   return (
     <div className="product-description-editor">
@@ -419,10 +490,11 @@ export function ProductDescriptionEditor({
             onChange={(event) => {
               const value = event.target.value;
               if (value === "paragraph") editor?.chain().focus().setParagraph().run();
-              else editor?.chain().focus().toggleHeading({ level: Number(value) as 2 | 3 | 4 }).run();
+              else editor?.chain().focus().toggleHeading({ level: Number(value) as 1 | 2 | 3 | 4 }).run();
             }}
           >
             <option value="paragraph">Đoạn văn</option>
+            <option value="1">Heading 1</option>
             <option value="2">Heading 2</option>
             <option value="3">Heading 3</option>
             <option value="4">Heading 4</option>
@@ -433,26 +505,93 @@ export function ProductDescriptionEditor({
           <button type="button" aria-label="Nghiêng" aria-pressed={editor?.isActive("italic")} disabled={!editor} onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
           <button type="button" aria-label="Gạch chân" aria-pressed={editor?.isActive("underline")} disabled={!editor} onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
         </div>
-        <label className="product-description-toolbar-select">
-          <span className="sr-only">Kích thước chữ</span>
-          <select
+        <div
+          className={`product-description-font-size-combobox${fontSizeInvalid ? " is-invalid" : ""}`}
+          title="Kích thước chữ theo point (pt)"
+        >
+          <span className="sr-only">Kích thước chữ theo point</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
             aria-label="Kích thước chữ"
-            value={currentFontSize ?? "normal"}
+            aria-invalid={fontSizeInvalid}
+            aria-describedby={fontSizeInvalid ? "product-description-font-size-help" : undefined}
+            placeholder={currentFontSize === "mixed" ? "—" : undefined}
+            value={fontSizeDraft}
             disabled={!editor}
-            onChange={(event) => setFontSize(event.target.value as ProductDescriptionFontSize)}
+            onFocus={(event) => {
+              fontSizeEditingRef.current = true;
+              event.currentTarget.select();
+            }}
+            onChange={(event) => {
+              setFontSizeDraft(event.target.value);
+              if (fontSizeInvalid) setFontSizeInvalid(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                // Tránh blur sau focus editor áp dụng cùng một format lần thứ hai.
+                skipNextFontSizeBlurRef.current = true;
+                commitFontSizeInput(event.currentTarget.value);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+                setFontSizeInvalid(false);
+                fontSizeEditingRef.current = false;
+                // Escape chỉ hoàn tác bản nháp, tuyệt đối không thay đổi document.
+                skipNextFontSizeBlurRef.current = true;
+                event.currentTarget.blur();
+              }
+            }}
+            onBlur={(event) => {
+              if (skipNextFontSizeBlurRef.current) {
+                skipNextFontSizeBlurRef.current = false;
+                return;
+              }
+              commitFontSizeInput(event.currentTarget.value);
+              fontSizeEditingRef.current = false;
+            }}
+          />
+          <select
+            aria-label="Chọn kích thước chữ"
+            value={currentFontSize}
+            disabled={!editor}
+            onChange={(event) => {
+              const fontSize = event.target.value as ProductDescriptionFontSize;
+              if (!isProductDescriptionFontSize(fontSize)) return;
+              const points = productDescriptionFontSizeToPoints(fontSize);
+              setFontSizeDraft(points === null ? "" : String(points));
+              setFontSizeInvalid(false);
+              setStatus("");
+              setFontSize(fontSize);
+            }}
           >
             {currentFontSize === "mixed" && (
               <option value="mixed" disabled>
                 Nhiều kích thước
               </option>
             )}
+            {currentPointSize !== null && !currentPointIsPreset && (
+              <option value={`${currentPointSize}pt`}>
+                {currentPointSize}
+              </option>
+            )}
+            {PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS.map((points) => (
+              <option key={`${points}pt`} value={`${points}pt`}>
+                {points}
+              </option>
+            ))}
             {PRODUCT_DESCRIPTION_FONT_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size === "small" ? "Chữ nhỏ" : size === "normal" ? "Chữ thường" : size === "large" ? "Chữ lớn" : "Chữ rất lớn"}
+              <option key={`legacy-${size}`} value={size} hidden>
+                {size === "small" ? "10.5" : size === "normal" ? "12" : size === "large" ? "15" : "18"}
               </option>
             ))}
           </select>
-        </label>
+        </div>
+        <span id="product-description-font-size-help" className="sr-only">
+          Nhập kích thước từ {PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT} đến {PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT} pt, theo bước 0,5 pt.
+        </span>
         <div className="product-description-color-menu" aria-label="Màu chữ">
           <span className="sr-only">Màu chữ</span>
           <button type="button" aria-label="Màu mặc định" aria-pressed={!currentColor} disabled={!editor} onClick={() => setColor(null)}>A</button>

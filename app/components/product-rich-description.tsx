@@ -8,6 +8,7 @@ import type {
 } from "../../shared/product-description";
 import {
   normalizeProductDescriptionDocument,
+  parseProductDescriptionPointFontSize,
   PRODUCT_DESCRIPTION_COLOR_TOKENS,
 } from "../../shared/product-description";
 
@@ -50,12 +51,23 @@ function markText(
   const safeColor = color
     ? colorValues[color] ?? (isSafeHexColor(color) ? color : undefined)
     : undefined;
+  const pointSize = attrs?.fontSize
+    ? parseProductDescriptionPointFontSize(attrs.fontSize)
+    : null;
+  const style =
+    safeColor || pointSize !== null
+      ? {
+          ...(safeColor ? { color: safeColor } : {}),
+          ...(pointSize !== null ? { fontSize: `${pointSize}pt` } : {}),
+        }
+      : undefined;
   return (
     <span
       key={key}
       className={textStyleClass(attrs)}
       data-color={color ?? undefined}
-      style={safeColor ? { color: safeColor } : undefined}
+      data-font-size={attrs?.fontSize ?? undefined}
+      style={style}
     >
       {value}
     </span>
@@ -104,6 +116,7 @@ function RichBlock({
       style: blockAlignmentStyle(node.attrs.textAlign),
       children: renderInline(node.content ?? [], prefix),
     };
+    if (node.attrs.level === 1) return <h1 {...props} />;
     if (node.attrs.level === 2) return <h2 {...props} />;
     if (node.attrs.level === 3) return <h3 {...props} />;
     return <h4 {...props} />;

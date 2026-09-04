@@ -83,9 +83,15 @@ try {
   await variant.locator("select").selectOption("AVAILABLE");
 
   const editor = page.locator(".product-description-content .ProseMirror");
-  const fontSizeSelect = page.locator('select[aria-label="Kích thước chữ"]');
+  const fontSizeInput = page.locator('input[aria-label="Kích thước chữ"]');
+  const fontSizeSelect = page.locator('select[aria-label="Chọn kích thước chữ"]');
   await editor.click();
+  await page.locator('select[aria-label="Kiểu đoạn"]').selectOption("1");
+  assert((await fontSizeInput.inputValue()) === "28", "H1 không hiển thị point mặc định 28");
+  await page.keyboard.type("E2E Rich Heading One");
+  await page.keyboard.press("Enter");
   await page.locator('select[aria-label="Kiểu đoạn"]').selectOption("2");
+  assert((await fontSizeInput.inputValue()) === "24", "H2 không hiển thị point mặc định 24");
   await page.keyboard.type("E2E Rich Heading");
   await page.keyboard.press("Enter");
   await page.locator('select[aria-label="Kiểu đoạn"]').selectOption("paragraph");
@@ -107,6 +113,10 @@ try {
   await page.keyboard.type("Image anchor C");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Partial formatting sample");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Comma format sample");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Custom 27.5 format sample");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Color and size retention");
   await page.keyboard.press("Enter");
@@ -320,19 +330,44 @@ try {
   await page.keyboard.up("Shift");
   const partialBrowserSelection = await page.evaluate(() => window.getSelection()?.toString() ?? "");
   assert(partialBrowserSelection === "Partial", `Browser selection partial sai: ${JSON.stringify(partialBrowserSelection)}`);
-  await fontSizeSelect.selectOption("large");
+  await fontSizeInput.fill("17.5");
+  await fontSizeInput.press("Enter");
   await page.waitForTimeout(120);
-  assert((await partialParagraph.locator('[data-font-size="large"]').innerText()) === "Partial", `Font size không chỉ áp dụng cho selected range: html=${await partialParagraph.innerHTML()}`);
-  assert((await partialParagraph.locator('[data-font-size="large"]').count()) === 1, "Partial font size tạo mark không ổn định");
+  assert((await partialParagraph.locator('[data-font-size="17.5pt"]').innerText()) === "Partial", `Font size không chỉ áp dụng cho selected range: html=${await partialParagraph.innerHTML()}`);
+  assert((await partialParagraph.locator('[data-font-size="17.5pt"]').count()) === 1, "Partial font size tạo mark không ổn định");
+  assert((await fontSizeInput.inputValue()) === "17.5", "Input không chuẩn hóa custom point");
+  await fontSizeInput.fill("15.3");
+  await fontSizeInput.press("Enter");
+  assert((await fontSizeInput.getAttribute("aria-invalid")) === "true", "Input invalid thiếu aria-invalid");
+  assert((await partialParagraph.locator('[data-font-size="17.5pt"]').count()) === 1, "Input invalid đã thay đổi document");
+  await fontSizeInput.fill("27.5");
+  await fontSizeInput.press("Escape");
+  assert((await fontSizeInput.inputValue()) === "17.5", "Escape không khôi phục point đã áp dụng");
+  assert((await partialParagraph.locator('[data-font-size="17.5pt"]').count()) === 1, "Escape đã thay đổi document");
+  const commaParagraph = await selectWholeParagraph(editor, "Comma format sample");
+  await fontSizeInput.fill("13,5");
+  await fontSizeInput.press("Enter");
+  assert((await fontSizeInput.inputValue()) === "13.5", "Input không chuẩn hóa dấu phẩy thành dấu chấm");
+  assert((await commaParagraph.locator('[data-font-size="13.5pt"]').count()) === 1, "Input dấu phẩy không lưu point chính xác");
+  const customPointParagraph = await selectWholeParagraph(editor, "Custom 27.5 format sample");
+  await fontSizeInput.fill("27.5");
+  await fontSizeInput.press("Enter");
+  assert((await customPointParagraph.locator('[data-font-size="27.5pt"]').count()) === 1, "Input 27.5 không lưu point chính xác");
+  for (const invalidPoint of ["7.5", "72.5"]) {
+    await fontSizeInput.fill(invalidPoint);
+    await fontSizeInput.press("Enter");
+    assert((await fontSizeInput.getAttribute("aria-invalid")) === "true", `Point ngoài miền ${invalidPoint} chưa bị từ chối`);
+    assert((await customPointParagraph.locator('[data-font-size="27.5pt"]').count()) === 1, `Point ngoài miền ${invalidPoint} đã thay đổi document`);
+  }
 
   const coloredParagraph = await selectWholeParagraph(editor, "Color and size retention");
   await page.getByRole("button", { name: "Màu accent" }).click();
   await selectWholeParagraph(editor, "Color and size retention");
-  await fontSizeSelect.selectOption("extraLarge");
+  await fontSizeSelect.selectOption("24pt");
   await page.waitForTimeout(120);
   const coloredMark = coloredParagraph.locator('[data-color="accent"]');
   assert((await coloredMark.count()) === 1, "Không giữ được color mark khi thêm font size");
-  assert((await coloredMark.evaluate((node) => getComputedStyle(node).fontSize)) === expectedFontPixels.extraLarge, "Admin computed font extraLarge không đúng");
+  assert((await coloredMark.evaluate((node) => getComputedStyle(node).fontSize)) === "32px", "Dropdown 24pt không áp dụng đúng point");
   await selectWholeParagraph(editor, "Color and size retention");
   await fontSizeSelect.selectOption("normal");
   await page.waitForTimeout(120);
@@ -432,6 +467,7 @@ try {
   const persistedBody = await persisted.json();
   const persistedContent = persistedBody.data?.descriptionContent;
   assert(persistedContent?.content, "Save không lưu descriptionContent");
+  assert(persistedContent.content.some((node) => node.type === "heading" && node.attrs?.level === 1), "Heading H1 rich không được lưu");
   assert(persistedContent.content.some((node) => node.type === "heading" && node.attrs?.level === 2), "Heading rich không được lưu");
   assert(persistedContent.content.some((node) => node.type === "heading" && node.attrs?.level === 3), "Heading H3 rich không được lưu");
   assert(persistedContent.content.some((node) => node.type === "heading" && node.attrs?.level === 4), "Heading H4 rich không được lưu");
@@ -457,7 +493,11 @@ try {
   const introMarks = persistedTexts.find((node) => node.text === "Bold");
   assert(introMarks?.marks?.some((mark) => mark.type === "bold") && persistedTexts.find((node) => node.text === " Italic")?.marks?.some((mark) => mark.type === "italic") && persistedTexts.find((node) => node.text === " Underline")?.marks?.some((mark) => mark.type === "underline"), "Bold/italic/underline rich marks không được lưu");
   const persistedPartial = persistedTexts.find((node) => node.text === "Partial");
-  assert(persistedPartial?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large"), "Persisted partial font size không đúng");
+  assert(persistedPartial?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "17.5pt"), "Persisted custom partial font size không đúng");
+  const persistedComma = persistedTexts.find((node) => node.text === "Comma format sample");
+  assert(persistedComma?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "13.5pt"), "Persisted comma point font size không đúng");
+  const persistedCustomPoint = persistedTexts.find((node) => node.text === "Custom 27.5 format sample");
+  assert(persistedCustomPoint?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "27.5pt"), "Persisted 27.5 point font size không đúng");
   const persistedMultiA = persistedTexts.find((node) => node.text === "FGHI");
   const persistedMultiB = persistedTexts.find((node) => typeof node.text === "string" && node.text.startsWith("Multi B J") && node.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large"));
   assert(persistedMultiA?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large") && persistedMultiB, "Persisted multi-paragraph font size không đúng");
@@ -482,6 +522,7 @@ try {
   await page.waitForTimeout(800);
   const reloadedEditor = page.locator(".product-description-content .ProseMirror");
   assert((await reloadedEditor.locator(".product-description-image-node").count()) === 3, "Reload admin mất description image");
+  assert((await reloadedEditor.locator("h1").filter({ hasText: "E2E Rich Heading One" }).count()) === 1, "Reload admin mất H1 rich");
   assert((await reloadedEditor.locator("h2").filter({ hasText: "E2E Rich Heading" }).count()) === 1, "Reload admin mất heading rich");
   assert((await reloadedEditor.locator("h3").filter({ hasText: "Heading three sample" }).count()) === 1, "Reload admin mất H3 rich");
   assert((await reloadedEditor.locator("h4").filter({ hasText: "Heading four sample" }).count()) === 1, "Reload admin mất H4 rich");
@@ -552,6 +593,7 @@ try {
   assert(storefrontText.includes("E2E Rich Heading") && storefrontText.includes("Bullet list two"), "Storefront thiếu rich content");
   assert(!storefrontText.includes("Cà rốt & Táo – vị ngọt tự nhiên cho bé"), "Storefront vẫn render hardcode demo content");
   assert((await richDescription.locator("h2").filter({ hasText: "E2E Rich Heading" }).count()) === 1, "Storefront mất H2");
+  assert((await richDescription.locator("h1").filter({ hasText: "E2E Rich Heading One" }).count()) === 1, "Storefront mất H1");
   assert((await richDescription.locator("h3").filter({ hasText: "Heading three sample" }).count()) === 1, "Storefront mất H3");
   assert((await richDescription.locator("h4").filter({ hasText: "Heading four sample" }).count()) === 1, "Storefront mất H4");
   assert((await richDescription.locator("ul").filter({ hasText: "Bullet list two" }).count()) === 1, "Storefront mất bullet list");
