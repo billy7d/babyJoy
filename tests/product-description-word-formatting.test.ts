@@ -32,12 +32,13 @@ describe("Product rich description Word-like formatting", () => {
       expect(shared).toContain(`  ${size},`);
     }
     expect(editor).toContain('title="Kích thước chữ theo point (pt)"');
-    expect(editor).toContain('aria-label="Nhập kích thước chữ"');
-    expect(editor).toContain('inputMode="decimal"');
     expect(editor).toContain('aria-label="Kích thước chữ"');
+    expect(editor).toContain('inputMode="decimal"');
+    expect(editor).toContain('aria-label="Chọn kích thước chữ"');
     expect(editor).toContain('value={`${points}pt`}');
     expect(editor).toContain("{points}");
     expect(editor).toContain("commitFontSizeInput");
+    expect(editor).toContain("skipNextFontSizeBlurRef");
     expect(editor).toContain("createProductDescriptionPointFontSize");
     expect(editor).toContain('.replace(",", ".")');
     expect(editor).toContain("theo bước 0,5 pt");

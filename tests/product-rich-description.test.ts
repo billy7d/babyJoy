@@ -29,11 +29,13 @@ describe("Product rich description validator", () => {
 
   it("hỗ trợ font-size theo point kiểu Word và giữ tương thích token cũ", () => {
     expect(parseProductDescriptionPointFontSize("8pt")).toBe(8);
+    expect(parseProductDescriptionPointFontSize("8.5pt")).toBe(8.5);
     expect(parseProductDescriptionPointFontSize("13.5pt")).toBe(13.5);
     expect(parseProductDescriptionPointFontSize("72pt")).toBe(72);
     expect(parseProductDescriptionPointFontSize("7.5pt")).toBeNull();
     expect(parseProductDescriptionPointFontSize("72.5pt")).toBeNull();
-    expect(parseProductDescriptionPointFontSize("13.2pt")).toBeNull();
+    for (const invalidPoint of ["13.25pt", "13.7pt", "13px", "13", "13 pt", "calc(12pt)"])
+      expect(parseProductDescriptionPointFontSize(invalidPoint)).toBeNull();
     expect(createProductDescriptionPointFontSize(24)).toBe("24pt");
     expect(createProductDescriptionPointFontSize(24.5)).toBe("24.5pt");
     expect(createProductDescriptionPointFontSize(24.2)).toBeNull();

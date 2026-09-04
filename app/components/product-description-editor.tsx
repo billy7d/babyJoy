@@ -163,6 +163,7 @@ export function ProductDescriptionEditor({
   const [fontSizeDraft, setFontSizeDraft] = useState("");
   const [fontSizeInvalid, setFontSizeInvalid] = useState(false);
   const fontSizeEditingRef = useRef(false);
+  const skipNextFontSizeBlurRef = useRef(false);
   const selectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const appliedTextStyleSelectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const locallyEmittedDocumentsRef = useRef(
@@ -513,7 +514,7 @@ export function ProductDescriptionEditor({
             type="text"
             inputMode="decimal"
             autoComplete="off"
-            aria-label="Nhập kích thước chữ"
+            aria-label="Kích thước chữ"
             aria-invalid={fontSizeInvalid}
             aria-describedby={fontSizeInvalid ? "product-description-font-size-help" : undefined}
             placeholder={currentFontSize === "mixed" ? "—" : undefined}
@@ -530,22 +531,30 @@ export function ProductDescriptionEditor({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
+                // Tránh blur sau focus editor áp dụng cùng một format lần thứ hai.
+                skipNextFontSizeBlurRef.current = true;
                 commitFontSizeInput(event.currentTarget.value);
               } else if (event.key === "Escape") {
                 event.preventDefault();
                 setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
                 setFontSizeInvalid(false);
                 fontSizeEditingRef.current = false;
+                // Escape chỉ hoàn tác bản nháp, tuyệt đối không thay đổi document.
+                skipNextFontSizeBlurRef.current = true;
                 event.currentTarget.blur();
               }
             }}
             onBlur={(event) => {
+              if (skipNextFontSizeBlurRef.current) {
+                skipNextFontSizeBlurRef.current = false;
+                return;
+              }
               commitFontSizeInput(event.currentTarget.value);
               fontSizeEditingRef.current = false;
             }}
           />
           <select
-            aria-label="Kích thước chữ"
+            aria-label="Chọn kích thước chữ"
             value={currentFontSize}
             disabled={!editor}
             onChange={(event) => {
