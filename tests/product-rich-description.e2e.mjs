@@ -357,6 +357,7 @@ try {
   for (let index = 0; index < "Partial".length; index += 1) await page.keyboard.press("ArrowRight");
   await page.keyboard.up("Shift");
   await waitForBrowserSelection("Partial");
+  await page.waitForTimeout(120);
   await fontSizeInput.fill("17.5");
   await fontSizeInput.press("Enter");
   await page.waitForTimeout(120);
@@ -387,8 +388,10 @@ try {
     assert((await customPointParagraph.locator('[data-font-size="27.5pt"]').count()) === 1, `Point ngoài miền ${invalidPoint} đã thay đổi document`);
   }
 
+  const colorControl = page.getByRole("button", { name: "Màu chữ" });
   const coloredParagraph = await selectWholeParagraph(editor, "Color and size retention");
-  await page.getByRole("button", { name: "Màu accent" }).click();
+  await colorControl.click();
+  await page.getByRole("button", { name: "Màu Nhấn" }).click();
   await selectWholeParagraph(editor, "Color and size retention");
   await fontSizeSelect.selectOption("24pt");
   await page.waitForTimeout(120);
@@ -402,6 +405,77 @@ try {
   assert((await coloredMark.getAttribute("data-font-size")) === null, "Normal chưa gỡ fontSize override");
   assert((await coloredMark.evaluate((node) => getComputedStyle(node).fontSize)) === expectedFontPixels.normal, "Normal không trả computed style về 1rem");
   assert((await coloredMark.evaluate((node) => getComputedStyle(node).color)) === "rgb(210, 124, 72)", "Normal làm mất màu accent");
+
+  const customColorParagraph = await selectWholeParagraph(editor, "Comma format sample");
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  const colorHexInput = page.getByRole("textbox", { name: "Mã màu HEX" });
+  await colorHexInput.fill("a45b3d");
+  await colorHexInput.press("Enter");
+  await page.waitForTimeout(120);
+  assert((await customColorParagraph.locator('[data-color="#A45B3D"]').count()) === 1, "HEX custom không apply vào selection");
+  assert((await customColorParagraph.locator('[data-color="#A45B3D"]').evaluate((node) => getComputedStyle(node).color)) === "rgb(164, 91, 61)", "Editor không render đúng màu HEX custom");
+  await colorControl.click();
+  assert(await page.getByRole("heading", { name: "Màu gần đây" }).count() === 1, "Recent colors không hiển thị sau khi chọn custom HEX");
+  assert(await page.getByRole("button", { name: "Màu gần đây #A45B3D" }).count() === 1, "Recent colors thiếu màu custom vừa chọn");
+  await colorHexInput.fill("#GGGGGG");
+  assert((await colorHexInput.getAttribute("aria-invalid")) === "true", "HEX invalid thiếu aria-invalid");
+  await colorHexInput.press("Enter");
+  assert((await customColorParagraph.locator('[data-color="#A45B3D"]').count()) === 1, "HEX invalid đã thay đổi document");
+  await colorHexInput.press("Escape");
+
+  const resetColorParagraph = await selectWholeParagraph(editor, "Undo format sample");
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  await colorHexInput.fill("#B55239");
+  await colorHexInput.press("Enter");
+  await page.waitForTimeout(120);
+  assert((await resetColorParagraph.locator('[data-color="#B55239"]').count()) === 1, "Màu custom không apply trước undo");
+  const undoButton = page.getByRole("button", { name: "Hoàn tác" });
+  const redoButton = page.getByRole("button", { name: "Làm lại" });
+  await undoButton.click();
+  assert((await resetColorParagraph.locator('[data-color="#B55239"]').count()) === 0, "Undo không gỡ màu custom");
+  await redoButton.click();
+  await page.waitForTimeout(80);
+  assert((await resetColorParagraph.locator('[data-color="#B55239"]').count()) === 1, "Redo không khôi phục màu custom");
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  await page.getByRole("button", { name: "Mặc định / Xóa màu" }).click();
+  assert((await resetColorParagraph.locator("[data-color]").count()) === 0, "Reset màu tạo explicit color thay vì gỡ mark");
+
+  const caretColorParagraph = editor.locator("p").filter({ hasText: "Caret base" }).first();
+  await caretColorParagraph.click();
+  await page.keyboard.press("End");
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  await colorHexInput.fill("CC4422");
+  await colorHexInput.press("Enter");
+  await page.waitForTimeout(120);
+  await page.keyboard.type("BABYJOY");
+  assert((await caretColorParagraph.locator('[data-color="#CC4422"]').innerText()) === "BABYJOY", "Caret không giữ màu cho text gõ tiếp");
+
+  const mixedColorA = editor.locator("p").filter({ hasText: "Mixed small" }).first();
+  const mixedColorB = editor.locator("p").filter({ hasText: "Mixed large" }).first();
+  await selectWholeParagraph(editor, "Mixed small");
+  await colorControl.click();
+  await page.getByRole("dialog", { name: "Màu chữ" }).waitFor();
+  await colorHexInput.fill("#B66542");
+  await colorHexInput.press("Enter");
+  await page.waitForTimeout(120);
+  await selectWholeParagraph(editor, "Mixed large");
+  await colorControl.click();
+  await page.getByRole("button", { name: "Màu Xanh ngọc" }).click();
+  await mixedColorA.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
+  await page.waitForTimeout(100);
+  assert((await page.locator(".product-description-text-color-control").getAttribute("data-color-state")) === "mixed", "Toolbar không hiển thị mixed color state");
+  await colorControl.click();
+  await page.getByRole("button", { name: "Màu Đỏ đất" }).click();
+  assert((await mixedColorA.locator('[data-color="#B66542"]').count()) === 1 && (await mixedColorB.locator('[data-color="#B66542"]').count()) === 1, "Apply màu trên mixed selection không phủ đủ hai đoạn");
 
   for (const [size, text] of Object.entries({
     small: "Font token small",
@@ -426,8 +500,6 @@ try {
   await page.waitForTimeout(800);
   assert((await undoParagraph.locator('[data-font-size="large"]').count()) === 1, "Undo test không tạo format large");
   assert(await page.evaluate(() => document.activeElement?.classList.contains("ProseMirror")), "Sau khi chọn font focus không quay về editor");
-  const undoButton = page.getByRole("button", { name: "Hoàn tác" });
-  const redoButton = page.getByRole("button", { name: "Làm lại" });
   assert(await undoButton.isEnabled(), "Undo button không sẵn sàng sau format");
   await undoButton.click();
   await page.waitForTimeout(80);
@@ -522,7 +594,7 @@ try {
   const persistedPartial = persistedTexts.find((node) => node.text === "Partial");
   assert(persistedPartial?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "17.5pt"), "Persisted custom partial font size không đúng");
   const persistedComma = persistedTexts.find((node) => node.text === "Comma format sample");
-  assert(persistedComma?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "13.5pt"), "Persisted comma point font size không đúng");
+  assert(persistedComma?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "13.5pt" && mark.attrs?.color === "#A45B3D"), "Persisted comma point/color custom không đúng");
   const persistedCustomPoint = persistedTexts.find((node) => node.text === "Custom 27.5 format sample");
   assert(persistedCustomPoint?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "27.5pt"), "Persisted 27.5 point font size không đúng");
   const persistedMultiA = persistedTexts.find((node) => node.text === "FGHI");
@@ -533,6 +605,8 @@ try {
   assert(persistedCaretWorld?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize === "large") && !persistedCaretTest?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.fontSize), "Persisted caret font size không đúng");
   const persistedColor = persistedTexts.find((node) => node.text === "Color and size retention");
   assert(persistedColor?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.color === "accent" && !mark.attrs?.fontSize), "Normal không gỡ fontSize mà vẫn giữ color trong JSON");
+  const persistedResetColor = persistedTexts.find((node) => node.text === "Undo format sample");
+  assert(!persistedResetColor?.marks?.some((mark) => mark.type === "textStyle" && mark.attrs?.color), "Reset color không được persist đúng");
   for (const [size, text] of Object.entries({
     small: "Font token small",
     normal: "Font token normal",
@@ -580,6 +654,28 @@ try {
       ? await styledNode.evaluate((node) => getComputedStyle(node).fontSize)
       : await paragraph.evaluate((node) => getComputedStyle(node).fontSize);
     assert(computedSize === expectedFontPixels[size], `Reload admin computed font ${size} sai: ${computedSize}`);
+  }
+  const reloadedCustomColor = reloadedEditor.locator("p").filter({ hasText: "Comma format sample" }).first().locator('[data-color="#A45B3D"]');
+  assert((await reloadedCustomColor.count()) === 1, "Reload admin mất HEX custom");
+  assert((await reloadedCustomColor.evaluate((node) => getComputedStyle(node).color)) === "rgb(164, 91, 61)", "Reload admin render sai HEX custom");
+  for (const width of [390, 375]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.getByRole("button", { name: "Màu chữ" }).click();
+    const colorPopover = page.getByRole("dialog", { name: "Màu chữ" });
+    const colorPopoverBox = await colorPopover.boundingBox();
+    assert(
+      colorPopoverBox &&
+        colorPopoverBox.x >= 0 &&
+        colorPopoverBox.x + colorPopoverBox.width <= width &&
+        colorPopoverBox.y >= 0 &&
+        colorPopoverBox.y + colorPopoverBox.height <= 844,
+      `Color popover bị crop ở mobile ${width}px`,
+    );
+    assert(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      `Color popover tạo horizontal scroll ở mobile ${width}px`,
+    );
+    await page.keyboard.press("Escape");
   }
 
   for (const viewport of [
@@ -676,6 +772,9 @@ try {
   assert((await richDescription.locator("p").filter({ hasText: "Caret base" }).locator(".product-rich-font-large").count()) === 1, "Storefront caret font bị gộp sai");
   const storefrontColor = richDescription.locator('[data-color="accent"]').filter({ hasText: "Color and size retention" }).first();
   assert((await storefrontColor.evaluate((node) => getComputedStyle(node).color)) === "rgb(210, 124, 72)", "Storefront mất color accent");
+  const storefrontCustomColor = richDescription.locator('[data-color="#A45B3D"]').filter({ hasText: "Comma format sample" }).first();
+  assert((await storefrontCustomColor.count()) === 1, "Storefront mất HEX custom");
+  assert((await storefrontCustomColor.evaluate((node) => getComputedStyle(node).color)) === "rgb(164, 91, 61)", "Storefront render sai HEX custom");
   for (const viewport of [
     { width: 1440, height: 1000 },
     { width: 1024, height: 900 },

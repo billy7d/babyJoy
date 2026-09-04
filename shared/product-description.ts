@@ -114,6 +114,148 @@ export const PRODUCT_DESCRIPTION_COLOR_TOKENS = [
 export type ProductDescriptionColorToken =
   (typeof PRODUCT_DESCRIPTION_COLOR_TOKENS)[number];
 
+// Giữ token cũ để tài liệu hiện hữu vẫn đọc được, đồng thời dùng HEX chuẩn cho màu mới.
+export const PRODUCT_DESCRIPTION_COLOR_VALUES: Record<
+  ProductDescriptionColorToken,
+  `#${string}`
+> = {
+  primary: "#7A4B2A",
+  muted: "#8D8178",
+  dark: "#2E241F",
+  accent: "#D27C48",
+};
+export const PRODUCT_DESCRIPTION_DEFAULT_COLOR = "#3B2B22" as const;
+export const PRODUCT_DESCRIPTION_RECENT_COLOR_LIMIT = 8;
+export const PRODUCT_DESCRIPTION_RECENT_COLORS_STORAGE_KEY =
+  "babyjoy.rich-editor.recent-colors.v1";
+export type ProductDescriptionHexColor = `#${string}`;
+export type ProductDescriptionColorValue =
+  | ProductDescriptionColorToken
+  | ProductDescriptionHexColor;
+
+export function isProductDescriptionColorToken(
+  value: unknown,
+): value is ProductDescriptionColorToken {
+  return (
+    typeof value === "string" &&
+    PRODUCT_DESCRIPTION_COLOR_TOKENS.includes(
+      value as ProductDescriptionColorToken,
+    )
+  );
+}
+
+export type ProductDescriptionSuggestedColor = {
+  id: string;
+  label: string;
+  value: ProductDescriptionColorValue;
+  hex: ProductDescriptionHexColor;
+};
+
+// Một constant duy nhất làm nguồn màu cho cả Product Editor và CMS Editor.
+export const PRODUCT_DESCRIPTION_SUGGESTED_COLORS: readonly ProductDescriptionSuggestedColor[] = [
+  {
+    id: "primary",
+    label: "Nâu",
+    value: "primary",
+    hex: PRODUCT_DESCRIPTION_COLOR_VALUES.primary,
+  },
+  {
+    id: "muted",
+    label: "Nhạt",
+    value: "muted",
+    hex: PRODUCT_DESCRIPTION_COLOR_VALUES.muted,
+  },
+  {
+    id: "dark",
+    label: "Đậm",
+    value: "dark",
+    hex: PRODUCT_DESCRIPTION_COLOR_VALUES.dark,
+  },
+  {
+    id: "accent",
+    label: "Nhấn",
+    value: "accent",
+    hex: PRODUCT_DESCRIPTION_COLOR_VALUES.accent,
+  },
+  { id: "clay", label: "Đỏ đất", value: "#B66542", hex: "#B66542" },
+  { id: "brick", label: "Đỏ gạch", value: "#CC4422", hex: "#CC4422" },
+  { id: "teal", label: "Xanh ngọc", value: "#2E6765", hex: "#2E6765" },
+  { id: "leaf", label: "Xanh lá", value: "#557A46", hex: "#557A46" },
+  { id: "plum", label: "Tím mận", value: "#7B5EA7", hex: "#7B5EA7" },
+  { id: "ochre", label: "Vàng đất", value: "#C3872F", hex: "#C3872F" },
+];
+
+function expandProductDescriptionHexColor(value: string) {
+  const raw = value.trim().replace(/^#/, "");
+  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(raw)) return null;
+  const expanded = raw.length === 3
+    ? raw
+        .split("")
+        .map((character) => `${character}${character}`)
+        .join("")
+    : raw;
+  return `#${expanded.toUpperCase()}` as ProductDescriptionHexColor;
+}
+
+export function normalizeProductDescriptionHexColor(
+  value: unknown,
+): ProductDescriptionHexColor | null {
+  if (typeof value !== "string") return null;
+  return expandProductDescriptionHexColor(value);
+}
+
+export function normalizeProductDescriptionColor(
+  value: unknown,
+): ProductDescriptionColorValue | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (isProductDescriptionColorToken(trimmed)) return trimmed;
+  return normalizeProductDescriptionHexColor(trimmed);
+}
+
+export function isProductDescriptionColor(
+  value: unknown,
+): value is ProductDescriptionColorValue {
+  return normalizeProductDescriptionColor(value) !== null;
+}
+
+export function productDescriptionColorToHex(
+  value: unknown,
+): ProductDescriptionHexColor | null {
+  const normalized = normalizeProductDescriptionColor(value);
+  if (!normalized) return null;
+  if (isProductDescriptionColorToken(normalized))
+    return PRODUCT_DESCRIPTION_COLOR_VALUES[normalized];
+  return normalized;
+}
+
+export function normalizeProductDescriptionRecentColors(
+  value: unknown,
+): ProductDescriptionHexColor[] {
+  if (!Array.isArray(value)) return [];
+  const colors: ProductDescriptionHexColor[] = [];
+  for (const candidate of value) {
+    const normalized = normalizeProductDescriptionHexColor(candidate);
+    if (!normalized || colors.includes(normalized)) continue;
+    colors.push(normalized);
+    if (colors.length >= PRODUCT_DESCRIPTION_RECENT_COLOR_LIMIT) break;
+  }
+  return colors;
+}
+
+export function addProductDescriptionRecentColor(
+  current: readonly string[],
+  value: unknown,
+): ProductDescriptionHexColor[] {
+  const normalized = normalizeProductDescriptionHexColor(value);
+  const existing = normalizeProductDescriptionRecentColors(current);
+  if (!normalized) return existing;
+  return [
+    normalized,
+    ...existing.filter((color) => color !== normalized),
+  ].slice(0, PRODUCT_DESCRIPTION_RECENT_COLOR_LIMIT);
+}
+
 export const PRODUCT_DESCRIPTION_TEXT_ALIGNMENTS = [
   "left",
   "center",
@@ -142,7 +284,7 @@ export type ProductDescriptionImageSize =
 
 export type ProductDescriptionTextStyleAttributes = {
   fontSize?: ProductDescriptionFontSize;
-  color?: string;
+  color?: ProductDescriptionColorValue;
 };
 
 export type ProductDescriptionLinkAttributes = {
@@ -301,14 +443,6 @@ function addIssue(
   issues.push({ path, code, message });
 }
 
-function isSafeColor(value: string) {
-  return (
-    PRODUCT_DESCRIPTION_COLOR_TOKENS.includes(
-      value as ProductDescriptionColorToken,
-    ) || /^#[0-9a-f]{3,4}(?:[0-9a-f]{2})?$/i.test(value)
-  );
-}
-
 function isSafeAssetId(value: string) {
   return /^pda_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
@@ -432,10 +566,12 @@ function validateMarks(
     }
     const rawColor = attrs?.color;
     if (rawColor !== undefined && rawColor !== null) {
-      if (typeof rawColor !== "string" || !isSafeColor(rawColor)) {
+      const normalizedColor = normalizeProductDescriptionColor(rawColor);
+      if (!normalizedColor) {
         addIssue(issues, `${markPath}.attrs.color`, "INVALID_COLOR", "Màu chữ không hợp lệ.");
       } else {
-        normalized.color = rawColor;
+        // Canonicalize HEX ngay tại biên dữ liệu để compare, recent colors và render ổn định.
+        normalized.color = normalizedColor;
       }
     }
     if (normalized.fontSize || normalized.color) marks.push({ type: "textStyle", attrs: normalized });
