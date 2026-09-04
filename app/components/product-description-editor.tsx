@@ -6,12 +6,15 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import Placeholder from "@tiptap/extension-placeholder";
 import {
+  createProductDescriptionPointFontSize,
   isProductDescriptionFontSize,
   normalizeProductDescriptionDocument,
   parseProductDescriptionPointFontSize,
+  productDescriptionFontSizeToPoints,
   PRODUCT_DESCRIPTION_COLOR_TOKENS,
+  PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT,
+  PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT,
   PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS,
-  PRODUCT_DESCRIPTION_FONT_SIZES,
   type ProductDescriptionAsset,
   type ProductDescriptionColorToken,
   type ProductDescriptionDocument,
@@ -156,6 +159,9 @@ export function ProductDescriptionEditor({
 }: ProductDescriptionEditorProps) {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
+  const [fontSizeDraft, setFontSizeDraft] = useState("");
+  const [fontSizeInvalid, setFontSizeInvalid] = useState(false);
+  const fontSizeEditingRef = useRef(false);
   const selectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const appliedTextStyleSelectionRef = useRef<ProductDescriptionSelectionSnapshot | null>(null);
   const locallyEmittedDocumentsRef = useRef(
@@ -431,12 +437,39 @@ export function ProductDescriptionEditor({
   const currentPointSize =
     currentFontSize === "mixed"
       ? null
-      : parseProductDescriptionPointFontSize(currentFontSize);
-  const currentPointIsPreset =
-    currentPointSize !== null &&
-    (PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS as readonly number[]).includes(
-      currentPointSize,
-    );
+      : productDescriptionFontSizeToPoints(currentFontSize);
+
+  useEffect(() => {
+    if (fontSizeEditingRef.current) return;
+    setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+    setFontSizeInvalid(false);
+  }, [currentFontSize, currentPointSize]);
+
+  const commitFontSizeInput = (rawValue: string) => {
+    const normalizedInput = rawValue
+      .trim()
+      .replace(",", ".")
+      .replace(/\s*pt$/i, "");
+    if (!normalizedInput) {
+      setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+      setFontSizeInvalid(false);
+      return false;
+    }
+    const fontSize = createProductDescriptionPointFontSize(Number(normalizedInput));
+    if (!fontSize) {
+      setFontSizeInvalid(true);
+      setStatus(
+        `Kích thước chữ phải từ ${PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT} đến ${PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT} pt, theo bước 0,5 pt.`,
+      );
+      return false;
+    }
+    const points = productDescriptionFontSizeToPoints(fontSize);
+    setFontSizeDraft(points === null ? normalizedInput : String(points));
+    setFontSizeInvalid(false);
+    setStatus("");
+    setFontSize(fontSize);
+    return true;
+  };
 
   return (
     <div className="product-description-editor">
@@ -465,37 +498,70 @@ export function ProductDescriptionEditor({
           <button type="button" aria-label="Nghiêng" aria-pressed={editor?.isActive("italic")} disabled={!editor} onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
           <button type="button" aria-label="Gạch chân" aria-pressed={editor?.isActive("underline")} disabled={!editor} onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
         </div>
-        <label className="product-description-toolbar-select">
+        <div
+          className={`product-description-font-size-combobox${fontSizeInvalid ? " is-invalid" : ""}`}
+          title="Kích thước chữ theo point (pt)"
+        >
           <span className="sr-only">Kích thước chữ theo point</span>
-          <select
+          <input
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
             aria-label="Kích thước chữ"
-            title="Kích thước chữ theo point (pt)"
-            value={currentFontSize}
+            aria-invalid={fontSizeInvalid}
+            aria-describedby={fontSizeInvalid ? "product-description-font-size-help" : undefined}
+            placeholder={currentFontSize === "mixed" ? "—" : undefined}
+            value={fontSizeDraft}
             disabled={!editor}
-            onChange={(event) => setFontSize(event.target.value as ProductDescriptionFontSize)}
+            onFocus={(event) => {
+              fontSizeEditingRef.current = true;
+              event.currentTarget.select();
+            }}
+            onChange={(event) => {
+              setFontSizeDraft(event.target.value);
+              if (fontSizeInvalid) setFontSizeInvalid(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitFontSizeInput(event.currentTarget.value);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setFontSizeDraft(currentPointSize === null ? "" : String(currentPointSize));
+                setFontSizeInvalid(false);
+                fontSizeEditingRef.current = false;
+                event.currentTarget.blur();
+              }
+            }}
+            onBlur={(event) => {
+              commitFontSizeInput(event.currentTarget.value);
+              fontSizeEditingRef.current = false;
+            }}
+          />
+          <select
+            aria-label="Chọn kích thước chữ"
+            value=""
+            disabled={!editor}
+            onChange={(event) => {
+              const fontSize = createProductDescriptionPointFontSize(Number(event.target.value));
+              if (!fontSize) return;
+              setFontSizeDraft(event.target.value);
+              setFontSizeInvalid(false);
+              setStatus("");
+              setFontSize(fontSize);
+            }}
           >
-            {currentFontSize === "mixed" && (
-              <option value="mixed" disabled>
-                Nhiều kích thước
-              </option>
-            )}
-            {currentPointSize !== null && !currentPointIsPreset && (
-              <option value={`${currentPointSize}pt`}>
-                {currentPointSize} pt
-              </option>
-            )}
+            <option value="" disabled hidden>⌄</option>
             {PRODUCT_DESCRIPTION_FONT_SIZE_PRESETS.map((points) => (
-              <option key={`${points}pt`} value={`${points}pt`}>
-                {points} pt
-              </option>
-            ))}
-            {PRODUCT_DESCRIPTION_FONT_SIZES.map((size) => (
-              <option key={`legacy-${size}`} value={size} hidden>
-                {size === "small" ? "10.5 pt" : size === "normal" ? "12 pt" : size === "large" ? "15 pt" : "18 pt"}
+              <option key={`${points}pt`} value={String(points)}>
+                {points}
               </option>
             ))}
           </select>
-        </label>
+        </div>
+        <span id="product-description-font-size-help" className="sr-only">
+          Nhập kích thước từ {PRODUCT_DESCRIPTION_FONT_SIZE_MIN_PT} đến {PRODUCT_DESCRIPTION_FONT_SIZE_MAX_PT} pt, theo bước 0,5 pt.
+        </span>
         <div className="product-description-color-menu" aria-label="Màu chữ">
           <span className="sr-only">Màu chữ</span>
           <button type="button" aria-label="Màu mặc định" aria-pressed={!currentColor} disabled={!editor} onClick={() => setColor(null)}>A</button>
