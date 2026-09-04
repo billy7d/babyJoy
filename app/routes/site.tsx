@@ -8,6 +8,15 @@ import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPa
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
 import { AdminAccessLinksPage } from "../components/admin-access-links";
 import { AdminPromotionsPage, PromotionEditorPage } from "../components/promotion-pages";
+import {
+  AdminContentPageEditorPage,
+  AdminContentPagesPage,
+  PublicContentPage,
+} from "../components/content-pages";
+import {
+  contentPageLabel,
+  isContentPageSlug,
+} from "../../shared/content-pages";
 import { STORE_BRAND } from "../../shared/branding";
 
 export function loader({ request }: Route.LoaderArgs) {
@@ -21,6 +30,12 @@ export function meta({ location }: Route.MetaArgs) {
   if (path.startsWith("/product/")) return [{ title: `Sản phẩm ăn dặm hữu cơ | ${STORE_BRAND}` }, { name: "description", content: "Khám phá sản phẩm ăn dặm hữu cơ an toàn cho bé." }];
   if (path.startsWith("/admin")) return [{ title: `Quản trị ${STORE_BRAND}` }, { name: "robots", content: "noindex,nofollow" }];
   if (path.startsWith("/c/")) return [{ title: `Giỏ hàng ${STORE_BRAND}` }, { name: "robots", content: "noindex,nofollow,noarchive" }, { name: "referrer", content: "no-referrer" }];
+  const contentPageSlug = path.slice(1);
+  if (isContentPageSlug(contentPageSlug))
+    return [
+      { title: `${contentPageLabel(contentPageSlug)} | ${STORE_BRAND}` },
+      { name: "description", content: contentPageLabel(contentPageSlug) },
+    ];
   return [{ title: `${STORE_BRAND} - Dinh dưỡng trọn vẹn cho bé yêu` }, { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." }];
 }
 
@@ -29,6 +44,9 @@ function RoutedContent() {
   const params = useParams();
   if (pathname === "/") return <HomePage />;
   if (pathname === "/access-required") return <AccessRequiredPage />;
+  const contentPageSlug = pathname.slice(1);
+  if (isContentPageSlug(contentPageSlug))
+    return <PublicContentPage slug={contentPageSlug} />;
   if (pathname === "/shop") return <ProductListPage />;
   if (pathname === "/search") return <ProductListPage searchMode />;
   if (pathname === "/categories") return <CategoriesPage />;
@@ -38,6 +56,9 @@ function RoutedContent() {
   if (/^\/c\/[^/]+$/.test(pathname)) return <PublicCartSharePage />;
   if (pathname.startsWith("/cart/guide/")) return <CartShareGuidePage />;
   if (pathname.startsWith("/cart/success/")) return <SuccessPage />;
+  if (pathname === "/admin/content-pages") return <AdminContentPagesPage />;
+  if (/^\/admin\/content-pages\/[^/]+\/edit$/.test(pathname))
+    return <AdminContentPageEditorPage />;
   if (pathname === "/admin/products") return <AdminProductsPage />;
   if (pathname === "/admin/products/new" || /^\/admin\/products\/[^/]+\/edit$/.test(pathname)) return <ProductEditorPage />;
   if (pathname === "/admin/promotions") return <AdminPromotionsPage />;

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
+await import("./content-pages.e2e.mjs");
 let catalogIsEmpty = false;
 try {
   const catalogProbe = await fetch(`${baseUrl}/api/products?limit=1`);

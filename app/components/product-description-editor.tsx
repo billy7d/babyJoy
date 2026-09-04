@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import TiptapLink from "@tiptap/extension-link";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import Placeholder from "@tiptap/extension-placeholder";
 import {
   createProductDescriptionPointFontSize,
+  isExternalProductDescriptionLink,
   isProductDescriptionFontSize,
+  normalizeProductDescriptionLinkHref,
   normalizeProductDescriptionDocument,
   parseProductDescriptionPointFontSize,
   productDescriptionFontSizeToPoints,
@@ -84,6 +87,13 @@ const PRODUCT_DESCRIPTION_EDITOR_EXTENSIONS = [
     alignments: ["left", "center", "right", "justify"],
     defaultAlignment: "left",
   }),
+  TiptapLink.configure({
+    autolink: false,
+    linkOnPaste: false,
+    openOnClick: false,
+    HTMLAttributes: { target: null, rel: null, class: null },
+    isAllowedUri: (url) => normalizeProductDescriptionLinkHref(url) !== null,
+  }),
   Placeholder.configure({
     placeholder: "Nhập nội dung chi tiết cho sản phẩm...",
   }),
@@ -105,6 +115,7 @@ export type ProductDescriptionEditorProps = {
   productId?: string;
   uploadSessionId: string;
   assets: ProductDescriptionAsset[];
+  contentPageSlug?: string;
   onChange: (document: ProductDescriptionDocument) => void;
   onAsset: (asset: ProductDescriptionAsset) => void;
 };
@@ -155,6 +166,7 @@ export function ProductDescriptionEditor({
   productId,
   uploadSessionId,
   assets,
+  contentPageSlug,
   onChange,
   onAsset,
 }: ProductDescriptionEditorProps) {
@@ -248,6 +260,8 @@ export function ProductDescriptionEditor({
           "x-alt-text": "",
         });
         if (productId) headers.set("x-product-id", productId);
+        if (contentPageSlug)
+          headers.set("x-content-page-slug", contentPageSlug);
         const response = await fetch("/api/admin/product-description-assets", {
           method: "POST",
           headers,
@@ -297,7 +311,7 @@ export function ProductDescriptionEditor({
         setUploading(false);
       }
     },
-    [editor, onAsset, productId, uploadSessionId],
+    [contentPageSlug, editor, onAsset, productId, uploadSessionId],
   );
 
   const nodeContext = useMemo(
@@ -389,6 +403,39 @@ export function ProductDescriptionEditor({
   };
   const setColor = (color: ProductDescriptionColorToken | null) => {
     applyTextStyle({ color });
+  };
+  const preventToolbarFocus = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+  };
+  const currentLink = editor?.getAttributes("link").href as string | undefined;
+  const setLink = () => {
+    if (!editor) return;
+    if (currentLink) {
+      editor.chain().focus().unsetLink().run();
+      setStatus("Đã bỏ liên kết.");
+      return;
+    }
+    const rawHref = window.prompt("Nhập liên kết an toàn (https://...)");
+    if (rawHref === null) return;
+    const href = normalizeProductDescriptionLinkHref(rawHref);
+    if (!href) {
+      setStatus(
+        "Liên kết không hợp lệ. Chỉ hỗ trợ URL http(s), mailto, tel hoặc đường dẫn nội bộ.",
+      );
+      return;
+    }
+    const external = isExternalProductDescriptionLink(href);
+    editor
+      .chain()
+      .focus()
+      .setLink({
+        href,
+        ...(external
+          ? { target: "_blank", rel: "noopener noreferrer" }
+          : { target: null, rel: null }),
+      })
+      .run();
+    setStatus("Đã thêm liên kết.");
   };
   const currentHeading = [1, 2, 3, 4].find((level) =>
     editor?.isActive("heading", { level }),
@@ -501,9 +548,10 @@ export function ProductDescriptionEditor({
           </select>
         </label>
         <div className="product-description-toolbar-group" aria-label="Định dạng chữ">
-          <button type="button" aria-label="Đậm" aria-pressed={editor?.isActive("bold")} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}><b>B</b></button>
-          <button type="button" aria-label="Nghiêng" aria-pressed={editor?.isActive("italic")} disabled={!editor} onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
-          <button type="button" aria-label="Gạch chân" aria-pressed={editor?.isActive("underline")} disabled={!editor} onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
+          <button type="button" aria-label="Đậm" aria-pressed={editor?.isActive("bold")} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().toggleBold().run()}><b>B</b></button>
+          <button type="button" aria-label="Nghiêng" aria-pressed={editor?.isActive("italic")} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().toggleItalic().run()}><i>I</i></button>
+          <button type="button" aria-label="Gạch chân" aria-pressed={editor?.isActive("underline")} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().toggleUnderline().run()}><u>U</u></button>
+          <button type="button" aria-label={currentLink ? "Bỏ liên kết" : "Thêm liên kết"} aria-pressed={Boolean(currentLink)} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={setLink}><Icon>link</Icon></button>
         </div>
         <div
           className={`product-description-font-size-combobox${fontSizeInvalid ? " is-invalid" : ""}`}
@@ -594,21 +642,21 @@ export function ProductDescriptionEditor({
         </span>
         <div className="product-description-color-menu" aria-label="Màu chữ">
           <span className="sr-only">Màu chữ</span>
-          <button type="button" aria-label="Màu mặc định" aria-pressed={!currentColor} disabled={!editor} onClick={() => setColor(null)}>A</button>
+          <button type="button" aria-label="Màu mặc định" aria-pressed={!currentColor} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => setColor(null)}>A</button>
           {PRODUCT_DESCRIPTION_COLOR_TOKENS.map((color) => (
-            <button key={color} type="button" className={`color-${color}`} aria-label={`Màu ${color}`} aria-pressed={currentColor === color} disabled={!editor} onClick={() => setColor(color)}>{color === "primary" ? "Nâu" : color === "muted" ? "Nhạt" : color === "dark" ? "Đậm" : "Nhấn"}</button>
+            <button key={color} type="button" className={`color-${color}`} aria-label={`Màu ${color}`} aria-pressed={currentColor === color} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => setColor(color)}>{color === "primary" ? "Nâu" : color === "muted" ? "Nhạt" : color === "dark" ? "Đậm" : "Nhấn"}</button>
           ))}
         </div>
         <div className="product-description-toolbar-group" aria-label="Căn chỉnh">
           {(["left", "center", "right", "justify"] as const).map((alignment) => (
-            <button key={alignment} type="button" aria-label={`Căn ${alignment === "left" ? "trái" : alignment === "center" ? "giữa" : alignment === "right" ? "phải" : "đều"}`} aria-pressed={editor?.isActive({ textAlign: alignment })} disabled={!editor} onClick={() => editor?.chain().focus().setTextAlign(alignment).run()}>
+            <button key={alignment} type="button" aria-label={`Căn ${alignment === "left" ? "trái" : alignment === "center" ? "giữa" : alignment === "right" ? "phải" : "đều"}`} aria-pressed={editor?.isActive({ textAlign: alignment })} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().setTextAlign(alignment).run()}>
               {alignment === "left" ? "←" : alignment === "center" ? "↔" : alignment === "right" ? "→" : "☷"}
             </button>
           ))}
         </div>
         <div className="product-description-toolbar-group" aria-label="Danh sách">
-          <button type="button" aria-label="Danh sách dấu đầu dòng" aria-pressed={editor?.isActive("bulletList")} disabled={!editor} onClick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
-          <button type="button" aria-label="Danh sách đánh số" aria-pressed={editor?.isActive("orderedList")} disabled={!editor} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
+          <button type="button" aria-label="Danh sách dấu đầu dòng" aria-pressed={editor?.isActive("bulletList")} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
+          <button type="button" aria-label="Danh sách đánh số" aria-pressed={editor?.isActive("orderedList")} disabled={!editor} onMouseDown={preventToolbarFocus} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
         </div>
         <label className="product-description-upload-button">
           <Icon>image</Icon>
@@ -626,12 +674,12 @@ export function ProductDescriptionEditor({
           />
         </label>
         <div className="product-description-toolbar-spacer" />
-        <button type="button" aria-label="Hoàn tác" disabled={!editor?.can().undo() || uploading} onClick={() => {
+        <button type="button" aria-label="Hoàn tác" disabled={!editor?.can().undo() || uploading} onMouseDown={preventToolbarFocus} onClick={() => {
           if (!editor) return;
           editor.commands.undo();
           window.requestAnimationFrame(() => editor.commands.focus());
         }}><Icon>undo</Icon></button>
-        <button type="button" aria-label="Làm lại" disabled={!editor?.can().redo() || uploading} onClick={() => {
+        <button type="button" aria-label="Làm lại" disabled={!editor?.can().redo() || uploading} onMouseDown={preventToolbarFocus} onClick={() => {
           if (!editor) return;
           editor.commands.redo();
           window.requestAnimationFrame(() => editor.commands.focus());

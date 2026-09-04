@@ -146,9 +146,9 @@ export function PublicFooter() {
         </div>
         <div>
           <h4>Hỗ trợ</h4>
-          <a href="#shipping">Chính sách vận chuyển</a>
-          <a href="#guide">Hướng dẫn mua hàng</a>
-          <a href="#returns">Đổi trả & Hoàn tiền</a>
+          <Link to="/shipping-policy">Chính sách vận chuyển</Link>
+          <Link to="/buying-guide">Hướng dẫn mua hàng</Link>
+          <Link to="/returns-refunds">Đổi trả & Hoàn tiền</Link>
         </div>
         <div>
           <h4>Liên hệ</h4>
@@ -486,6 +486,7 @@ export function QuantityStepper({
 const adminLinks = [
   ["/admin/products", "restaurant_menu", "Sản phẩm"],
   ["/admin/promotions", "local_offer", "Khuyến mãi"],
+  ["/admin/content-pages", "article", "Trang nội dung"],
   ["/admin/categories", "category", "Danh mục"],
   ["/admin/tags", "sell", "Tags"],
   ["/admin/cart-requests", "shopping_basket", "Giỏ hàng gửi đến"],
@@ -703,6 +704,7 @@ export function StatusBadge({ status }: { status: string }) {
     LEGACY: "Kênh cũ",
     SHARE: "Chia sẻ thủ công",
     SHARE_READY: "Đã tạo giỏ chia sẻ",
+    PUBLISHED: "Đang hiển thị",
     DRAFT: "Bản nháp",
     INACTIVE: "Đã tắt",
     ARCHIVED: "Đã archive",

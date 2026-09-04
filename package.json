@@ -22,6 +22,7 @@
   "dependencies": {
     "@tiptap/core": "^3.31.0",
     "@tiptap/extension-color": "^3.31.0",
+    "@tiptap/extension-link": "^3.31.0",
     "@tiptap/extension-placeholder": "^3.31.0",
     "@tiptap/extension-text-align": "^3.31.0",
     "@tiptap/extension-text-style": "^3.31.0",

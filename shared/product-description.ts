@@ -145,10 +145,17 @@ export type ProductDescriptionTextStyleAttributes = {
   color?: string;
 };
 
+export type ProductDescriptionLinkAttributes = {
+  href: string;
+  target?: "_blank";
+  rel?: "noopener noreferrer";
+};
+
 export type ProductDescriptionTextMark =
   | { type: "bold" }
   | { type: "italic" }
   | { type: "underline" }
+  | { type: "link"; attrs: ProductDescriptionLinkAttributes }
   | { type: "textStyle"; attrs?: ProductDescriptionTextStyleAttributes };
 
 export type ProductDescriptionTextNode = {
@@ -219,10 +226,40 @@ export type ProductDescriptionDocument = {
 
 export type ProductDescriptionAsset = {
   id: string;
-  r2Key: string;
+  r2Key?: string;
   altText: string;
   url: string;
 };
+
+export const PRODUCT_DESCRIPTION_LINK_MAX_LENGTH = 2048;
+
+export function normalizeProductDescriptionLinkHref(
+  value: unknown,
+): string | null {
+  if (typeof value !== "string") return null;
+  const href = value.trim();
+  if (
+    !href ||
+    href.length > PRODUCT_DESCRIPTION_LINK_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(href) ||
+    href.includes("\\") ||
+    href.startsWith("//")
+  )
+    return null;
+  if (href.startsWith("/") || href.startsWith("#")) return href;
+  try {
+    const parsed = new URL(href, "https://babyjoy.invalid");
+    if (["http:", "https:", "mailto:", "tel:"].includes(parsed.protocol))
+      return href;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function isExternalProductDescriptionLink(href: string) {
+  return /^(?:https?:|mailto:|tel:)/i.test(href);
+}
 
 export type ProductDescriptionValidationIssue = {
   path: string;
@@ -328,6 +365,45 @@ function validateMarks(
         addIssue(issues, markPath, "UNKNOWN_ATTRIBUTE", "Định dạng văn bản chứa thuộc tính không được phép.");
       }
       marks.push({ type: rawMark.type });
+      return;
+    }
+    if (rawMark.type === "link") {
+      if (!hasOnlyKeys(rawMark, ["type", "attrs"])) {
+        addIssue(issues, markPath, "UNKNOWN_ATTRIBUTE", "Liên kết chứa thuộc tính không được phép.");
+      }
+      if (
+        !isRecord(rawMark.attrs) ||
+        !hasOnlyKeys(rawMark.attrs, ["href", "target", "rel", "class", "title"])
+      ) {
+        addIssue(issues, `${markPath}.attrs`, "INVALID_LINK", "Liên kết không hợp lệ.");
+        return;
+      }
+      const href = normalizeProductDescriptionLinkHref(rawMark.attrs.href);
+      if (!href) {
+        addIssue(issues, `${markPath}.attrs.href`, "INVALID_LINK", "Liên kết chỉ được dùng URL an toàn.");
+        return;
+      }
+      const external = isExternalProductDescriptionLink(href);
+      const target = rawMark.attrs.target;
+      const rel = rawMark.attrs.rel;
+      if (
+        (target !== undefined && target !== null && target !== "_blank") ||
+        (rel !== undefined && rel !== null && rel !== "noopener noreferrer") ||
+        (rawMark.attrs.class !== undefined && rawMark.attrs.class !== null) ||
+        (rawMark.attrs.title !== undefined && rawMark.attrs.title !== null) ||
+        (!external &&
+          ((target !== undefined && target !== null) ||
+            (rel !== undefined && rel !== null)))
+      ) {
+        addIssue(issues, `${markPath}.attrs`, "INVALID_LINK_ATTRIBUTES", "Thuộc tính mở liên kết không an toàn.");
+        return;
+      }
+      marks.push({
+        type: "link",
+        attrs: external
+          ? { href, target: "_blank", rel: "noopener noreferrer" }
+          : { href },
+      });
       return;
     }
     if (rawMark.type !== "textStyle") {

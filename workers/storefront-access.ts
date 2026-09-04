@@ -347,6 +347,7 @@ export function isStorefrontProtectedApiPath(path: string) {
   return (
     path === "/api/categories" ||
     path === "/api/brands" ||
+    /^\/api\/content-pages\/[^/]+$/.test(path) ||
     path === "/api/products" ||
     path.startsWith("/api/products/") ||
     path === "/api/search" ||

@@ -3,6 +3,7 @@ import {
   createProductDescriptionPointFontSize,
   extractProductDescriptionText,
   normalizeProductDescriptionDocument,
+  normalizeProductDescriptionLinkHref,
   parseProductDescriptionPointFontSize,
   productDescriptionFontSizeToPoints,
   type ProductDescriptionDocument,
@@ -170,7 +171,7 @@ describe("Product rich description validator", () => {
       expect(result.issues.map((issue) => issue.code)).toContain("INVALID_ATTRIBUTES");
   });
 
-  it("từ chối version, node và mark không thuộc whitelist", () => {
+  it("từ chối version, node và liên kết không an toàn", () => {
     const result = normalizeProductDescriptionDocument({
       version: 100,
       type: "doc",
@@ -183,8 +184,42 @@ describe("Product rich description validator", () => {
     expect(result.ok).toBe(false);
     if (!result.ok)
       expect(result.issues.map((issue) => issue.code)).toEqual(
-        expect.arrayContaining(["INVALID_VERSION", "INVALID_HEADING", "UNKNOWN_NODE", "UNKNOWN_MARK"]),
+        expect.arrayContaining(["INVALID_VERSION", "INVALID_HEADING", "UNKNOWN_NODE", "INVALID_LINK"]),
       );
+    expect(normalizeProductDescriptionLinkHref("/\\evil.example")).toBeNull();
+  });
+
+  it("chuẩn hóa liên kết an toàn và thêm thuộc tính bảo vệ khi mở tab mới", () => {
+    const result = normalizeProductDescriptionDocument({
+      version: 1,
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "Mua hàng",
+              marks: [{ type: "link", attrs: { href: "https://example.com" } }],
+            },
+            {
+              type: "text",
+              text: " nội bộ",
+              marks: [{ type: "link", attrs: { href: "/shop" } }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.document.content[0]).toMatchObject({
+        content: [
+          { marks: [{ type: "link", attrs: { href: "https://example.com", target: "_blank", rel: "noopener noreferrer" } }] },
+          { marks: [{ type: "link", attrs: { href: "/shop" } }] },
+        ],
+      });
+    }
   });
 
   it("chấp nhận mark semantic và asset reference hợp lệ", () => {

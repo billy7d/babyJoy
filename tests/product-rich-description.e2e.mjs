@@ -42,6 +42,30 @@ async function waitForText(text) {
   );
 }
 
+async function selectHeading(value, expectedPoint) {
+  await page.locator('select[aria-label="Kiểu đoạn"]').selectOption(value);
+  await page.waitForFunction(
+    ({ heading, point }) =>
+      document.querySelector('select[aria-label="Kiểu đoạn"]')?.value === heading &&
+      document.querySelector('input[aria-label="Kích thước chữ"]')?.value === point,
+    { heading: value, point: expectedPoint },
+  );
+}
+
+async function waitForListCount(expectedCount) {
+  await page.waitForFunction(
+    (count) => document.querySelectorAll(".ProseMirror ul, .ProseMirror ol").length === count,
+    expectedCount,
+  );
+}
+
+async function waitForBrowserSelection(expectedText) {
+  await page.waitForFunction(
+    (text) => window.getSelection()?.toString() === text,
+    expectedText,
+  );
+}
+
 async function selectWholeParagraph(editor, text) {
   const paragraph = editor.locator("p").filter({ hasText: text }).first();
   await paragraph.click();
@@ -86,11 +110,11 @@ try {
   const fontSizeInput = page.locator('input[aria-label="Kích thước chữ"]');
   const fontSizeSelect = page.locator('select[aria-label="Chọn kích thước chữ"]');
   await editor.click();
-  await page.locator('select[aria-label="Kiểu đoạn"]').selectOption("1");
+  await selectHeading("1", "28");
   assert((await fontSizeInput.inputValue()) === "28", "H1 không hiển thị point mặc định 28");
   await page.keyboard.type("E2E Rich Heading One");
   await page.keyboard.press("Enter");
-  await page.locator('select[aria-label="Kiểu đoạn"]').selectOption("2");
+  await selectHeading("2", "24");
   assert((await fontSizeInput.inputValue()) === "24", "H2 không hiển thị point mặc định 24");
   await page.keyboard.type("E2E Rich Heading");
   await page.keyboard.press("Enter");
@@ -148,17 +172,21 @@ try {
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Danh sách dấu đầu dòng" }).click();
+  await waitForListCount(1);
   await page.keyboard.type("Bullet list one");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Bullet list two");
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Danh sách dấu đầu dòng" }).click();
+  await waitForListCount(1);
   await page.getByRole("button", { name: "Danh sách đánh số" }).click();
+  await waitForListCount(2);
   await page.keyboard.type("Ordered list one");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Ordered list two");
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Danh sách đánh số" }).click();
+  await waitForListCount(2);
 
   const paragraphA = editor.locator("p").filter({ hasText: "Image anchor A" }).first();
   await paragraphA.click();
@@ -328,8 +356,7 @@ try {
   await page.keyboard.down("Shift");
   for (let index = 0; index < "Partial".length; index += 1) await page.keyboard.press("ArrowRight");
   await page.keyboard.up("Shift");
-  const partialBrowserSelection = await page.evaluate(() => window.getSelection()?.toString() ?? "");
-  assert(partialBrowserSelection === "Partial", `Browser selection partial sai: ${JSON.stringify(partialBrowserSelection)}`);
+  await waitForBrowserSelection("Partial");
   await fontSizeInput.fill("17.5");
   await fontSizeInput.press("Enter");
   await page.waitForTimeout(120);
