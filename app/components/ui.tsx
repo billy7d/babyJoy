@@ -22,7 +22,7 @@ import { searchCatalog } from "../lib/search";
 import { ProductImage } from "./product-image";
 import type { CartLine } from "../lib/cart";
 import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
-import { STORE_BRAND } from "../../shared/branding";
+import { useStoreSettings } from "../lib/store-settings";
 import {
   buildCronHealthData,
   CRON_HEALTH_STATUSES,
@@ -50,10 +50,11 @@ export function Icon({
 }
 
 export function Logo() {
+  const { displayName } = useStoreSettings();
   return (
-    <Link to="/" className="brand" aria-label={`${STORE_BRAND} - Trang chủ`}>
+    <Link to="/" className="brand" aria-label={`${displayName} - Trang chủ`}>
       <img src="/images/logo.png" alt="" />
-      <span>{STORE_BRAND}</span>
+      <span>{displayName}</span>
     </Link>
   );
 }
@@ -137,6 +138,7 @@ function MobileNavLink({ to, icon, label }: { to: string; icon: string; label: s
 }
 
 export function PublicFooter() {
+  const { displayName, contactEmail, contactPhone } = useStoreSettings();
   return (
     <footer className="public-footer">
       <div className="footer-grid">
@@ -153,15 +155,15 @@ export function PublicFooter() {
         <div>
           <h4>Liên hệ</h4>
           <p>
-            <Icon>mail</Icon> hello@babyjoy.vn
+            <Icon>mail</Icon> {contactEmail || "Chưa cập nhật"}
           </p>
           <p>
-            <Icon>call</Icon> 1900 123 456
+            <Icon>call</Icon> {contactPhone || "Chưa cập nhật"}
           </p>
         </div>
       </div>
       <div className="copyright">
-        © 2024 {STORE_BRAND} - Dinh dưỡng trọn vẹn cho bé yêu.
+        © 2024 {displayName} - Dinh dưỡng trọn vẹn cho bé yêu.
       </div>
     </footer>
   );

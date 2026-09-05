@@ -1,7 +1,8 @@
 import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
-import { STORE_BRAND } from "../shared/branding";
+import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
+import { loadStoreSettings } from "./store-settings";
 import {
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
@@ -95,6 +96,14 @@ function requiredString(value: unknown, max: number) {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized || normalized.length > max) throw new Error("VALIDATION_ERROR");
   return normalized;
+}
+
+async function storeDisplayNameForShare(env: Env) {
+  try {
+    return (await loadStoreSettings(env)).displayName;
+  } catch {
+    return DEFAULT_STORE_SETTINGS.displayName;
+  }
 }
 
 export function validateCartSharePrepare(value: unknown): CartSharePrepareBody {
@@ -201,6 +210,7 @@ function formatVnd(value: number) {
 
 export function composeCartShareText(input: {
   code: string;
+  storeDisplayName?: string;
   items: Array<Pick<PricedItem, "productName" | "variantName" | "quantity" | "lineTotalVnd">>;
   subtotalVnd: number;
   url: string;
@@ -210,9 +220,11 @@ export function composeCartShareText(input: {
   gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
   reservationExpiresAt?: string | null;
 }) {
+  const storeDisplayName =
+    input.storeDisplayName?.trim() || DEFAULT_STORE_SETTINGS.displayName;
   const maximumLines = Math.min(input.items.length, 8);
   const build = (count: number) => {
-    const lines = [`🛒 GIỎ HÀNG ${STORE_BRAND}`, `Mã: ${input.code}`, ""];
+    const lines = [`🛒 GIỎ HÀNG ${storeDisplayName}`, `Mã: ${input.code}`, ""];
     input.items.slice(0, count).forEach((item) => {
       lines.push(
         `• ${item.productName} — ${item.variantName} × ${item.quantity}`,
@@ -366,11 +378,13 @@ async function buildPreparedResponse(
   const items = await loadSnapshots(row.id, env);
   const schema = await hasPromotionSchema(env);
   const history = await loadPromotionHistory(row.id, env);
+  const storeDisplayName = await storeDisplayNameForShare(env);
   const promotionDiscountVnd = schema ? history.discountAmountVnd : 0;
   const finalTotalVnd = schema ? history.finalTotalVnd : row.subtotalVnd;
   const url = `https://metraphuong.com/c/${rawToken}`;
   const text = composeCartShareText({
     code: row.publicCode,
+    storeDisplayName,
     items: items.map((item) => ({
       productName: item.productName,
       variantName: item.variantName,
@@ -404,7 +418,7 @@ async function buildPreparedResponse(
       reservationDurationMinutes: row.reservationDurationMinutes ?? null,
     },
     share: {
-      title: `Giỏ hàng ${STORE_BRAND} ${row.publicCode}`,
+      title: `Giỏ hàng ${storeDisplayName} ${row.publicCode}`,
       text,
       url,
       copyText: text,
@@ -1079,7 +1093,7 @@ export async function getAdminSellerSettings(env: Env) {
   return json({
     data: seller ?? {
       displayName: "",
-      label: `Người bán ${STORE_BRAND}`,
+      label: `Người bán ${DEFAULT_STORE_SETTINGS.displayName}`,
       messengerUrl: "",
       avatarKey: null,
       avatarUrl: null,

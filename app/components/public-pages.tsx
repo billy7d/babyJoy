@@ -47,8 +47,8 @@ import {
   type PreparedCartShare,
   type SellerContact,
 } from "../lib/cart-share";
+import { useStoreSettings } from "../lib/store-settings";
 import { searchCatalog } from "../lib/search";
-import { STORE_BRAND } from "../../shared/branding";
 import { getPaginationItems } from "../../shared/pagination";
 import {
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
@@ -68,6 +68,7 @@ import {
 
 export function HomePage() {
   const { products, categories } = useCatalog();
+  const { displayName } = useStoreSettings();
   const bestSellers = products
     .filter((product) => product.isBestSeller)
     .sort(
@@ -95,7 +96,7 @@ export function HomePage() {
             mẹ an tâm
           </h1>
           <p className="hero-desktop-copy">
-            Khám phá thế giới dinh dưỡng sạch, an toàn và đa dạng. Cùng {STORE_BRAND}{" "}
+            Khám phá thế giới dinh dưỡng sạch, an toàn và đa dạng. Cùng {displayName}{" "}
             kiến tạo những bữa ăn dặm đầy niềm vui và phát triển toàn diện cho
             bé yêu của bạn.
           </p>
@@ -183,7 +184,7 @@ export function HomePage() {
             <div className="empty-state product-empty-state">
               <Icon>inventory_2</Icon>
               <h2>Chưa có sản phẩm</h2>
-              <p>{STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.</p>
+              <p>{displayName} đang chuẩn bị danh sách sản phẩm mới.</p>
               <Link className="btn primary" to="/shop">
                 Xem cửa hàng
               </Link>
@@ -263,6 +264,7 @@ export function ProductListPage({
   categorySlug?: string;
 }) {
   const { categories, brands, tagOptions, mergeProducts } = useCatalog();
+  const { displayName } = useStoreSettings();
   const [params, setParams] = useSearchParams();
   const [mobileFilters, setMobileFilters] = useState(false);
   const [listing, setListing] = useState<ProductPageResult | null>(null);
@@ -502,7 +504,7 @@ export function ProductListPage({
                 <p>
                   {hasFilters
                     ? "Hãy thử từ khóa hoặc bộ lọc khác."
-                    : `${STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.`}
+                    : `${displayName} đang chuẩn bị danh sách sản phẩm mới.`}
                 </p>
               </div>
             ) : loadError ? (
@@ -616,6 +618,7 @@ export function CategoriesPage() {
 }
 
 export function ProductDetailPage() {
+  const { displayName } = useStoreSettings();
   const { mergeProducts } = useCatalog();
   const location = useLocation();
   const slug = decodeURIComponent(
@@ -685,7 +688,7 @@ export function ProductDetailPage() {
               ? "Sản phẩm có thể đã được gỡ khỏi danh sách."
               : detailError === "load"
                 ? "Vui lòng thử lại sau."
-                : `${STORE_BRAND} đang chuẩn bị danh sách sản phẩm mới.`}
+                : `${displayName} đang chuẩn bị danh sách sản phẩm mới.`}
           </p>
           <Link className="btn primary" to="/shop">
             Về cửa hàng
@@ -1265,6 +1268,7 @@ function MessengerCheckoutControls({
 }: {
   lines: ReturnType<typeof cartDetails>;
 }) {
+  const { displayName } = useStoreSettings();
   const cart = useCart();
   const navigate = useNavigate();
   const fingerprint = cartFingerprint(cart.items);
@@ -1309,7 +1313,7 @@ function MessengerCheckoutControls({
       setStatus(body.status);
       if (body.status === "SENT") completeSentCart(value);
       else if (body.status === "FAILED")
-        setMessage(`${STORE_BRAND} chưa gửi được giỏ hàng qua Messenger. Giỏ hàng của bạn vẫn được giữ lại.`);
+        setMessage(`${displayName} chưa gửi được giỏ hàng qua Messenger. Giỏ hàng của bạn vẫn được giữ lại.`);
     } catch (caught) {
       if (!quiet)
         setMessage(
@@ -1409,7 +1413,7 @@ function MessengerCheckoutControls({
             : status === "IDENTIFIED"
               ? "Messenger đã được nhận diện"
               : status === "CONFIRMED" || status === "SENDING"
-                ? `${STORE_BRAND} đang gửi giỏ hàng`
+                ? `${displayName} đang gửi giỏ hàng`
                 : "Đang chờ xác nhận trên Messenger"}
         </b>
         {hasUnavailable ? (
@@ -1418,7 +1422,7 @@ function MessengerCheckoutControls({
           </p>
         ) : !expired && (
           <p>
-            Mở Messenger, xác nhận giỏ hàng và quay lại {STORE_BRAND}. Shop sẽ nhận
+            Mở Messenger, xác nhận giỏ hàng và quay lại {displayName}. Shop sẽ nhận
             giỏ hàng ngay trong cuộc trò chuyện của bạn.
           </p>
         )}
@@ -1493,6 +1497,7 @@ type PublicCartShareDto = {
 type ActivationIssue = CartShareApiIssue;
 
 export function PublicCartSharePage() {
+  const { displayName } = useStoreSettings();
   const { pathname } = useLocation();
   const token = pathname.split("/").filter(Boolean).at(-1) ?? "";
   const [data, setData] = useState<PublicCartShareDto | null>(null);
@@ -1516,9 +1521,9 @@ export function PublicCartSharePage() {
   }, [token]);
   return (
     <main className="public-share-page">
-      <Link to="/" className="share-brand" aria-label={`${STORE_BRAND} - Trang chủ`}>
+      <Link to="/" className="share-brand" aria-label={`${displayName} - Trang chủ`}>
         <img src="/images/logo.png" alt="" />
-        <span>{STORE_BRAND}</span>
+        <span>{displayName}</span>
       </Link>
       {unavailable ? (
         <section className="share-unavailable">
@@ -2041,6 +2046,7 @@ function MessengerGuideIllustration({ seller }: { seller: SellerContact }) {
 }
 
 export function SuccessPage() {
+  const { displayName } = useStoreSettings();
   const code = decodeURIComponent(
     useLocation().pathname.split("/").filter(Boolean).at(-1) ??
       "GH-260825-X7K2",
@@ -2084,7 +2090,7 @@ export function SuccessPage() {
           </h1>
           <p>
             {data.contactChannel === "MESSENGER"
-              ? `${STORE_BRAND} đã gửi chi tiết giỏ hàng vào cuộc trò chuyện Messenger của bạn. Shop sẽ tư vấn và xác nhận hàng ngay tại đó.`
+              ? `${displayName} đã gửi chi tiết giỏ hàng vào cuộc trò chuyện Messenger của bạn. Shop sẽ tư vấn và xác nhận hàng ngay tại đó.`
               : "Người bán sẽ liên hệ với bạn để xác nhận tình trạng sản phẩm, phí giao hàng và phương thức thanh toán."}
           </p>
           <div className="success-data">
