@@ -10,7 +10,7 @@ import {
   type ProductDescriptionAsset,
   type ProductDescriptionDocument,
 } from "../../shared/product-description";
-import { STORE_BRAND } from "../../shared/branding";
+import { useStoreSettings } from "../lib/store-settings";
 import { ProductDescriptionEditor } from "./product-description-editor";
 import { ProductRichDescription } from "./product-rich-description";
 import { AdminShell, Icon, StatusBadge, PublicShell } from "./ui";
@@ -84,6 +84,7 @@ function pageFingerprint(
 }
 
 export function PublicContentPage({ slug }: { slug: ContentPageSlug }) {
+  const { displayName } = useStoreSettings();
   const [page, setPage] = useState<PublicContentPageData | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "not-found" | "error">(
     "loading",
@@ -105,14 +106,14 @@ export function PublicContentPage({ slug }: { slug: ContentPageSlug }) {
         }
         if (!response.ok || !isPublicPageData(body.page)) throw new Error("CONTENT_PAGE_LOAD_FAILED");
         setPage(body.page);
-        document.title = `${body.page.title} | ${STORE_BRAND}`;
+        document.title = `${body.page.title} | ${displayName}`;
         setState("ready");
       })
       .catch(() => {
         if (!controller.signal.aborted) setState("error");
       });
     return () => controller.abort();
-  }, [slug]);
+  }, [displayName, slug]);
 
   return (
     <PublicShell>

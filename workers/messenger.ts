@@ -1,6 +1,7 @@
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError, sha256 } from "./rate-limit";
-import { STORE_BRAND } from "../shared/branding";
+import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
+import { loadStoreSettings } from "./store-settings";
 import {
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
@@ -8,6 +9,14 @@ import {
   loadPromotionHistory,
   PromotionCartError,
 } from "./promotions";
+
+async function storeDisplayNameForMessenger(env: Env) {
+  try {
+    return (await loadStoreSettings(env)).displayName;
+  } catch {
+    return DEFAULT_STORE_SETTINGS.displayName;
+  }
+}
 
 export { sha256 } from "./rate-limit";
 
@@ -885,6 +894,7 @@ function formatVnd(value: number) {
 
 export function composeMessengerCartSummary(request: {
   code: string;
+  storeDisplayName?: string;
   items: PricedItem[];
   subtotalVnd: number;
   promotionDiscountVnd?: number;
@@ -892,7 +902,9 @@ export function composeMessengerCartSummary(request: {
   promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
   gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
 }) {
-  const lines = [`🛒 GIỎ HÀNG ${STORE_BRAND}`, "", `Mã: ${request.code}`, ""];
+  const storeDisplayName =
+    request.storeDisplayName?.trim() || DEFAULT_STORE_SETTINGS.displayName;
+  const lines = [`🛒 GIỎ HÀNG ${storeDisplayName}`, "", `Mã: ${request.code}`, ""];
   request.items.forEach((item) => {
     lines.push(
       `• ${item.productName}`,
@@ -925,7 +937,7 @@ export function composeMessengerCartSummary(request: {
       ? [`Tổng thanh toán: ${formatVnd(request.finalTotalVnd)}`]
       : []),
     "",
-    `✅ ${STORE_BRAND} đã nhận giỏ hàng.`,
+    `✅ ${storeDisplayName} đã nhận giỏ hàng.`,
     "",
     "Shop sẽ tư vấn và xác nhận hàng với bạn ngay tại cuộc trò chuyện này.",
   );
@@ -1019,12 +1031,13 @@ export async function sendMessengerMessage(
 
 async function sendConfirmationPrompt(session: SessionRow, env: Env) {
   if (!session.psid) return;
+  const displayName = await storeDisplayNameForMessenger(env);
   await sendMessengerMessage(env, session.psid, {
     attachment: {
       type: "template",
       payload: {
         template_type: "button",
-        text: `Bạn đang xác nhận giỏ hàng ${session.publicCode}.\n\nChạm nút bên dưới để ${STORE_BRAND} gửi chi tiết giỏ hàng vào cuộc trò chuyện này.`,
+        text: `Bạn đang xác nhận giỏ hàng ${session.publicCode}.\n\nChạm nút bên dưới để ${displayName} gửi chi tiết giỏ hàng vào cuộc trò chuyện này.`,
         buttons: [
           {
             type: "postback",
@@ -1072,10 +1085,12 @@ async function deliverCartSummary(cartRequestId: string, env: Env) {
     .all<PricedItem>();
   const schema = await hasPromotionSchema(env);
   const history = await loadPromotionHistory(cartRequestId, env);
+  const displayName = await storeDisplayNameForMessenger(env);
   try {
     const messageId = await sendMessengerMessage(env, delivery.psid, {
       text: composeMessengerCartSummary({
         code: delivery.code,
+        storeDisplayName: displayName,
         items: items.results,
         subtotalVnd: delivery.subtotalVnd,
         promotionDiscountVnd: schema ? history.discountAmountVnd : 0,

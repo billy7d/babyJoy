@@ -1,13 +1,14 @@
-import { STORE_BRAND } from "../../shared/branding";
+import { useStoreSettings } from "../lib/store-settings";
 
 export function AccessRequiredPage() {
+  const { displayName } = useStoreSettings();
   return (
     <main className="access-required-page">
       <section className="access-required-card">
         <div className="access-required-mark" aria-hidden="true">
           <span>🔒</span>
         </div>
-        <p className="access-required-kicker">{STORE_BRAND}</p>
+        <p className="access-required-kicker">{displayName}</p>
         <h1>Quyền truy cập chưa sẵn sàng</h1>
         <p>
           Quyền truy cập của bạn chưa có hoặc đã hết hạn. Vui lòng mở đường dẫn

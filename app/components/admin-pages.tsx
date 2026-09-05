@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
   formatVnd,
@@ -93,6 +93,14 @@ import {
   CRON_HEALTH_LABELS,
   formatCronHealthTimestamp,
 } from "../lib/cron-health-ui";
+import {
+  getAdminStoreSettings,
+  saveAdminStoreSettings,
+} from "../lib/store-settings";
+import {
+  DEFAULT_STORE_SETTINGS,
+  type StoreSettings,
+} from "../../shared/store-settings";
 
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
@@ -2604,7 +2612,28 @@ function CronHealthCardFromContext() {
   return <CronHealthCard {...useAdminCronHealth()} />;
 }
 
+function sameStoreSettings(left: StoreSettings, right: StoreSettings) {
+  return (
+    left.displayName === right.displayName &&
+    left.contactEmail === right.contactEmail &&
+    left.contactPhone === right.contactPhone
+  );
+}
+
 export function AdminSettingsPage() {
+  const [storeSettingsForm, setStoreSettingsForm] = useState<StoreSettings>(
+    DEFAULT_STORE_SETTINGS,
+  );
+  const [storeSettingsInitial, setStoreSettingsInitial] =
+    useState<StoreSettings | null>(null);
+  const [storeSettingsLoadState, setStoreSettingsLoadState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [storeSettingsSaving, setStoreSettingsSaving] = useState(false);
+  const [storeSettingsMessage, setStoreSettingsMessage] = useState("");
+  const [storeSettingsError, setStoreSettingsError] = useState("");
+  const storeSettingsRequestId = useRef(0);
+  const storeSettingsSavingRef = useRef(false);
   const [seller, setSeller] = useState({
     displayName: "",
     label: "Người bán BabyJoy",
@@ -2626,6 +2655,65 @@ export function AdminSettingsPage() {
   const [checkoutReservationMessage, setCheckoutReservationMessage] = useState("");
   const [checkoutReservationError, setCheckoutReservationError] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
+  const storeSettingsDirty = Boolean(
+    storeSettingsInitial &&
+      !sameStoreSettings(storeSettingsForm, storeSettingsInitial),
+  );
+
+  const loadStoreSettings = useCallback(async () => {
+    const requestId = ++storeSettingsRequestId.current;
+    setStoreSettingsLoadState("loading");
+    setStoreSettingsError("");
+    try {
+      const next = await getAdminStoreSettings();
+      if (storeSettingsRequestId.current !== requestId) return;
+      setStoreSettingsForm(next);
+      setStoreSettingsInitial(next);
+      setStoreSettingsMessage("");
+      setStoreSettingsLoadState("ready");
+    } catch {
+      if (storeSettingsRequestId.current !== requestId) return;
+      setStoreSettingsLoadState("error");
+      setStoreSettingsError("Không tải được thông tin cửa hàng từ D1.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStoreSettings();
+  }, [loadStoreSettings]);
+
+  const updateStoreSetting = <K extends keyof StoreSettings>(
+    field: K,
+    value: StoreSettings[K],
+  ) => {
+    setStoreSettingsForm((current) => ({ ...current, [field]: value }));
+    setStoreSettingsMessage("");
+    setStoreSettingsError("");
+  };
+
+  const saveStoreSettings = useCallback(async () => {
+    if (storeSettingsSavingRef.current || !storeSettingsInitial) return;
+    storeSettingsSavingRef.current = true;
+    setStoreSettingsSaving(true);
+    setStoreSettingsError("");
+    setStoreSettingsMessage("");
+    try {
+      const canonical = await saveAdminStoreSettings(storeSettingsForm);
+      setStoreSettingsForm(canonical);
+      setStoreSettingsInitial(canonical);
+      setStoreSettingsMessage("Đã lưu thông tin cửa hàng.");
+    } catch (caught) {
+      setStoreSettingsError(
+        caught instanceof Error
+          ? caught.message
+          : "Chưa thể lưu thông tin cửa hàng.",
+      );
+    } finally {
+      storeSettingsSavingRef.current = false;
+      setStoreSettingsSaving(false);
+    }
+  }, [storeSettingsForm, storeSettingsInitial]);
+
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/admin/settings/seller")
@@ -2855,25 +2943,99 @@ export function AdminSettingsPage() {
             <h2>Thông tin cửa hàng</h2>
           </span>
         </div>
-        <label>
-          Tên hiển thị
-          <input defaultValue="BabyJoy" />
-        </label>
-        <label>
-          Email liên hệ
-          <input defaultValue="hello@babyjoy.vn" />
-        </label>
-        <label>
-          Số điện thoại
-          <input defaultValue="1900 123 456" />
-        </label>
-        <p>
-          Credential kết nối Messenger được quản lý bằng Cloudflare Secret,
-          không hiển thị tại đây.
-        </p>
-        <button className="btn primary">
-          <Icon>save</Icon> LƯU CÀI ĐẶT
-        </button>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveStoreSettings();
+          }}
+        >
+          <label>
+            Tên hiển thị
+            <input
+              name="displayName"
+              value={storeSettingsForm.displayName}
+              onChange={(event) =>
+                updateStoreSetting("displayName", event.target.value)
+              }
+              disabled={storeSettingsLoadState === "loading" || storeSettingsSaving}
+              maxLength={120}
+            />
+          </label>
+          <label>
+            Email liên hệ
+            <input
+              name="contactEmail"
+              type="email"
+              value={storeSettingsForm.contactEmail}
+              onChange={(event) =>
+                updateStoreSetting("contactEmail", event.target.value)
+              }
+              disabled={storeSettingsLoadState === "loading" || storeSettingsSaving}
+              maxLength={254}
+            />
+          </label>
+          <label>
+            Số điện thoại
+            <input
+              name="contactPhone"
+              value={storeSettingsForm.contactPhone}
+              onChange={(event) =>
+                updateStoreSetting("contactPhone", event.target.value)
+              }
+              disabled={storeSettingsLoadState === "loading" || storeSettingsSaving}
+              maxLength={64}
+            />
+          </label>
+          {storeSettingsLoadState === "loading" && (
+            <p role="status" aria-live="polite">
+              Đang tải thông tin cửa hàng…
+            </p>
+          )}
+          {storeSettingsLoadState === "error" && (
+            <div>
+              <p className="form-error" role="alert">
+                {storeSettingsError}
+              </p>
+              <button
+                className="btn secondary-btn"
+                type="button"
+                onClick={() => void loadStoreSettings()}
+                disabled={storeSettingsSaving}
+              >
+                <Icon>refresh</Icon> THỬ TẢI LẠI
+              </button>
+            </div>
+          )}
+          <p>
+            Credential kết nối Messenger được quản lý bằng Cloudflare Secret,
+            không hiển thị tại đây.
+          </p>
+          <small role="status" aria-live="polite">
+            {storeSettingsDirty ? "Có thay đổi chưa lưu." : "Đã đồng bộ với D1."}
+          </small>
+          {storeSettingsError && storeSettingsLoadState !== "error" && (
+            <p className="form-error" role="alert">
+              {storeSettingsError}
+            </p>
+          )}
+          {storeSettingsMessage && (
+            <p className="form-success" role="status" aria-live="polite">
+              {storeSettingsMessage}
+            </p>
+          )}
+          <button
+            className="btn primary"
+            type="submit"
+            disabled={
+              storeSettingsLoadState !== "ready" ||
+              storeSettingsSaving ||
+              !storeSettingsDirty
+            }
+          >
+            <Icon>{storeSettingsSaving ? "progress_activity" : "save"}</Icon>{" "}
+            {storeSettingsSaving ? "ĐANG LƯU..." : "LƯU CÀI ĐẶT"}
+          </button>
+        </form>
       </section>
       <section className="editor-card settings-card storefront-settings-card">
         <div className="editor-card-title">

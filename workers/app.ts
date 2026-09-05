@@ -126,6 +126,11 @@ import {
   getPublicContentPage,
   saveAdminContentPage,
 } from "./content-pages";
+import {
+  getAdminStoreSettings,
+  getPublicStoreSettings,
+  saveAdminStoreSettings,
+} from "./store-settings";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -2470,6 +2475,8 @@ async function handleApi(
       gateEnabled: isStorefrontAccessGateEnabled(env),
     });
   }
+  if (request.method === "GET" && path === "/api/store-settings")
+    return getPublicStoreSettings(env);
   if (request.method === "GET" && path === "/api/categories")
     return listCategories(env);
   if (request.method === "GET" && path === "/api/tags")
@@ -2587,6 +2594,10 @@ async function handleApi(
     return getStorefrontSettings(env);
   if (request.method === "PUT" && path === "/api/admin/settings")
     return saveStorefrontSettings(request, env);
+  if (request.method === "GET" && path === "/api/admin/settings/store")
+    return getAdminStoreSettings(env);
+  if (request.method === "PUT" && path === "/api/admin/settings/store")
+    return saveAdminStoreSettings(request, env);
   if (request.method === "GET" && path === "/api/admin/settings/storefront")
     return getStorefrontSettings(env);
   if (request.method === "PUT" && path === "/api/admin/settings/storefront")

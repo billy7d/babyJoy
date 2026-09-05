@@ -13,6 +13,7 @@ import "./admin-cart-requests.css";
 import "./mobile-cart.css";
 import "./product-description.css";
 import "./product-description-heading.css";
+import { StoreSettingsProvider } from "./lib/store-settings";
 
 export const links: Route.LinksFunction = () => [];
 
@@ -35,7 +36,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  return (
+    <StoreSettingsProvider>
+      <Outlet />
+    </StoreSettingsProvider>
+  );
 }
 
 function routeErrorPath() {
