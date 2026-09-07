@@ -2325,6 +2325,7 @@ export function AdminCartRequestDetailPage() {
 
 export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   const isCategories = type === "categories";
+  type CategoryStatusFilter = "ALL" | "ACTIVE" | "HIDDEN";
   type TaxonomyRow = {
     id: string;
     name: string;
@@ -2348,11 +2349,23 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   const [categoryProducts, setCategoryProducts] = useState<CategoryProduct[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [categoryStatusFilter, setCategoryStatusFilter] =
+    useState<CategoryStatusFilter>("ALL");
+  const categoryStatusOptions: Array<[CategoryStatusFilter, string]> = [
+    ["ALL", "Tất cả"],
+    ["ACTIVE", "Đang hoạt động"],
+    ["HIDDEN", "Đã ẩn"],
+  ];
   const loadRows = async () => {
     const response = await fetch(`/api/admin/${type}`);
     if (!response.ok) throw new Error("TAXONOMY_LOAD_FAILED");
     const body = (await response.json()) as { data?: TaxonomyRow[] };
-    setRows(body.data ?? []);
+    const data = (body.data ?? []).map((row) => ({
+      ...row,
+      isActive: Boolean(row.isActive),
+    }));
+    setRows(data);
+    return data;
   };
   useEffect(() => {
     void loadRows().catch(() => setMessage("Không tải được dữ liệu phân loại từ D1."));
@@ -2361,8 +2374,67 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
     setEditing(row);
     if (!isCategories) return;
     const response = await fetch(`/api/admin/categories/${row.id}/products`);
+    if (!response.ok) {
+      setCategoryProducts([]);
+      setMessage("Không tải được danh sách sản phẩm trong danh mục.");
+      return;
+    }
     const body = (await response.json()) as { data?: CategoryProduct[] };
     setCategoryProducts(body.data ?? []);
+  };
+  const toggleCategoryVisibility = async (row: TaxonomyRow) => {
+    if (!isCategories || busy) return;
+    const isActive = Boolean(row.isActive);
+    const confirmation = isActive
+      ? `Ẩn danh mục "${row.name}"?\n\nDanh mục sẽ không còn hiển thị trên storefront.\nCác sản phẩm thuộc danh mục vẫn được giữ nguyên và có thể khôi phục khi kích hoạt lại.`
+      : `Kích hoạt lại danh mục "${row.name}"?\n\nDanh mục sẽ có thể xuất hiện lại trên storefront cùng các sản phẩm đang hợp lệ thuộc danh mục này.`;
+    if (!window.confirm(confirmation)) return;
+
+    setBusy(true);
+    setMessage(isActive ? "Đang ẩn danh mục..." : "Đang kích hoạt lại danh mục...");
+    try {
+      const response = await fetch(`/api/admin/categories/${row.id}`, {
+        method: isActive ? "DELETE" : "PUT",
+        ...(isActive
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                name: row.name,
+                slug: row.slug,
+                description: row.description ?? "",
+                imageKey: row.imageKey ?? null,
+                sortOrder: row.sortOrder,
+                isActive: true,
+              }),
+            }),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(
+          body.error?.message ??
+            (isActive ? "Chưa thể ẩn danh mục." : "Chưa thể kích hoạt lại danh mục."),
+        );
+        return;
+      }
+
+      // Luôn đọc lại danh sách authoritative sau khi đổi trạng thái category.
+      const refreshedRows = await loadRows();
+      if (editing?.id === row.id) {
+        setEditing(refreshedRows.find((item) => item.id === row.id) ?? null);
+      }
+      setMessage(isActive ? "Đã ẩn danh mục." : "Đã kích hoạt lại danh mục.");
+    } catch {
+      setMessage(
+        isActive
+          ? "Chưa thể ẩn danh mục. Vui lòng thử lại."
+          : "Chưa thể kích hoạt lại danh mục. Vui lòng thử lại.",
+      );
+    } finally {
+      setBusy(false);
+    }
   };
   const saveTaxonomyRow = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2460,6 +2532,14 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
       setBusy(false);
     }
   };
+  const visibleRows = isCategories
+    ? rows.filter((row) =>
+        categoryStatusFilter === "ALL" ||
+        (categoryStatusFilter === "ACTIVE"
+          ? Boolean(row.isActive)
+          : !Boolean(row.isActive)),
+      )
+    : rows;
   return (
     <AdminShell title={isCategories ? "Danh Mục" : "Tags"}>
       <div className="admin-page-heading">
@@ -2475,6 +2555,26 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
           <Icon>add</Icon> THÊM {isCategories ? "DANH MỤC" : "TAG"}
         </button>
       </div>
+      {isCategories ? (
+        <div
+          className="filter-tags taxonomy-status-filter"
+          role="group"
+          aria-label="Lọc trạng thái danh mục"
+        >
+          <span>Trạng thái:</span>
+          {categoryStatusOptions.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={categoryStatusFilter === value ? "active" : ""}
+              aria-pressed={categoryStatusFilter === value}
+              onClick={() => setCategoryStatusFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <section className="admin-table-card taxonomy-card">
         <div className="table-scroll">
           <table>
@@ -2489,7 +2589,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {visibleRows.length ? visibleRows.map((row) => (
                 <tr key={row.id}>
                   <td>
                     <b>{row.name}</b>
@@ -2498,15 +2598,41 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
                   <td>{isCategories ? (row.productCount ?? 0) : (row.groupType ?? "Đặc tính")}</td>
                   <td>{row.sortOrder}</td>
                   <td>
-                    <StatusBadge status={row.isActive ? "AVAILABLE" : "HIDDEN"} />
+                    <StatusBadge status={row.isActive ? "ACTIVE" : "HIDDEN"} />
                   </td>
                   <td>
-                    <button type="button" onClick={() => void openCategory(row)}>
+                    <div className="taxonomy-row-actions">
+                      <button
+                        type="button"
+                        aria-label={`Sửa ${row.name}`}
+                        title={`Sửa ${row.name}`}
+                        onClick={() => void openCategory(row)}
+                      >
                       <Icon>edit</Icon>
-                    </button>
+                      </button>
+                      {isCategories ? (
+                        <button
+                          className="taxonomy-visibility-btn"
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void toggleCategoryVisibility(row)}
+                        >
+                          <Icon>{row.isActive ? "visibility_off" : "restore"}</Icon>
+                          {row.isActive ? "ẨN DANH MỤC" : "KÍCH HOẠT LẠI"}
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
-              ))}
+              )) : (
+                <tr>
+                  <td colSpan={6}>
+                    {isCategories
+                      ? "Không có danh mục phù hợp với bộ lọc."
+                      : "Không có tag phù hợp."}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -2529,16 +2655,34 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
         )}
         <div className="form-grid">
           <label>Thứ tự<input name="sortOrder" type="number" defaultValue={editing?.sortOrder ?? rows.length + 1} /></label>
-          <label className="tag-choice"><input name="isActive" type="checkbox" defaultChecked={editing ? Boolean(editing.isActive) : true} /> Đang hoạt động</label>
+          <label className="taxonomy-status-field">
+            <span>{isCategories ? "Trạng thái danh mục" : "Trạng thái tag"}</span>
+            <span className="taxonomy-status-checkbox">
+              <input
+                name="isActive"
+                type="checkbox"
+                defaultChecked={editing ? Boolean(editing.isActive) : true}
+              />
+              <span>Đang hoạt động</span>
+            </span>
+            <small className="field-help">
+              {isCategories
+                ? editing && !Boolean(editing.isActive)
+                  ? "Danh mục đang bị ẩn khỏi storefront nhưng dữ liệu và quan hệ sản phẩm vẫn được giữ lại."
+                  : "Danh mục có thể xuất hiện trên storefront."
+                : "Tag đang hoạt động có thể được sử dụng trong các lựa chọn sản phẩm."}
+            </small>
+          </label>
         </div>
         {isCategories && editing && (
           <section className="category-product-manager">
             <h3>Sản phẩm trong nhóm ({categoryProducts.filter((item) => item.selected).length})</h3>
             <div className="selected-tags taxonomy-choices">
               {categoryProducts.map((product) => (
-                <label key={product.id} className="tag-choice">
+                <label key={product.id} className="category-product-choice">
                   <input
                     type="checkbox"
+                    aria-label={`Chọn ${product.name}`}
                     checked={Boolean(product.selected)}
                     onChange={(event) =>
                       setCategoryProducts((current) => current.map((item) =>
@@ -2546,7 +2690,10 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
                       ))
                     }
                   />
-                  {product.name}
+                  <span className="category-product-copy">
+                    <span>{product.name}</span>
+                    <StatusBadge status={product.status} />
+                  </span>
                 </label>
               ))}
             </div>
@@ -2555,36 +2702,15 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
         <div className="editor-heading">
           <span>{message}</span>
           <div>
-            {isCategories && editing?.isActive ? (
+            {isCategories && editing ? (
               <button
+                className="taxonomy-visibility-btn"
                 type="button"
                 disabled={busy}
-                onClick={async () => {
-                  if (busy) return;
-                  if (!window.confirm(`Ẩn nhóm "${editing.name}"? Quan hệ sản phẩm sẽ được giữ nguyên.`)) return;
-                  setBusy(true);
-                  setMessage("Đang ẩn danh mục...");
-                  try {
-                    const response = await fetch(`/api/admin/categories/${editing.id}`, { method: "DELETE" });
-                    if (!response.ok) {
-                      const body = (await response.json().catch(() => ({}))) as {
-                        error?: { message?: string };
-                      };
-                      setMessage(body.error?.message ?? "Chưa thể ẩn danh mục.");
-                      return;
-                    }
-                    setEditing(null);
-                    setCategoryProducts([]);
-                    await loadRows();
-                    setMessage("Đã ẩn danh mục.");
-                  } catch {
-                    setMessage("Chưa thể ẩn danh mục. Vui lòng thử lại.");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
+                onClick={() => void toggleCategoryVisibility(editing)}
               >
-                ẨN DANH MỤC
+                <Icon>{editing.isActive ? "visibility_off" : "restore"}</Icon>
+                {editing.isActive ? "ẨN DANH MỤC" : "KÍCH HOẠT LẠI"}
               </button>
             ) : null}
             {editing ? (

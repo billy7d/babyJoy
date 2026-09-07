@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
+await import("./admin-category-reactivation.e2e.mjs");
 await import("./content-pages.e2e.mjs");
 await import("./store-settings.e2e.mjs");
 let catalogIsEmpty = false;
