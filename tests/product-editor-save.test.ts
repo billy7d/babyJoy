@@ -41,7 +41,7 @@ describe("Product Editor save lifecycle", () => {
   it("UI khóa Save khi pending và chuyển sang edit route sau create", () => {
     const source = readFileSync("app/components/admin-pages.tsx", "utf8");
     expect(source).toContain(
-      "disabled={saving || uploading || Boolean(id && !editing)}",
+      "disabled={saving || uploading || Boolean(uploadingVariantId) || Boolean(id && !editing)}",
     );
     expect(source).toContain(
       "navigate(getProductEditPath(result.id), { replace: true })",

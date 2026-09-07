@@ -14,6 +14,7 @@ import {
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  getVariantStatus,
   isVariantPurchasable,
 } from "../lib/catalog";
 import { useCatalog } from "../lib/catalog-context";
@@ -223,6 +224,9 @@ export function ProductCard({
 }) {
   const variant = getDefaultVariant(product);
   const displayVariant = getDisplayVariant(product) ?? variant;
+  const visibleVariants = product.variants.filter(
+    (item) => getVariantStatus(item) !== "HIDDEN",
+  );
   const unavailable = !variant || !isVariantPurchasable(variant);
   return (
     <article
@@ -246,6 +250,7 @@ export function ProductCard({
         </Link>
         {!compact && <p>{product.shortDescription}</p>}
         <div className="product-foot">
+          {visibleVariants.length > 1 && <small className="price-prefix">Từ</small>}
           <Price value={displayVariant?.priceVnd ?? 0} />
           <InlineCartControl product={product} />
         </div>

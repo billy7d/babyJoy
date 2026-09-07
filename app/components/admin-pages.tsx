@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import {
   formatVnd,
   getDisplayVariant,
+  getVariantStatus,
   type Brand,
   type Category,
   type Product,
@@ -130,7 +131,7 @@ export function mapAdminProductRow(row: AdminProductRow): AdminProduct {
   const product = mapApiProduct(row);
   const adminStatus =
     row.status ??
-    (product.variants.some((variant) => variant.availability === "AVAILABLE")
+    (product.variants.some((variant) => getVariantStatus(variant) === "SELLING")
       ? "AVAILABLE"
       : "OUT_OF_STOCK");
   return { ...product, adminStatus };
@@ -474,6 +475,10 @@ export function ProductEditorPage() {
   ]);
   const [deletedVariantIds, setDeletedVariantIds] = useState<string[]>([]);
   const [variantErrors, setVariantErrors] = useState<VariantErrors>({});
+  const [editingVariantClientId, setEditingVariantClientId] = useState<string | null>(
+    () => variants[0]?.clientId ?? null,
+  );
+  const [uploadingVariantId, setUploadingVariantId] = useState<string | null>(null);
   const [tags, setTags] = useState<Array<{ id: string; name: string }>>([]);
   const [featured, setFeatured] = useState(false);
   const [bestSeller, setBestSeller] = useState(false);
@@ -494,10 +499,12 @@ export function ProductEditorPage() {
     let cancelled = false;
     const load = async () => {
       if (!id) {
+        const draft = createDraftVariant();
         setEditing(null);
-        setVariants([createDraftVariant()]);
+        setVariants([draft]);
         setDeletedVariantIds([]);
         setVariantErrors({});
+        setEditingVariantClientId(draft.clientId);
         setDescriptionContent(legacyDescriptionToDocument(""));
         setDescriptionAssets([]);
       }
@@ -550,6 +557,7 @@ export function ProductEditorPage() {
         setVariants(product.variants.map(toEditableVariant));
         setDeletedVariantIds([]);
         setVariantErrors({});
+        setEditingVariantClientId(null);
         setImages(product.images ?? []);
         setDescriptionContent(
           product.descriptionContent ??
@@ -689,11 +697,114 @@ export function ProductEditorPage() {
     });
   };
 
+  const uploadVariantFiles = async (
+    clientId: string,
+    files: FileList | null,
+  ) => {
+    if (!files?.length || uploadingVariantId) return;
+    const selectedFiles = Array.from(files);
+    setUploadingVariantId(clientId);
+    let uploadedCount = 0;
+    try {
+      for (const file of selectedFiles) {
+        if (!isAllowedImageType(file.type.toLowerCase()))
+          throw new Error("Chỉ hỗ trợ ảnh JPEG, PNG và WebP.");
+        if (file.size > MAX_SOURCE_IMAGE_BYTES)
+          throw new Error("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
+      }
+      for (const [index, file] of selectedFiles.entries()) {
+        setMessage(`Đang tối ưu ảnh phân loại ${index + 1}/${selectedFiles.length}...`);
+        await yieldToBrowser();
+        const optimized = await optimizeProductImage(file);
+        if (optimized.optimizedBytes > MAX_STORED_IMAGE_BYTES)
+          throw new Error("Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.");
+        const response = await fetch("/api/admin/images", {
+          method: "POST",
+          headers: { "content-type": optimized.mimeType },
+          body: optimized.blob,
+        });
+        const body = (await response.json()) as {
+          key?: string;
+          url?: string;
+          error?: { message?: string };
+        };
+        if (!response.ok || !body.key || !body.url)
+          throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
+        setVariants((current) =>
+          current.map((variant) => {
+            if (variant.clientId !== clientId) return variant;
+            const nextImage = {
+              r2Key: body.key!,
+              url: body.url!,
+              altText: variant.name || "Ảnh phân loại BabyJoy",
+              sortOrder: variant.images.length,
+              isPrimary: variant.images.length === 0,
+              variantId: variant.id,
+            };
+            return { ...variant, images: [...variant.images, nextImage] };
+          }),
+        );
+        uploadedCount += 1;
+      }
+      setMessage(`Đã tải ${uploadedCount} ảnh phân loại. Hãy lưu sản phẩm để gắn ảnh.`);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Tải ảnh phân loại thất bại.");
+    } finally {
+      setUploadingVariantId(null);
+    }
+  };
+
+  const updateVariantImageOrder = (
+    clientId: string,
+    imageIndex: number,
+    action: "primary" | "up" | "down" | "delete",
+  ) => {
+    setVariants((current) =>
+      current.map((variant) => {
+        if (variant.clientId !== clientId) return variant;
+        let images = [...variant.images];
+        if (action === "delete") images.splice(imageIndex, 1);
+        if (action === "primary" && images[imageIndex]) {
+          const [selected] = images.splice(imageIndex, 1);
+          images.unshift(selected);
+        }
+        if (action === "up" && imageIndex > 0)
+          [images[imageIndex - 1], images[imageIndex]] = [images[imageIndex], images[imageIndex - 1]];
+        if (action === "down" && imageIndex < images.length - 1)
+          [images[imageIndex], images[imageIndex + 1]] = [images[imageIndex + 1], images[imageIndex]];
+        images = images.map((image, sortOrder) => ({
+          ...image,
+          sortOrder,
+          isPrimary: sortOrder === 0,
+        }));
+        return { ...variant, images };
+      }),
+    );
+  };
+
+  const moveVariant = (clientId: string, offset: number) => {
+    setVariants((current) => {
+      const index = current.findIndex((variant) => variant.clientId === clientId);
+      const target = index + offset;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
   const addVariant = () => {
-    setVariants((current) => [...current, createDraftVariant()]);
+    const draft = createDraftVariant();
+    setVariants((current) => [...current, draft]);
+    setEditingVariantClientId(draft.clientId);
   };
 
   const deleteVariant = (variant: EditableVariant) => {
+    if (
+      !window.confirm(
+        `Bạn có chắc muốn xóa phân loại ${variant.name || "mới"}${variant.packageSize ? ` · ${variant.packageSize}` : ""}?${variant.id ? " Dữ liệu có lịch sử sẽ được lưu trữ an toàn." : ""}`,
+      )
+    ) return;
     setVariants((current) =>
       current.filter((item) => item.clientId !== variant.clientId),
     );
@@ -751,6 +862,17 @@ export function ProductEditorPage() {
       variants: variants.map((variant) => ({
         ...variant,
         priceVnd: Number(variant.priceVnd),
+        compareAtPriceVnd: variant.compareAtPriceVnd.trim()
+          ? Number(variant.compareAtPriceVnd)
+          : null,
+        availability: variant.status === "SELLING" ? "AVAILABLE" : variant.status,
+        images: variant.images.map(({ id: imageId, r2Key, altText, isPrimary }, sortOrder) => ({
+          id: imageId,
+          r2Key,
+          altText,
+          isPrimary,
+          sortOrder,
+        })),
       })),
       deletedVariantIds,
     };
@@ -814,7 +936,7 @@ export function ProductEditorPage() {
             <button
               className="btn primary"
               type="submit"
-              disabled={saving || uploading || Boolean(id && !editing)}
+              disabled={saving || uploading || Boolean(uploadingVariantId) || Boolean(id && !editing)}
             >
               <Icon>save</Icon> LƯU SẢN PHẨM
             </button>
@@ -896,120 +1018,74 @@ export function ProductEditorPage() {
             </EditorCard>
             <EditorCard
               icon="view_list"
-              title="Phân loại & Giá bán"
+              title="Phân loại sản phẩm"
               action="+ Thêm phân loại"
               onAction={addVariant}
             >
-              <div className="variant-table">
-                <div className="variant-head">
-                  <span>Tên phân loại</span>
-                  <span>Mã SKU</span>
-                  <span>Giá bán (₫)</span>
-                  <span>Tình trạng & tồn kho</span>
-                </div>
-                {variants.map((variant) => {
+              <div className="variant-card-list">
+                {variants.map((variant, variantIndex) => {
                   const errors = variantErrors[variant.clientId] ?? {};
+                  const isEditing = editingVariantClientId === variant.clientId;
+                  const primaryImage = variant.images.find((image) => image.isPrimary) ?? variant.images[0];
+                  const statusLabel = variant.status === "SELLING"
+                    ? "Đang bán"
+                    : variant.status === "OUT_OF_STOCK"
+                      ? "Hết hàng"
+                      : "Đang ẩn";
                   return (
-                    <div className="variant-row" key={variant.id ?? variant.clientId}>
-                      <label>
-                        <span className="sr-only">Tên phân loại</span>
-                        <input
-                          value={variant.name}
-                          onChange={(event) =>
-                            updateVariant(variant.clientId, "name", event.target.value)
-                          }
-                          aria-invalid={Boolean(errors.name)}
-                          aria-describedby={errors.name ? `${variant.clientId}-name-error` : undefined}
-                        />
-                        {errors.name && <small id={`${variant.clientId}-name-error`} className="form-error">{errors.name}</small>}
-                      </label>
-                      <label>
-                        <span className="sr-only">Mã SKU</span>
-                        <input
-                          value={variant.sku}
-                          onChange={(event) =>
-                            updateVariant(variant.clientId, "sku", event.target.value)
-                          }
-                          aria-invalid={Boolean(errors.sku)}
-                          aria-describedby={errors.sku ? `${variant.clientId}-sku-error` : undefined}
-                        />
-                        {errors.sku && <small id={`${variant.clientId}-sku-error`} className="form-error">{errors.sku}</small>}
-                      </label>
-                      <label>
-                        <span className="sr-only">Giá bán</span>
-                        <input
-                          type="number"
-                          min="1"
-                          value={variant.priceVnd}
-                          onChange={(event) =>
-                            updateVariant(variant.clientId, "priceVnd", event.target.value)
-                          }
-                          aria-invalid={Boolean(errors.priceVnd)}
-                          aria-describedby={errors.priceVnd ? `${variant.clientId}-price-error` : undefined}
-                        />
-                        {errors.priceVnd && <small id={`${variant.clientId}-price-error`} className="form-error">{errors.priceVnd}</small>}
-                      </label>
-                      <div className="variant-inventory-editor">
-                        <span className="sr-only">Tình trạng</span>
-                        <select
-                          value={variant.availability}
-                          onChange={(event) =>
-                            updateVariant(variant.clientId, "availability", event.target.value)
-                          }
-                          aria-invalid={Boolean(errors.availability)}
-                          aria-describedby={errors.availability ? `${variant.clientId}-availability-error` : undefined}
-                        >
-                          <option value="AVAILABLE">Đang bán</option>
-                          <option value="OUT_OF_STOCK">Tạm hết</option>
-                          <option value="HIDDEN">Đã ẩn</option>
-                        </select>
-                        {errors.availability && <small id={`${variant.clientId}-availability-error`} className="form-error">{errors.availability}</small>}
-                        <label className="inventory-toggle-label">
-                          <input
-                            type="checkbox"
-                            checked={variant.trackInventory}
-                            onChange={(event) =>
-                              updateVariant(
-                                variant.clientId,
-                                "trackInventory",
-                                event.target.checked,
-                              )
-                            }
-                          />
-                          <span>Theo dõi tồn kho</span>
-                        </label>
-                        <label>
-                          <span className="sr-only">Tồn kho thực tế</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={variant.stockOnHand}
-                            onChange={(event) =>
-                              updateVariant(
-                                variant.clientId,
-                                "stockOnHand",
-                                event.target.value,
-                              )
-                            }
-                            aria-label="Tồn kho thực tế"
-                            aria-invalid={Boolean(errors.stockOnHand)}
-                            aria-describedby={errors.stockOnHand ? `${variant.clientId}-stock-error` : undefined}
-                          />
-                          {errors.stockOnHand && <small id={`${variant.clientId}-stock-error`} className="form-error">{errors.stockOnHand}</small>}
-                        </label>
-                        <small className="inventory-readonly">
-                          Đang giữ: {variant.reservedQuantity ?? 0} • Có thể bán: {variant.trackInventory ? Math.max(0, Number(variant.stockOnHand) - (variant.reservedQuantity ?? 0)) : "Không theo dõi"}
-                        </small>
+                    <section className={`variant-card ${isEditing ? "editing" : ""}`} key={variant.id ?? variant.clientId}>
+                      <div className="variant-card-summary">
+                        <div className="variant-card-image">
+                          {primaryImage ? <ProductImage image={primaryImage} alt={primaryImage.altText} /> : <Icon>inventory_2</Icon>}
+                        </div>
+                        <div className="variant-card-copy">
+                          <b>{variant.name || "Phân loại mới"}{variant.packageSize ? ` · ${variant.packageSize}` : ""}</b>
+                          <small>SKU: {variant.sku || "Chưa nhập"}</small>
+                          <strong>{variant.priceVnd ? formatVnd(Number(variant.priceVnd)) : "Chưa có giá"}</strong>
+                          <small>Tồn: {variant.trackInventory ? variant.stockOnHand : "Không theo dõi"}</small>
+                          <span className={`variant-status variant-status-${variant.status.toLowerCase()}`}>{statusLabel}</span>
+                        </div>
+                        <div className="variant-card-actions">
+                          <button type="button" onClick={() => moveVariant(variant.clientId, -1)} disabled={variantIndex === 0} aria-label={`Đưa ${variant.name || "phân loại"} lên trước`}><Icon>arrow_upward</Icon></button>
+                          <button type="button" onClick={() => moveVariant(variant.clientId, 1)} disabled={variantIndex === variants.length - 1} aria-label={`Đưa ${variant.name || "phân loại"} xuống sau`}><Icon>arrow_downward</Icon></button>
+                          <button type="button" className="btn" onClick={() => setEditingVariantClientId(isEditing ? null : variant.clientId)} aria-expanded={isEditing}>{isEditing ? "Đóng" : "Sửa"}</button>
+                          <button type="button" onClick={() => deleteVariant(variant)} aria-label={`Xóa phân loại ${variant.name || "mới"}`}><Icon>delete</Icon></button>
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => deleteVariant(variant)}
-                        aria-label={`Xóa phân loại ${variant.name || "mới"}`}
-                      >
-                        <Icon>delete</Icon>
-                      </button>
-                    </div>
+                      {isEditing && (
+                        <div className="variant-row variant-card-editor">
+                          <div className="form-grid">
+                            <label>Tên phân loại *<input value={variant.name} onChange={(event) => updateVariant(variant.clientId, "name", event.target.value)} aria-invalid={Boolean(errors.name)} />{errors.name && <small className="form-error">{errors.name}</small>}</label>
+                            <label>Quy cách<input value={variant.packageSize} onChange={(event) => updateVariant(variant.clientId, "packageSize", event.target.value)} placeholder="Ví dụ: 120g" /></label>
+                            <label>SKU *<input value={variant.sku} onChange={(event) => updateVariant(variant.clientId, "sku", event.target.value)} aria-invalid={Boolean(errors.sku)} />{errors.sku && <small className="form-error">{errors.sku}</small>}</label>
+                            <label>Giá bán *<input type="number" min="0" step="1" value={variant.priceVnd} onChange={(event) => updateVariant(variant.clientId, "priceVnd", event.target.value)} aria-invalid={Boolean(errors.priceVnd)} />{errors.priceVnd && <small className="form-error">{errors.priceVnd}</small>}</label>
+                            <label>Giá gốc / giá so sánh<input type="number" min="0" step="1" value={variant.compareAtPriceVnd} onChange={(event) => updateVariant(variant.clientId, "compareAtPriceVnd", event.target.value)} />{errors.compareAtPriceVnd && <small className="form-error">{errors.compareAtPriceVnd}</small>}</label>
+                            <label>Trạng thái<select value={variant.status} onChange={(event) => updateVariant(variant.clientId, "status", event.target.value)} aria-invalid={Boolean(errors.status)}><option value="SELLING">Đang bán</option><option value="OUT_OF_STOCK">Hết hàng</option><option value="HIDDEN">Ẩn</option></select><small className="field-help">{variant.status === "SELLING" ? "Hiển thị và cho phép mua nếu còn hàng." : variant.status === "OUT_OF_STOCK" ? "Vẫn hiển thị nhưng không thể mua." : "Không hiển thị phân loại này trên storefront."}</small></label>
+                            <label className="inventory-toggle-label"><input type="checkbox" checked={variant.trackInventory} onChange={(event) => updateVariant(variant.clientId, "trackInventory", event.target.checked)} /><span>Theo dõi tồn kho</span></label>
+                            <label>Số lượng tồn<input type="number" min="0" step="1" value={variant.stockOnHand} onChange={(event) => updateVariant(variant.clientId, "stockOnHand", event.target.value)} aria-label="Tồn kho thực tế" aria-invalid={Boolean(errors.stockOnHand)} />{errors.stockOnHand && <small className="form-error">{errors.stockOnHand}</small>}</label>
+                          </div>
+                          <small className="inventory-readonly">Đang giữ: {variant.reservedQuantity ?? 0} • Có thể bán: {variant.trackInventory ? Math.max(0, Number(variant.stockOnHand) - (variant.reservedQuantity ?? 0)) : "Không theo dõi"}</small>
+                          <div className="variant-image-editor">
+                            <b>Hình ảnh phân loại</b>
+                            <div className="variant-image-grid">
+                              {variant.images.map((image, imageIndex) => (
+                                <div className="variant-image-tile" key={image.r2Key}>
+                                  <ProductImage image={image} alt={image.altText} />
+                                  {image.isPrimary && <span>★ Đại diện</span>}
+                                  <div>
+                                    <button type="button" disabled={image.isPrimary} onClick={() => updateVariantImageOrder(variant.clientId, imageIndex, "primary")} aria-label="Chọn làm ảnh đại diện"><Icon>star</Icon></button>
+                                    <button type="button" disabled={imageIndex === 0} onClick={() => updateVariantImageOrder(variant.clientId, imageIndex, "up")} aria-label="Đưa ảnh lên trước"><Icon>arrow_back</Icon></button>
+                                    <button type="button" disabled={imageIndex === variant.images.length - 1} onClick={() => updateVariantImageOrder(variant.clientId, imageIndex, "down")} aria-label="Đưa ảnh xuống sau"><Icon>arrow_forward</Icon></button>
+                                    <button type="button" onClick={() => updateVariantImageOrder(variant.clientId, imageIndex, "delete")} aria-label="Gỡ ảnh phân loại"><Icon>delete</Icon></button>
+                                  </div>
+                                </div>
+                              ))}
+                              <label className="variant-image-add"><Icon>add_photo_alternate</Icon><span>{uploadingVariantId === variant.clientId ? "Đang tải..." : "Thêm ảnh"}</span><input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={Boolean(uploadingVariantId)} onChange={(event) => void uploadVariantFiles(variant.clientId, event.target.files)} /></label>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </section>
                   );
                 })}
               </div>

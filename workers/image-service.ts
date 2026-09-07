@@ -18,6 +18,10 @@ export type NormalizedProductImage = {
   altText: string;
   sortOrder: number;
 };
+export type VariantImageInput = ProductImageInput & { isPrimary?: boolean };
+export type NormalizedVariantImage = NormalizedProductImage & {
+  isPrimary: boolean;
+};
 
 function toByteChunk(
   value: Uint8Array<ArrayBufferLike>,
@@ -80,6 +84,21 @@ export function normalizeProductImages(
       sortOrder: index,
     };
   });
+}
+
+/** Chuẩn hóa gallery variant, ép tối đa một ảnh đại diện và giữ thứ tự mảng làm nguồn thật. */
+export function normalizeVariantImages(value: unknown): NormalizedVariantImage[] {
+  const images = normalizeProductImages(value);
+  const source = value as VariantImageInput[];
+  const requestedPrimaryIndexes = source
+    .map((image, index) => (image.isPrimary === true ? index : -1))
+    .filter((index) => index >= 0);
+  if (requestedPrimaryIndexes.length > 1) throw new Error("VALIDATION_ERROR");
+  const primaryIndex = requestedPrimaryIndexes[0] ?? (images.length ? 0 : -1);
+  return images.map((image, index) => ({
+    ...image,
+    isPrimary: index === primaryIndex,
+  }));
 }
 
 export async function validateAssociatedImages(

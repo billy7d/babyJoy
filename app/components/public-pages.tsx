@@ -5,11 +5,43 @@ import {
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  getVariantPrimaryImage,
   getVariantAvailableQuantity,
   isVariantPurchasable,
   type Category,
   type Product,
+  type ProductImageRecord,
 } from "../lib/catalog";
+
+export type DetailGalleryImage = ProductImageRecord & {
+  variantId: string | null;
+};
+
+/** Gộp ảnh chung và ảnh variant theo thứ tự, giữ owner để gallery đồng bộ ngược selector. */
+export function buildVariantGallery(product: Product): DetailGalleryImage[] {
+  const common = (product.images?.length
+    ? product.images
+    : [{ r2Key: "", altText: product.name, sortOrder: 0, url: product.image }]
+  ).map((image) => ({ ...image, variantId: null }));
+  const variantImages = product.variants.flatMap((variant) =>
+    (variant.images ?? []).map((image) => ({ ...image, variantId: variant.id })),
+  );
+  return [...common, ...variantImages];
+}
+
+/** Ảnh chung giữ nguyên variant; ảnh có owner chỉ đổi selector khi owner khác. */
+export function resolveGallerySelection(
+  images: DetailGalleryImage[],
+  requestedIndex: number,
+  currentVariantId: string,
+) {
+  if (!images.length) return { imageIndex: 0, variantId: currentVariantId };
+  const imageIndex = (requestedIndex + images.length) % images.length;
+  return {
+    imageIndex,
+    variantId: images[imageIndex]?.variantId ?? currentVariantId,
+  };
+}
 import {
   loadProductBySlug,
   loadProductPage,
@@ -237,7 +269,7 @@ export function applyFilters(
       (!tag || product.tags.includes(tag) || product.tagSlugs?.includes(tag)) &&
       (!available ||
         product.variants.some(
-          (variant) => variant.availability === "AVAILABLE",
+          (variant) => isVariantPurchasable(variant),
         ))
     );
   });
@@ -631,6 +663,8 @@ export function ProductDetailPage() {
   const [quantity, setQuantity] = useState(1);
   const [toast, setToast] = useState(false);
   const [selectedImage, setSelectedImage] = useState(0);
+  const swipeStartX = useRef<number | null>(null);
+  const selectedVariantIdRef = useRef("");
   const { addItem } = useCart();
   useEffect(() => {
     let cancelled = false;
@@ -657,9 +691,20 @@ export function ProductDetailPage() {
     };
   }, [mergeProducts, slug]);
   useEffect(() => {
-    setVariantId(product ? getDefaultVariant(product)?.id ?? "" : "");
+    const defaultVariant = product ? getDefaultVariant(product) : undefined;
+    const nextVariantId = defaultVariant?.id ?? "";
+    selectedVariantIdRef.current = nextVariantId;
+    setVariantId(nextVariantId);
     setQuantity(1);
-    setSelectedImage(0);
+    const gallery = product ? buildVariantGallery(product) : [];
+    const primary = defaultVariant
+      ? getVariantPrimaryImage(defaultVariant)
+      : undefined;
+    setSelectedImage(
+      primary
+        ? Math.max(0, gallery.findIndex((image) => image.r2Key === primary.r2Key))
+        : 0,
+    );
   }, [product]);
   if (loading) {
     return (
@@ -701,12 +746,39 @@ export function ProductDetailPage() {
     product.variants.find((item) => item.id === variantId) ??
     getDefaultVariant(product);
   const variantPurchasable = Boolean(variant && isVariantPurchasable(variant));
-  const productImages = product.images?.length
-    ? product.images
-    : [{ r2Key: "", altText: product.name, sortOrder: 0, url: product.image }];
+  const productImages = buildVariantGallery(product);
+  const selectVariant = (nextVariantId: string) => {
+    selectedVariantIdRef.current = nextVariantId;
+    setVariantId(nextVariantId);
+    setQuantity(1);
+    const nextVariant = product.variants.find((item) => item.id === nextVariantId);
+    const primary = nextVariant ? getVariantPrimaryImage(nextVariant) : undefined;
+    if (!primary) {
+      // Variant chưa có ảnh riêng thì quay về ảnh chung, tránh giữ ảnh của variant trước.
+      const commonImageIndex = productImages.findIndex((image) => image.variantId === null);
+      setSelectedImage(commonImageIndex >= 0 ? commonImageIndex : 0);
+      return;
+    }
+    const imageIndex = productImages.findIndex(
+      (image) => image.variantId === nextVariantId && image.r2Key === primary.r2Key,
+    );
+    if (imageIndex >= 0) setSelectedImage(imageIndex);
+  };
+  const selectGalleryImage = (index: number) => {
+    const next = resolveGallerySelection(productImages, index, selectedVariantIdRef.current);
+    setSelectedImage(next.imageIndex);
+    if (next.variantId !== selectedVariantIdRef.current) {
+      selectedVariantIdRef.current = next.variantId;
+      setVariantId(next.variantId);
+      setQuantity(1);
+    }
+  };
   const add = () => {
-    if (!variant || !isVariantPurchasable(variant)) return;
-    addItem(variant.id, quantity, product);
+    const currentVariant =
+      product.variants.find((item) => item.id === selectedVariantIdRef.current) ??
+      getDefaultVariant(product);
+    if (!currentVariant || !isVariantPurchasable(currentVariant)) return;
+    addItem(currentVariant.id, quantity, product);
     setToast(true);
     window.setTimeout(() => setToast(false), 2200);
   };
@@ -720,19 +792,45 @@ export function ProductDetailPage() {
       </div>
       <article className="detail-page">
         <div className="detail-gallery">
-          <ProductImage
-            className="detail-main-image"
-            product={product}
-            image={productImages[selectedImage]}
-          />
+          <div
+            className="detail-main-image-wrap"
+            onPointerDown={(event) => {
+              swipeStartX.current = event.clientX;
+            }}
+            onPointerUp={(event) => {
+              if (swipeStartX.current === null) return;
+              const distance = event.clientX - swipeStartX.current;
+              swipeStartX.current = null;
+              if (Math.abs(distance) >= 45)
+                selectGalleryImage(selectedImage + (distance < 0 ? 1 : -1));
+            }}
+          >
+            <ProductImage
+              className="detail-main-image"
+              product={product}
+              image={productImages[selectedImage]}
+            />
+            {productImages.length > 1 && (
+              <>
+                <button type="button" className="gallery-nav previous" aria-label="Ảnh trước" onClick={() => selectGalleryImage(selectedImage - 1)}><Icon>chevron_left</Icon></button>
+                <button type="button" className="gallery-nav next" aria-label="Ảnh sau" onClick={() => selectGalleryImage(selectedImage + 1)}><Icon>chevron_right</Icon></button>
+              </>
+            )}
+          </div>
           <div className="detail-thumbs">
             {productImages.map((image, index) => (
               <button
                 key={`${image.r2Key || image.url}-${index}`}
                 className={index === selectedImage ? "active" : ""}
-                onClick={() => setSelectedImage(index)}
+                onClick={() => selectGalleryImage(index)}
+                aria-label={`Xem ảnh ${index + 1}${image.variantId ? " của phân loại" : " chung"}`}
               >
-                <ProductImage product={product} image={image} alt="" />
+                <ProductImage
+                  product={product}
+                  image={image}
+                  alt=""
+                  loading={index === selectedImage ? "eager" : "lazy"}
+                />
               </button>
             ))}
           </div>
@@ -764,10 +862,14 @@ export function ProductDetailPage() {
                 <button
                   key={item.id}
                   className={variantId === item.id ? "active" : ""}
-                  onClick={() => setVariantId(item.id)}
+                  onClick={() => selectVariant(item.id)}
                   aria-pressed={variantId === item.id}
                 >
-                  {item.name}
+                  {getVariantPrimaryImage(item) && (
+                    <ProductImage image={getVariantPrimaryImage(item)} alt="" loading="lazy" />
+                  )}
+                  {item.name}{item.packageSize ? ` · ${item.packageSize}` : ""}
+                  {!isVariantPurchasable(item) ? " — Hết hàng" : ""}
                 </button>
               ))}
             </div>
@@ -881,7 +983,7 @@ export function CartPage() {
         ) : (
           <div className="cart-layout">
             <div className="cart-items">
-              {lines.map(({ product, variant, quantity, lineTotal, unavailable }) => {
+              {lines.map(({ product, variant, quantity, lineTotal, unavailable, imageKey, imageUrl }) => {
                 const evaluated = evaluatedByVariant.get(variant.id);
                 const shownLineTotal = evaluated?.lineTotalVnd ?? lineTotal;
                 return (
@@ -889,10 +991,15 @@ export function CartPage() {
                     className={`cart-item ${unavailable ? "cart-item-unavailable" : ""}`}
                     key={variant.id}
                   >
-                    <ProductImage product={product} />
+                    <ProductImage
+                      product={product}
+                      image={getVariantPrimaryImage(variant)}
+                      r2Key={imageKey}
+                      url={imageUrl}
+                    />
                     <div className="cart-item-info">
                       <h2>{product.name}</h2>
-                      <Tag>{variant.name}</Tag>
+                      <Tag>{variant.name}{variant.packageSize ? ` · ${variant.packageSize}` : ""}</Tag>
                       {unavailable && (
                         <p className="form-error" role="alert">
                           Phân loại này không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.

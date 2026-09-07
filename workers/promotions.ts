@@ -12,6 +12,7 @@ import {
 import type { PricedItem } from "./services";
 import { getPublicImageUrl } from "../shared/images";
 import { hasInventorySchema, hasVariantRetirementSchema } from "./inventory";
+import { hasVariantMediaSchema } from "./variant-media";
 
 export type PromotionCartRequestItem = {
   variantId: string;
@@ -205,9 +206,10 @@ async function loadCanonicalLines(
       insufficientStock: [] as string[],
     };
   const placeholders = items.map(() => "?").join(",");
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasVariantMediaSchema(env),
   ]);
   const archivedAtSelect = (await hasProductArchiveColumn(env))
     ? "p.archived_at AS archivedAt"
@@ -218,14 +220,25 @@ async function loadCanonicalLines(
   const inventorySelect = inventorySchema
     ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
     : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity";
+  const imageKeySelect = variantMediaSchema
+    ? `COALESCE(
+        (SELECT r2_key FROM product_variant_images
+         WHERE variant_id = v.id ORDER BY is_primary DESC, sort_order, created_at, id LIMIT 1),
+        (SELECT r2_key FROM product_images
+         WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1)
+      )`
+    : `(SELECT r2_key FROM product_images
+        WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1)`;
+  const variantNameSelect = variantMediaSchema
+    ? "CASE WHEN TRIM(v.package_size) = '' THEN v.name ELSE v.name || ' · ' || v.package_size END"
+    : "v.name";
   const rows = await env.DB.prepare(
-    `SELECT v.id AS variantId, v.name AS variantName, v.sku,
+    `SELECT v.id AS variantId, ${variantNameSelect} AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability, p.id AS productId,
       p.name AS productName, p.status AS productStatus, ${archivedAtSelect},
       ${variantArchivedAtSelect},
       ${inventorySelect},
-      (SELECT r2_key FROM product_images
-       WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey
+      ${imageKeySelect} AS imageKey
      FROM product_variants v
      JOIN products p ON p.id = v.product_id
      WHERE v.id IN (${placeholders})`,
@@ -323,11 +336,12 @@ async function loadGiftCatalog(
 ) {
   const productIds = promotionGiftProductIds(promotions);
   if (!productIds.length) return [] as PromotionCatalogProduct[];
-  const [hasProductArchive, inventorySchema, variantRetirementSchema] =
+  const [hasProductArchive, inventorySchema, variantRetirementSchema, variantMediaSchema] =
     await Promise.all([
       hasProductArchiveColumn(env),
       hasInventorySchema(env),
       hasVariantRetirementSchema(env),
+      hasVariantMediaSchema(env),
     ]);
   const archivedAtSelect = hasProductArchive
     ? "p.archived_at AS archivedAt"
@@ -335,17 +349,28 @@ async function loadGiftCatalog(
   const variantArchivedAtSelect = variantRetirementSchema
     ? "v.archived_at AS variantArchivedAt"
     : "NULL AS variantArchivedAt";
+  const imageKeySelect = variantMediaSchema
+    ? `COALESCE(
+        (SELECT r2_key FROM product_variant_images
+         WHERE variant_id = v.id ORDER BY is_primary DESC, sort_order, created_at, id LIMIT 1),
+        (SELECT r2_key FROM product_images
+         WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1)
+      )`
+    : `(SELECT r2_key FROM product_images
+        WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1)`;
+  const variantNameSelect = variantMediaSchema
+    ? "CASE WHEN TRIM(v.package_size) = '' THEN v.name ELSE v.name || ' · ' || v.package_size END"
+    : "v.name";
   const rows = await env.DB.prepare(
     `SELECT p.id AS productId, p.name AS productName, p.status AS productStatus,
       ${archivedAtSelect},
-      v.id AS variantId, v.name AS variantName, v.sku,
+      v.id AS variantId, ${variantNameSelect} AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability,
       ${variantArchivedAtSelect},
       ${inventorySchema
         ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
         : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"},
-      (SELECT r2_key FROM product_images
-       WHERE product_id = p.id ORDER BY sort_order, created_at, id LIMIT 1) AS imageKey,
+      ${imageKeySelect} AS imageKey,
       v.sort_order AS sortOrder
      FROM products p
      LEFT JOIN product_variants v ON v.product_id = p.id

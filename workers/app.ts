@@ -10,6 +10,7 @@ import {
 import {
   ImageUploadError,
   normalizeProductImages,
+  normalizeVariantImages,
   uploadImmutableProductImage,
   validateAssociatedImages,
 } from "./image-service";
@@ -131,6 +132,7 @@ import {
   getPublicStoreSettings,
   saveAdminStoreSettings,
 } from "./store-settings";
+import { hasVariantMediaSchema } from "./variant-media";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -310,6 +312,7 @@ type ProductVariantRow = {
   productId: string;
   id: string;
   name: string;
+  packageSize?: string;
   sku: string | null;
   priceVnd: number;
   compareAtPriceVnd: number | null;
@@ -318,6 +321,14 @@ type ProductVariantRow = {
   trackInventory?: number;
   stockOnHand?: number;
   reservedQuantity?: number;
+};
+type ProductVariantImageRow = {
+  variantId: string;
+  id: string;
+  r2Key: string;
+  altText: string;
+  sortOrder: number;
+  isPrimary: number;
 };
 type ProductImageRow = {
   productId: string;
@@ -338,9 +349,10 @@ async function hydrateProducts(
   if (!rows.length) return [];
   const placeholders = rows.map(() => "?").join(",");
   const ids = rows.map((row) => row.id);
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasVariantMediaSchema(env),
   ]);
   const descriptionSchema =
     includeDescription && (await hasProductDescriptionSchema(env));
@@ -350,12 +362,25 @@ async function hydrateProducts(
   const activeVariantWhere = variantRetirementSchema
     ? " AND archived_at IS NULL"
     : "";
-  const [variants, images, tags, categories] = await Promise.all([
+  const variantPackageSelect = variantMediaSchema
+    ? ", package_size AS packageSize"
+    : ", '' AS packageSize";
+  const [variants, variantImages, images, tags, categories] = await Promise.all([
     env.DB.prepare(
-      `SELECT product_id AS productId, id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, created_at`,
+      `SELECT product_id AS productId, id, name${variantPackageSelect}, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, created_at, id`,
     )
       .bind(...ids)
       .all<ProductVariantRow>(),
+    variantMediaSchema
+      ? env.DB.prepare(
+          `SELECT pvi.variant_id AS variantId, pvi.id, pvi.r2_key AS r2Key,
+            pvi.alt_text AS altText, pvi.sort_order AS sortOrder, pvi.is_primary AS isPrimary
+           FROM product_variant_images pvi
+           JOIN product_variants pv ON pv.id = pvi.variant_id
+           WHERE pv.product_id IN (${placeholders})
+           ORDER BY pvi.variant_id, pvi.is_primary DESC, pvi.sort_order, pvi.created_at, pvi.id`,
+        ).bind(...ids).all<ProductVariantImageRow>()
+      : Promise.resolve({ results: [] as ProductVariantImageRow[] }),
     env.DB.prepare(
       `SELECT product_id AS productId, id, r2_key AS r2Key, alt_text AS altText, sort_order AS sortOrder FROM product_images WHERE product_id IN (${placeholders}) ORDER BY sort_order, created_at`,
     )
@@ -391,6 +416,10 @@ async function hydrateProducts(
       .filter((variant) => variant.productId === product.id)
       .map(({ productId: _productId, ...variant }) => ({
         ...variant,
+        status:
+          variant.availability === "AVAILABLE"
+            ? "SELLING"
+            : variant.availability,
         trackInventory: Boolean(variant.trackInventory),
         availableQuantity: Math.max(
           0,
@@ -400,6 +429,14 @@ async function hydrateProducts(
           Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0) > 0
             ? "AVAILABLE"
             : "OUT_OF_STOCK",
+        images: variantImages.results
+          .filter((image) => image.variantId === variant.id)
+          .map(({ variantId, isPrimary, ...image }) => ({
+            ...image,
+            variantId,
+            isPrimary: Boolean(isPrimary),
+            url: getProductImageUrl(image.r2Key, imageUrlStrategy),
+          })),
       })),
     images: images.results
       .filter((image) => image.productId === product.id)
@@ -575,8 +612,15 @@ function buildProductListQuery({
         : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`,
     );
 
+  const eligiblePricePredicate = inventorySchema
+    ? "sv.availability = 'AVAILABLE' AND (sv.track_inventory = 0 OR sv.stock_on_hand > sv.reserved_quantity)"
+    : "sv.availability = 'AVAILABLE'";
   const price =
-    `COALESCE((SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'${activeVariantPredicate("sv")}), 0)`;
+    `COALESCE(
+      (SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND ${eligiblePricePredicate}${activeVariantPredicate("sv")}),
+      (SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'${activeVariantPredicate("sv")}),
+      0
+    )`;
   const orderSql =
     sort === "price_asc"
       ? `${price} ASC, p.sort_order ASC, p.name ASC, p.id ASC`
@@ -968,20 +1012,29 @@ type AdminProductInput = {
     id?: string;
     clientId?: string;
     name?: string;
+    packageSize?: string;
     sku?: string;
     priceVnd?: number | string;
     compareAtPriceVnd?: number | string | null;
     availability?: string;
+    status?: string;
     sortOrder?: number;
     trackInventory?: boolean;
     stockOnHand?: number | string;
+    images?: Array<{
+      id?: string;
+      r2Key?: string;
+      altText?: string;
+      sortOrder?: number;
+      isPrimary?: boolean;
+    }>;
   }>;
   deletedVariantIds?: string[];
 };
 
 type VariantValidationIssue = {
   code: string;
-  field?: "name" | "sku" | "priceVnd" | "availability" | "trackInventory" | "stockOnHand";
+  field?: "name" | "packageSize" | "sku" | "priceVnd" | "compareAtPriceVnd" | "availability" | "status" | "trackInventory" | "stockOnHand" | "images";
   variantId?: string | null;
   clientId?: string | null;
   message: string;
@@ -1035,6 +1088,7 @@ function validateAdminProduct(input: unknown) {
   const variants = rawVariants.map((variant, index) => {
     if (!variant || typeof variant !== "object") invalid();
     const variantName = typeof variant.name === "string" ? variant.name.trim() : "";
+    const packageSize = typeof variant.packageSize === "string" ? variant.packageSize.trim() : "";
     const sku = typeof variant.sku === "string" ? variant.sku.trim() : "";
     const rawPrice = variant.priceVnd;
     const priceVnd =
@@ -1043,10 +1097,17 @@ function validateAdminProduct(input: unknown) {
         : typeof rawPrice === "string" && !rawPrice.trim()
           ? Number.NaN
           : Number(rawPrice);
+    const rawStatus = variant.status;
     const rawAvailability = variant.availability;
     const availability =
-      rawAvailability === undefined
+      rawStatus === "SELLING"
         ? "AVAILABLE"
+        : rawStatus === "OUT_OF_STOCK" || rawStatus === "HIDDEN"
+          ? rawStatus
+          : rawStatus !== undefined
+            ? "__INVALID__"
+            : rawAvailability === undefined
+              ? "AVAILABLE"
         : typeof rawAvailability === "string"
           ? rawAvailability
           : "__INVALID__";
@@ -1086,8 +1147,10 @@ function validateAdminProduct(input: unknown) {
       issue("INVALID_VARIANT_NAME", "name", "Tên phân loại là bắt buộc.");
     if (!sku || sku.length > 120)
       issue("INVALID_SKU", "sku", "Mã SKU là bắt buộc.");
-    if (!Number.isSafeInteger(priceVnd) || priceVnd <= 0)
-      issue("INVALID_PRICE", "priceVnd", "Giá bán phải là số nguyên lớn hơn 0.");
+    if (packageSize.length > 120)
+      issue("INVALID_PACKAGE_SIZE", "packageSize", "Quy cách tối đa 120 ký tự.");
+    if (!Number.isSafeInteger(priceVnd) || priceVnd < 0)
+      issue("INVALID_PRICE", "priceVnd", "Giá bán phải là số nguyên không âm.");
     if (!statuses.includes(availability))
       issue("INVALID_AVAILABILITY", "availability", "Tình trạng phân loại không hợp lệ.");
     if (trackInventory === null)
@@ -1099,7 +1162,9 @@ function validateAdminProduct(input: unknown) {
       issue("INVALID_STOCK", "stockOnHand", "Tồn kho thực tế phải là số nguyên không âm.");
     const rawCompareAtPrice = variant.compareAtPriceVnd;
     const compareAtPriceVnd =
-      rawCompareAtPrice === null || rawCompareAtPrice === undefined
+      rawCompareAtPrice === null ||
+      rawCompareAtPrice === undefined ||
+      (typeof rawCompareAtPrice === "string" && !rawCompareAtPrice.trim())
         ? null
         : typeof rawCompareAtPrice !== "number" &&
             typeof rawCompareAtPrice !== "string"
@@ -1109,18 +1174,29 @@ function validateAdminProduct(input: unknown) {
       compareAtPriceVnd !== null &&
       (!Number.isSafeInteger(compareAtPriceVnd) || compareAtPriceVnd < 0)
     )
-      issue("INVALID_PRICE", "priceVnd", "Giá so sánh không hợp lệ.");
+      issue("INVALID_PRICE", "compareAtPriceVnd", "Giá so sánh không hợp lệ.");
+    let images;
+    try {
+      images = variant.images === undefined
+        ? undefined
+        : normalizeVariantImages(variant.images);
+    } catch {
+      issue("INVALID_VARIANT_IMAGES", "images", "Danh sách ảnh phân loại không hợp lệ.");
+    }
     return {
       ...variant,
       id: variantId || undefined,
       clientId: clientId || undefined,
       name: variantName,
+      packageSize,
       sku,
       priceVnd,
       compareAtPriceVnd,
       availability,
+      status: availability === "AVAILABLE" ? "SELLING" : availability,
       trackInventory: trackInventory === null ? undefined : trackInventory,
       stockOnHand,
+      images,
       sortOrder: Number.isFinite(variant.sortOrder)
         ? Number(variant.sortOrder)
         : index,
@@ -1267,21 +1343,32 @@ async function readAdminProductData(
     .bind(id)
     .first<Record<string, unknown>>();
   if (!product) return null;
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasVariantMediaSchema(env),
   ]);
   const activeVariantWhere = variantRetirementSchema
     ? " AND archived_at IS NULL"
     : "";
   const variants = await env.DB.prepare(
-    `SELECT id, name, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
+    `SELECT id, name, ${variantMediaSchema ? "package_size" : "''"} AS packageSize, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
       ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
       : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
      FROM product_variants WHERE product_id = ?${activeVariantWhere} ORDER BY sort_order, created_at, id`,
   )
     .bind(id)
     .all();
+  const variantImages = variantMediaSchema
+    ? await env.DB.prepare(
+        `SELECT pvi.variant_id AS variantId, pvi.id, pvi.r2_key AS r2Key,
+          pvi.alt_text AS altText, pvi.sort_order AS sortOrder, pvi.is_primary AS isPrimary
+         FROM product_variant_images pvi
+         JOIN product_variants pv ON pv.id = pvi.variant_id
+         WHERE pv.product_id = ?
+         ORDER BY pvi.variant_id, pvi.is_primary DESC, pvi.sort_order, pvi.created_at, pvi.id`,
+      ).bind(id).all<ProductVariantImageRow>()
+    : { results: [] as ProductVariantImageRow[] };
   const categories = await env.DB.prepare(
     "SELECT category_id AS id FROM product_categories WHERE product_id = ?",
   )
@@ -1320,11 +1407,23 @@ async function readAdminProductData(
     ),
     variants: variants.results.map((variant) => ({
       ...variant,
+      status:
+        variant.availability === "AVAILABLE"
+          ? "SELLING"
+          : variant.availability,
       trackInventory: Boolean(variant.trackInventory),
       availableQuantity: Math.max(
         0,
         Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0),
       ),
+      images: variantImages.results
+        .filter((image) => image.variantId === variant.id)
+        .map(({ variantId, isPrimary, ...image }) => ({
+          ...image,
+          variantId,
+          isPrimary: Boolean(isPrimary),
+          url: getProductImageUrl(image.r2Key, imageUrlStrategy),
+        })),
     })),
     categoryIds: categories.results.map((item) => item.id),
     tagIds: tags.results.map((item) => item.id),
@@ -1430,10 +1529,20 @@ async function saveAdminProduct(
     }
   }
 
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasVariantMediaSchema(env),
   ]);
+  const variantMediaRequested = body.variants.some(
+    (variant) => Boolean(variant.packageSize) || Boolean(variant.images?.length),
+  );
+  if (variantMediaRequested && !variantMediaSchema)
+    return error(
+      "VARIANT_MEDIA_SCHEMA_UNAVAILABLE",
+      "Ảnh và quy cách phân loại chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
 
   // Đọc toàn bộ ID trước transaction để phân biệt rõ update, insert và delete.
   const existingVariants = id
@@ -1462,6 +1571,26 @@ async function saveAdminProduct(
           archivedAt: string | null;
         }>,
       };
+  const existingVariantImages = variantMediaSchema && id
+    ? await env.DB.prepare(
+        `SELECT pvi.id, pvi.variant_id AS variantId, pvi.r2_key AS r2Key,
+          pvi.created_at AS createdAt
+         FROM product_variant_images pvi
+         JOIN product_variants pv ON pv.id = pvi.variant_id
+         WHERE pv.product_id = ?`,
+      ).bind(productId).all<{
+        id: string;
+        variantId: string;
+        r2Key: string;
+        createdAt: string;
+      }>()
+    : { results: [] as Array<{ id: string; variantId: string; r2Key: string; createdAt: string }> };
+  const existingVariantImageByOwnerAndKey = new Map(
+    existingVariantImages.results.map((image) => [
+      `${image.variantId}\u0000${image.r2Key}`,
+      image,
+    ]),
+  );
   const existingVariantIds = new Set(
     existingVariants.results.map((variant) => variant.id),
   );
@@ -1682,9 +1811,15 @@ async function saveAdminProduct(
       );
     }
   }
-  if (body.images) {
+  if (body.images || body.variants.some((variant) => variant.images?.length)) {
     try {
-      await validateAssociatedImages(body.images, env.PRODUCT_IMAGES);
+      await validateAssociatedImages(
+        [
+          ...(body.images ?? []),
+          ...body.variants.flatMap((variant) => variant.images ?? []),
+        ],
+        env.PRODUCT_IMAGES,
+      );
     } catch {
       return error(
         "INVALID_IMAGE_REFERENCE",
@@ -1852,6 +1987,7 @@ async function saveAdminProduct(
       );
   });
   body.variants.forEach((variant) => {
+    const persistedVariantId = variant.id ?? crypto.randomUUID();
     if (variant.id) {
       const current = existingVariants.results.find((item) => item.id === variant.id);
       const trackInventory =
@@ -1881,11 +2017,43 @@ async function saveAdminProduct(
         );
       statements.push(
         env.DB.prepare(
-          inventorySchema
+          variantMediaSchema && inventorySchema
+            ? "UPDATE product_variants SET name = ?, package_size = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, track_inventory = ?, stock_on_hand = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?"
+            : variantMediaSchema
+              ? "UPDATE product_variants SET name = ?, package_size = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?"
+            : inventorySchema
             ? "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, track_inventory = ?, stock_on_hand = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?"
             : "UPDATE product_variants SET name = ?, sku = ?, price_vnd = ?, compare_at_price_vnd = ?, availability = ?, sort_order = ?, updated_at = ? WHERE id = ? AND product_id = ?",
         ).bind(
-          ...(inventorySchema
+          ...(variantMediaSchema && inventorySchema
+            ? [
+                variant.name,
+                variant.packageSize,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                trackInventory ? 1 : 0,
+                stockOnHand,
+                variant.sortOrder,
+                now,
+                variant.id,
+                productId,
+              ]
+            : variantMediaSchema
+              ? [
+                  variant.name,
+                  variant.packageSize,
+                  variant.sku,
+                  variant.priceVnd,
+                  variant.compareAtPriceVnd ?? null,
+                  variant.availability,
+                  variant.sortOrder,
+                  now,
+                  variant.id,
+                  productId,
+                ]
+            : inventorySchema
             ? [
                 variant.name,
                 variant.sku,
@@ -1913,18 +2081,51 @@ async function saveAdminProduct(
         ),
       );
     } else {
-      const variantId = crypto.randomUUID();
       const trackInventory = variant.trackInventory ?? true;
       const stockOnHand = variant.stockOnHand ?? 0;
       statements.push(
         env.DB.prepare(
-          inventorySchema
+          variantMediaSchema && inventorySchema
+            ? "INSERT INTO product_variants (id, product_id, name, package_size, sku, price_vnd, compare_at_price_vnd, availability, track_inventory, stock_on_hand, reserved_quantity, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
+            : variantMediaSchema
+              ? "INSERT INTO product_variants (id, product_id, name, package_size, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            : inventorySchema
             ? "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, track_inventory, stock_on_hand, reserved_quantity, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
             : "INSERT INTO product_variants (id, product_id, name, sku, price_vnd, compare_at_price_vnd, availability, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ).bind(
-          ...(inventorySchema
+          ...(variantMediaSchema && inventorySchema
             ? [
-                variantId,
+                persistedVariantId,
+                productId,
+                variant.name,
+                variant.packageSize,
+                variant.sku,
+                variant.priceVnd,
+                variant.compareAtPriceVnd ?? null,
+                variant.availability,
+                trackInventory ? 1 : 0,
+                stockOnHand,
+                variant.sortOrder,
+                now,
+                now,
+              ]
+            : variantMediaSchema
+              ? [
+                  persistedVariantId,
+                  productId,
+                  variant.name,
+                  variant.packageSize,
+                  variant.sku,
+                  variant.priceVnd,
+                  variant.compareAtPriceVnd ?? null,
+                  variant.availability,
+                  variant.sortOrder,
+                  now,
+                  now,
+                ]
+            : inventorySchema
+            ? [
+                persistedVariantId,
                 productId,
                 variant.name,
                 variant.sku,
@@ -1938,7 +2139,7 @@ async function saveAdminProduct(
                 now,
               ]
             : [
-                variantId,
+                persistedVariantId,
                 productId,
                 variant.name,
                 variant.sku,
@@ -1960,13 +2161,41 @@ async function saveAdminProduct(
             ) VALUES (?, ?, 'INITIAL_STOCK', ?, 0, ?, ?, ?)`,
           ).bind(
             crypto.randomUUID(),
-            variantId,
+            persistedVariantId,
             stockOnHand,
             stockOnHand,
             "Tồn kho ban đầu từ Admin.",
             now,
           ),
         );
+    }
+    if (variantMediaSchema && variant.images !== undefined) {
+      statements.push(
+        env.DB.prepare("DELETE FROM product_variant_images WHERE variant_id = ?").bind(
+          persistedVariantId,
+        ),
+      );
+      variant.images.forEach((image) => {
+        const existing = existingVariantImageByOwnerAndKey.get(
+          `${persistedVariantId}\u0000${image.r2Key}`,
+        );
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO product_variant_images (
+              id, variant_id, r2_key, alt_text, sort_order, is_primary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(
+            existing?.id ?? crypto.randomUUID(),
+            persistedVariantId,
+            image.r2Key,
+            image.altText,
+            image.sortOrder,
+            image.isPrimary ? 1 : 0,
+            existing?.createdAt ?? now,
+            now,
+          ),
+        );
+      });
     }
   });
   if (body.images !== undefined) {
