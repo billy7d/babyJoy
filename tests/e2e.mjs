@@ -17,8 +17,12 @@ try {
   // Để browser E2E báo lỗi kết nối nếu dev server chưa sẵn sàng.
 }
 if (catalogIsEmpty) {
-  // Sau cleanup, dùng smoke chuyên biệt thay vì tạo lại seed/test product.
+  // Smoke catalog rỗng phải chạy trước fixture category vì fixture có product ẩn trong Admin.
   await import("./empty-catalog.e2e.mjs");
+}
+await import("./admin-category-reactivation.e2e.mjs");
+if (catalogIsEmpty) {
+  // Sau cleanup, dùng các smoke chuyên biệt thay vì tạo lại seed/test product.
   await import("./admin-product-stock.e2e.mjs");
   await import("./inventory-reservation.e2e.mjs");
   await import("./product-rich-description.e2e.mjs");

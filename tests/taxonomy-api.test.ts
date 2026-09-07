@@ -185,6 +185,144 @@ describe("Product Taxonomy API", () => {
     expect(publicCategories.data.some((category) => category.id === "cat-puree")).toBe(false);
   });
 
+  it("kích hoạt lại category hidden qua PUT và public taxonomy hiển thị lại", async () => {
+    const { env, database } = createEnv();
+    database.prepare("UPDATE categories SET is_active = 0 WHERE id = 'cat-puree'").run();
+
+    const response = await api(env, "/api/admin/categories/cat-puree", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Trái cây nghiền",
+        slug: "trai-cay-nghien",
+        description: "Rau củ và trái cây nghiền",
+        imageKey: "images/category-puree.jpg",
+        sortOrder: 3,
+        isActive: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(database.prepare("SELECT is_active FROM categories WHERE id = 'cat-puree'").get()).toEqual({
+      is_active: 1,
+    });
+
+    const adminCategories = (await (await api(env, "/api/admin/categories")).json()) as {
+      data: Array<{ id: string; isActive: number }>;
+    };
+    expect(adminCategories.data.find((category) => category.id === "cat-puree")).toMatchObject({
+      isActive: 1,
+    });
+    const publicCategories = (await (await api(env, "/api/categories")).json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(publicCategories.data.some((category) => category.id === "cat-puree")).toBe(true);
+  });
+
+  it("hide rồi restore giữ association và nguyên trạng product/variant", async () => {
+    const { env, database } = createEnv();
+    database.prepare("UPDATE products SET status = 'HIDDEN' WHERE id = 'prod-hipp'").run();
+    database
+      .prepare("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)")
+      .run("prod-heinz", "cat-puree");
+
+    const beforeRelations = database
+      .prepare("SELECT product_id, category_id FROM product_categories WHERE category_id = ? ORDER BY product_id")
+      .all("cat-puree");
+    const beforeProductStatuses = database
+      .prepare("SELECT id, status FROM products WHERE id IN (?, ?, ?) ORDER BY id")
+      .all("prod-heinz", "prod-hipp", "prod-little-sprouts");
+    const beforeVariantStatuses = database
+      .prepare("SELECT id, availability FROM product_variants WHERE product_id IN (?, ?, ?) ORDER BY id")
+      .all("prod-heinz", "prod-hipp", "prod-little-sprouts");
+
+    expect((await api(env, "/api/admin/categories/cat-puree", { method: "DELETE" })).status).toBe(200);
+    expect(
+      database
+        .prepare("SELECT product_id, category_id FROM product_categories WHERE category_id = ? ORDER BY product_id")
+        .all("cat-puree"),
+    ).toEqual(beforeRelations);
+
+    const restore = await api(env, "/api/admin/categories/cat-puree", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Trái cây nghiền",
+        slug: "trai-cay-nghien",
+        description: "Rau củ và trái cây nghiền",
+        imageKey: "images/category-puree.jpg",
+        sortOrder: 3,
+        isActive: true,
+      }),
+    });
+    expect(restore.status).toBe(200);
+    expect(
+      database
+        .prepare("SELECT product_id, category_id FROM product_categories WHERE category_id = ? ORDER BY product_id")
+        .all("cat-puree"),
+    ).toEqual(beforeRelations);
+    expect(
+      database
+        .prepare("SELECT id, status FROM products WHERE id IN (?, ?, ?) ORDER BY id")
+        .all("prod-heinz", "prod-hipp", "prod-little-sprouts"),
+    ).toEqual(beforeProductStatuses);
+    expect(
+      database
+        .prepare("SELECT id, availability FROM product_variants WHERE product_id IN (?, ?, ?) ORDER BY id")
+        .all("prod-heinz", "prod-hipp", "prod-little-sprouts"),
+    ).toEqual(beforeVariantStatuses);
+
+    const publicProducts = (await (await api(env, "/api/products?category=trai-cay-nghien")).json()) as {
+      data: Array<{ id: string }>;
+    };
+    expect(publicProducts.data.some((product) => product.id === "prod-hipp")).toBe(false);
+  });
+
+  it("category product manager trả cả AVAILABLE, HIDDEN và OUT_OF_STOCK", async () => {
+    const { env, database } = createEnv();
+    database.prepare("UPDATE products SET status = 'HIDDEN' WHERE id = 'prod-hipp'").run();
+    database
+      .prepare("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)")
+      .run("prod-heinz", "cat-puree");
+
+    const response = await api(env, "/api/admin/categories/cat-puree/products");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: Array<{ id: string; status: string; selected: number }>;
+    };
+    expect(body.data.find((product) => product.id === "prod-little-sprouts")).toMatchObject({
+      status: "AVAILABLE",
+      selected: 1,
+    });
+    expect(body.data.find((product) => product.id === "prod-hipp")).toMatchObject({
+      status: "HIDDEN",
+      selected: 1,
+    });
+    expect(body.data.find((product) => product.id === "prod-heinz")).toMatchObject({
+      status: "OUT_OF_STOCK",
+      selected: 1,
+    });
+  });
+
+  it("restore category không tồn tại trả CATEGORY_NOT_FOUND 404", async () => {
+    const { env } = createEnv();
+    const response = await api(env, "/api/admin/categories/missing-category", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Danh mục không tồn tại",
+        slug: "danh-muc-khong-ton-tai",
+        description: "",
+        imageKey: null,
+        sortOrder: 0,
+        isActive: true,
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect((await response.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "CATEGORY_NOT_FOUND" },
+    });
+  });
+
   it("xóa vĩnh viễn category chưa dùng khỏi D1", async () => {
     const { env, database } = createEnv();
     const response = await api(env, "/api/admin/categories/cat-pudding-custard-nutrition-jar/permanent", {
