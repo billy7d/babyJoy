@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
-await import("./admin-category-reactivation.e2e.mjs");
 await import("./content-pages.e2e.mjs");
 await import("./store-settings.e2e.mjs");
 let catalogIsEmpty = false;
@@ -18,8 +17,12 @@ try {
   // Để browser E2E báo lỗi kết nối nếu dev server chưa sẵn sàng.
 }
 if (catalogIsEmpty) {
-  // Sau cleanup, dùng smoke chuyên biệt thay vì tạo lại seed/test product.
+  // Smoke catalog rỗng phải chạy trước fixture category vì fixture có product ẩn trong Admin.
   await import("./empty-catalog.e2e.mjs");
+}
+await import("./admin-category-reactivation.e2e.mjs");
+if (catalogIsEmpty) {
+  // Sau cleanup, dùng các smoke chuyên biệt thay vì tạo lại seed/test product.
   await import("./admin-product-stock.e2e.mjs");
   await import("./inventory-reservation.e2e.mjs");
   await import("./product-rich-description.e2e.mjs");
