@@ -1,5 +1,11 @@
 import {
+  DEFAULT_MAX_ACTIVE_RESERVATIONS_PER_SESSION,
+  DEFAULT_MAX_TOTAL_RESERVED_UNITS_PER_SESSION,
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
+  MAX_ACTIVE_RESERVATIONS_PER_SESSION,
+  MAX_ACTIVE_RESERVATIONS_SETTING_KEY,
+  MAX_TOTAL_RESERVED_UNITS_PER_SESSION,
+  MAX_TOTAL_RESERVED_UNITS_SETTING_KEY,
   MAX_CHECKOUT_RESERVATION_MINUTES,
   MIN_CHECKOUT_RESERVATION_MINUTES,
   reservationDurationMs,
@@ -21,6 +27,16 @@ const jsonHeaders = {
   "cache-control": "no-store",
 };
 export const CHECKOUT_RESERVATION_SETTING_KEY = "checkout_reservation_minutes";
+
+export type ReservationAbuseConfig = {
+  maxActiveReservationsPerSession: number;
+  maxTotalReservedUnitsPerSession: number;
+};
+
+export type ActiveReservationUsage = {
+  activeCartCount: number;
+  reservedUnits: number;
+};
 
 export const checkoutStates = [
   "LEGACY",
@@ -98,6 +114,87 @@ export async function getCheckoutReservationConfig(env: Env) {
     reservationMinutes: minutes,
     durationMs: reservationDurationMs(minutes),
   };
+}
+
+function boundedSetting(
+  value: unknown,
+  fallback: number,
+  maximum: number,
+) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum
+    ? parsed
+    : fallback;
+}
+
+export async function getReservationAbuseConfig(
+  env: Env,
+): Promise<ReservationAbuseConfig> {
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT key, value FROM app_settings WHERE key IN (?, ?)",
+    )
+      .bind(
+        MAX_ACTIVE_RESERVATIONS_SETTING_KEY,
+        MAX_TOTAL_RESERVED_UNITS_SETTING_KEY,
+      )
+      .all<{ key: string; value: string }>();
+    const values = new Map((rows.results ?? []).map((row) => [row.key, row.value]));
+    return {
+      maxActiveReservationsPerSession: boundedSetting(
+        values.get(MAX_ACTIVE_RESERVATIONS_SETTING_KEY),
+        DEFAULT_MAX_ACTIVE_RESERVATIONS_PER_SESSION,
+        MAX_ACTIVE_RESERVATIONS_PER_SESSION,
+      ),
+      maxTotalReservedUnitsPerSession: boundedSetting(
+        values.get(MAX_TOTAL_RESERVED_UNITS_SETTING_KEY),
+        DEFAULT_MAX_TOTAL_RESERVED_UNITS_PER_SESSION,
+        MAX_TOTAL_RESERVED_UNITS_PER_SESSION,
+      ),
+    };
+  } catch {
+    // DB cũ chưa có app_settings thì vẫn dùng ngưỡng an toàn đã đóng gói.
+    return {
+      maxActiveReservationsPerSession: DEFAULT_MAX_ACTIVE_RESERVATIONS_PER_SESSION,
+      maxTotalReservedUnitsPerSession: DEFAULT_MAX_TOTAL_RESERVED_UNITS_PER_SESSION,
+    };
+  }
+}
+
+export async function getActiveReservationUsage(
+  env: Env,
+  storefrontSessionId: string,
+  now = new Date(),
+): Promise<ActiveReservationUsage> {
+  const timestamp = isoNow(now);
+  const row = await env.DB.prepare(
+    `SELECT COUNT(DISTINCT cr.id) AS activeCartCount,
+       COALESCE(SUM(ir.quantity), 0) AS reservedUnits
+     FROM cart_requests cr
+     LEFT JOIN inventory_reservations ir
+       ON ir.cart_request_id = cr.id
+      AND ir.status = 'ACTIVE'
+      AND ir.expires_at > ?
+     WHERE cr.storefront_session_id = ?
+       AND cr.checkout_state = 'WAITING_SELLER_CONFIRM'
+       AND cr.reservation_expires_at > ?`,
+  )
+    .bind(timestamp, storefrontSessionId, timestamp)
+    .first<{ activeCartCount: number; reservedUnits: number }>();
+  return {
+    activeCartCount: Math.max(0, Number(row?.activeCartCount ?? 0)),
+    reservedUnits: Math.max(0, Number(row?.reservedUnits ?? 0)),
+  };
+}
+
+export function countReservedUnits(
+  items: ReservationLine[],
+  gifts: ReservationGiftLine[],
+) {
+  return [...items, ...gifts].reduce(
+    (total, item) => total + (item.trackInventory ? item.quantity : 0),
+    0,
+  );
 }
 
 export async function getAdminCheckoutSettings(env: Env) {
@@ -215,6 +312,18 @@ function mapInventoryError(caught: unknown) {
     return failure(
       "PROMOTION_USAGE_LIMIT",
       "Một chương trình khuyến mãi vừa hết lượt áp dụng. Vui lòng thử lại.",
+      409,
+    );
+  if (message.includes("ACTIVE_RESERVATION_LIMIT"))
+    return failure(
+      "ACTIVE_RESERVATION_LIMIT",
+      "Phiên storefront đang có quá nhiều lượt giữ hàng. Vui lòng hoàn tất hoặc chờ lượt cũ hết hạn.",
+      409,
+    );
+  if (message.includes("RESERVED_UNITS_LIMIT"))
+    return failure(
+      "RESERVED_UNITS_LIMIT",
+      "Phiên storefront đang giữ quá nhiều sản phẩm. Vui lòng hoàn tất hoặc chờ lượt cũ hết hạn.",
       409,
     );
   if (message.includes("INVENTORY_NOT_TRACKED"))

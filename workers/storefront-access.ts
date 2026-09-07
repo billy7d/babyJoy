@@ -338,14 +338,29 @@ export function isAdminHtmlPath(path: string) {
   return path === "/admin" || path.startsWith("/admin/");
 }
 
-export function isStorefrontProtectedApiPath(path: string) {
+export function isCartShareToken(value: string) {
+  return /^[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+export function isStorefrontProtectedApiPath(path: string, method = "GET") {
   if (!path.startsWith("/api/")) return false;
   if (path.startsWith("/api/admin/")) return false;
   if (path === "/api/meta/messenger/webhook") return false;
-  if (/^\/api\/cart\/share\/[^/]+$/.test(path)) return false;
   if (/^\/api\/cart\/messenger\/status\/[^/]+$/.test(path)) return false;
+  if (path === "/api/cart/share/prepare" || path === "/api/cart/share/activate")
+    return true;
+  if (path === "/api/cart/share" || path.startsWith("/api/cart/share/")) {
+    const tokenMatch = path.match(/^\/api\/cart\/share\/([^/]+)$/);
+    // Chỉ GET với token base64url đúng 43 ký tự là public; mọi method/path khác phải qua gate.
+    return !(
+      method.toUpperCase() === "GET" &&
+      tokenMatch &&
+      isCartShareToken(tokenMatch[1])
+    );
+  }
   return (
     path === "/api/categories" ||
+    path === "/api/tags" ||
     path === "/api/brands" ||
     /^\/api\/content-pages\/[^/]+$/.test(path) ||
     path === "/api/products" ||
@@ -356,6 +371,18 @@ export function isStorefrontProtectedApiPath(path: string) {
     path === "/api/cart/share/prepare" ||
     path === "/api/cart/messenger/start"
   );
+}
+
+export async function hasStorefrontSessionBindingSchema(env: Env) {
+  try {
+    const column = await env.DB.prepare(
+      "SELECT name FROM pragma_table_info('cart_requests') WHERE name = 'storefront_session_id'",
+    ).first<{ name: string }>();
+    return Boolean(column?.name);
+  } catch {
+    // Cho phép code đọc DB cũ, nhưng luồng reservation có gate sẽ fail-closed nếu thiếu cột.
+    return false;
+  }
 }
 
 function isStaticPath(path: string) {
@@ -1392,5 +1419,8 @@ export async function validateStorefrontRequest(
 
 export function redactPathForLog(path: string) {
   if (path.startsWith("/access/")) return "/access/[REDACTED]";
+  if (/^\/api\/cart\/share\/[^/]+$/.test(path))
+    return "/api/cart/share/[REDACTED]";
+  if (/^\/c\/[^/]+$/.test(path)) return "/c/[REDACTED]";
   return path;
 }
