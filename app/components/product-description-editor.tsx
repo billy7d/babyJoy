@@ -26,11 +26,10 @@ import {
   type ProductDescriptionFontSize,
 } from "../../shared/product-description";
 import {
-  MAX_SOURCE_IMAGE_BYTES,
-  MAX_STORED_IMAGE_BYTES,
-  isAllowedImageType,
-} from "../../shared/images";
-import { optimizeProductImage } from "../lib/image-optimizer";
+  formatProductImageBytes,
+  optimizeAndUploadProductImage,
+  validateProductImageFiles,
+} from "../lib/image-upload";
 import {
   ProductDescriptionImage,
   ProductDescriptionImageNodeContext,
@@ -270,12 +269,14 @@ export function ProductDescriptionEditor({
 
   const uploadImage = useCallback(
     async (file: File, replacePosition?: number) => {
-      if (!isAllowedImageType(file.type.toLowerCase())) {
-        setStatus("Chỉ hỗ trợ ảnh JPEG, PNG và WebP.");
-        return;
-      }
-      if (file.size > MAX_SOURCE_IMAGE_BYTES) {
-        setStatus("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
+      try {
+        validateProductImageFiles([file]);
+      } catch (caught) {
+        setStatus(
+          caught instanceof Error
+            ? caught.message
+            : "Không thể tải ảnh lên. Vui lòng thử lại.",
+        );
         return;
       }
       const replacementAlt =
@@ -283,23 +284,26 @@ export function ProductDescriptionEditor({
           ? String(editor.state.doc.nodeAt(replacePosition)?.attrs.alt ?? "")
           : undefined;
       setUploading(true);
-      setStatus("Đang tải ảnh lên...");
       try {
-        const optimized = await optimizeProductImage(file);
-        if (optimized.optimizedBytes > MAX_STORED_IMAGE_BYTES)
-          throw new Error("Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.");
         const headers = new Headers({
-          "content-type": optimized.mimeType,
           "x-upload-session-id": uploadSessionId,
           "x-alt-text": "",
         });
         if (productId) headers.set("x-product-id", productId);
         if (contentPageSlug)
           headers.set("x-content-page-slug", contentPageSlug);
-        const response = await fetch("/api/admin/product-description-assets", {
-          method: "POST",
+        const { response } = await optimizeAndUploadProductImage(file, {
+          endpoint: "/api/admin/product-description-assets",
           headers,
-          body: optimized.blob,
+          onPhase: (phase, optimized) => {
+            if (phase === "optimizing") {
+              setStatus("Đang tối ưu ảnh...");
+              return;
+            }
+            setStatus(
+              `Đã tối ưu ${formatProductImageBytes(optimized?.originalBytes ?? 0)} → ${formatProductImageBytes(optimized?.optimizedBytes ?? 0)}. Đang tải ảnh lên...`,
+            );
+          },
         });
         const body = (await response.json()) as {
           asset?: ProductDescriptionAsset;
@@ -725,6 +729,9 @@ export function ProductDescriptionEditor({
             }}
           />
         </label>
+        <small className="product-description-upload-help">
+          JPEG, PNG hoặc WebP • Tối đa 30 MB/ảnh. Ảnh sẽ được tự động tối ưu để tải trang nhanh hơn.
+        </small>
         <div className="product-description-toolbar-spacer" />
         <button type="button" aria-label="Hoàn tác" disabled={!editor?.can().undo() || uploading} onMouseDown={preventToolbarFocus} onClick={() => {
           if (!editor) return;
@@ -741,7 +748,7 @@ export function ProductDescriptionEditor({
         <EditorContent editor={editor} className="product-description-content" />
       </ProductDescriptionImageNodeContext.Provider>
       <p className="product-description-editor-status" aria-live="polite">
-        {uploading ? "Đang tải ảnh lên..." : status}
+        {status}
       </p>
     </div>
   );

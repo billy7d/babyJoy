@@ -80,7 +80,7 @@ Admin production yêu cầu Cloudflare Access Application bảo vệ `/admin/*` 
   Messenger checkout có feature flag riêng. Các cột kênh cũ trong D1 chỉ giữ để
   đọc lịch sử, không còn đường gửi lại.
 - Giỏ hàng local dùng key `babyjoy.cart.v1` và tồn tại qua refresh.
-- Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 5 MB, tạo key immutable mới trong R2 và lưu duy nhất `r2_key` vào D1.
+- Ảnh upload chỉ nhận JPEG/PNG/WebP tối đa 30 MiB/ảnh; trình duyệt tự tối ưu trước khi upload, object R2 tối đa 1.5 MiB, tạo key immutable mới và lưu duy nhất `r2_key` vào D1.
 - Ảnh production được phân phối trực tiếp qua `https://images.metraphuong.com/<r2_key>`. Route `/media/*` chỉ còn tương thích legacy và đã được đánh dấu deprecated.
 - Gỡ ảnh khỏi sản phẩm chỉ xóa association D1; không tự động xóa object R2 để bảo toàn snapshot giỏ hàng lịch sử.
 

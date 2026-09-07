@@ -46,11 +46,11 @@ import {
   type PaginationMeta,
 } from "../../shared/pagination";
 import {
-  MAX_SOURCE_IMAGE_BYTES,
-  MAX_STORED_IMAGE_BYTES,
-  isAllowedImageType,
-} from "../../shared/images";
-import { optimizeProductImage } from "../lib/image-optimizer";
+  formatProductImageBytes,
+  optimizeAndUploadProductImage,
+  processProductImageFilesSequentially,
+  validateProductImageFiles,
+} from "../lib/image-upload";
 import {
   legacyDescriptionToDocument,
   type ProductDescriptionAsset,
@@ -108,15 +108,6 @@ type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string }
 type AdminProduct = Product & { adminStatus: string };
 type VariantErrors = Record<string, VariantFieldErrors>;
 type AdminProductsResponse = Partial<PaginatedResponse<AdminProductRow>>;
-
-function formatImageBytes(bytes: number) {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
-function yieldToBrowser() {
-  return new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
-}
 
 function formatReservationRemaining(expiresAt: string | null | undefined, now = Date.now()) {
   if (!expiresAt) return "Chưa bắt đầu giữ hàng";
@@ -583,63 +574,57 @@ export function ProductEditorPage() {
     setUploading(true);
     let uploadedCount = 0;
     try {
-      // Kiểm tra cả danh sách trước khi xử lý để file vượt 30 MiB bị chặn ngay.
-      for (const file of selectedFiles) {
-        if (!isAllowedImageType(file.type.toLowerCase()))
-          throw new Error("Chỉ hỗ trợ ảnh JPEG, PNG và WebP.");
-        if (file.size > MAX_SOURCE_IMAGE_BYTES)
-          throw new Error("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
-      }
+      validateProductImageFiles(selectedFiles);
 
       let prependNext = makePrimary;
       const optimizationSummaries: string[] = [];
-      for (const [index, file] of selectedFiles.entries()) {
-        setMessage(
-          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đang chuẩn bị ảnh...`,
-        );
-        await yieldToBrowser();
-        setMessage(
-          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đang tối ưu ảnh...`,
-        );
-        const optimized = await optimizeProductImage(file);
-        if (optimized.optimizedBytes > MAX_STORED_IMAGE_BYTES)
-          throw new Error("Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.");
-        optimizationSummaries.push(
-          `${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)} (${optimized.width}×${optimized.height})`,
-        );
-        setMessage(
-          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đã tối ưu ${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)}. Đang tải ảnh lên...`,
-        );
-        const response = await fetch("/api/admin/images", {
-          method: "POST",
-          headers: { "content-type": optimized.mimeType },
-          body: optimized.blob,
-        });
-        const body = (await response.json()) as {
-          key?: string;
-          url?: string;
-          error?: { message?: string };
-        };
-        if (!response.ok || !body.key || !body.url)
-          throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
-        const uploadedImage: ProductImageRecord = {
-          r2Key: body.key,
-          url: body.url,
-          altText: editing?.name ?? "Ảnh sản phẩm BabyJoy",
-          sortOrder: 0,
-        };
-        setImages((current) => {
-          const next = prependNext
-            ? [uploadedImage, ...current]
-            : [...current, uploadedImage];
-          return next.map((image, sortOrder) => ({ ...image, sortOrder }));
-        });
-        prependNext = false;
-        uploadedCount += 1;
-        setMessage(
-          `Đang xử lý ảnh ${index + 1}/${selectedFiles.length}: Đã tải ảnh lên`,
-        );
-      }
+      await processProductImageFilesSequentially(
+        selectedFiles,
+        async (file, index, total) => {
+          const { response, optimized } =
+            await optimizeAndUploadProductImage(file, {
+              endpoint: "/api/admin/images",
+              onPhase: (phase, result) => {
+                if (phase === "optimizing") {
+                  setMessage(
+                    `Đang xử lý ảnh ${index + 1}/${total}: Đang tối ưu ảnh...`,
+                  );
+                  return;
+                }
+                setMessage(
+                  `Đang xử lý ảnh ${index + 1}/${total}: Đã tối ưu ${formatProductImageBytes(result?.originalBytes ?? 0)} → ${formatProductImageBytes(result?.optimizedBytes ?? 0)}. Đang tải ảnh lên...`,
+                );
+              },
+            });
+          optimizationSummaries.push(
+            `${formatProductImageBytes(optimized.originalBytes)} → ${formatProductImageBytes(optimized.optimizedBytes)} (${optimized.width}×${optimized.height})`,
+          );
+          const body = (await response.json()) as {
+            key?: string;
+            url?: string;
+            error?: { message?: string };
+          };
+          if (!response.ok || !body.key || !body.url)
+            throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
+          const uploadedImage: ProductImageRecord = {
+            r2Key: body.key,
+            url: body.url,
+            altText: editing?.name ?? "Ảnh sản phẩm BabyJoy",
+            sortOrder: 0,
+          };
+          setImages((current) => {
+            const next = prependNext
+              ? [uploadedImage, ...current]
+              : [...current, uploadedImage];
+            return next.map((image, sortOrder) => ({ ...image, sortOrder }));
+          });
+          prependNext = false;
+          uploadedCount += 1;
+          setMessage(
+            `Đang xử lý ảnh ${index + 1}/${total}: Đã tải ảnh lên`,
+          );
+        },
+      );
       setMessage(
         `Đã tải ${uploadedCount} ảnh lên R2. ${optimizationSummaries.join("; ")} Hãy lưu sản phẩm để gắn ảnh.`,
       );
@@ -706,49 +691,57 @@ export function ProductEditorPage() {
     setUploadingVariantId(clientId);
     let uploadedCount = 0;
     try {
-      for (const file of selectedFiles) {
-        if (!isAllowedImageType(file.type.toLowerCase()))
-          throw new Error("Chỉ hỗ trợ ảnh JPEG, PNG và WebP.");
-        if (file.size > MAX_SOURCE_IMAGE_BYTES)
-          throw new Error("Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.");
-      }
-      for (const [index, file] of selectedFiles.entries()) {
-        setMessage(`Đang tối ưu ảnh phân loại ${index + 1}/${selectedFiles.length}...`);
-        await yieldToBrowser();
-        const optimized = await optimizeProductImage(file);
-        if (optimized.optimizedBytes > MAX_STORED_IMAGE_BYTES)
-          throw new Error("Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.");
-        const response = await fetch("/api/admin/images", {
-          method: "POST",
-          headers: { "content-type": optimized.mimeType },
-          body: optimized.blob,
-        });
-        const body = (await response.json()) as {
-          key?: string;
-          url?: string;
-          error?: { message?: string };
-        };
-        if (!response.ok || !body.key || !body.url)
-          throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
-        setVariants((current) =>
-          current.map((variant) => {
-            if (variant.clientId !== clientId) return variant;
-            const nextImage = {
-              r2Key: body.key!,
-              url: body.url!,
-              altText: variant.name || "Ảnh phân loại BabyJoy",
-              sortOrder: variant.images.length,
-              isPrimary: variant.images.length === 0,
-              variantId: variant.id,
-            };
-            return { ...variant, images: [...variant.images, nextImage] };
-          }),
-        );
-        uploadedCount += 1;
-      }
+      validateProductImageFiles(selectedFiles);
+      await processProductImageFilesSequentially(
+        selectedFiles,
+        async (file, index, total) => {
+          const { response } = await optimizeAndUploadProductImage(file, {
+            endpoint: "/api/admin/images",
+            onPhase: (phase, optimized) => {
+              if (phase === "optimizing") {
+                setMessage(
+                  `Đang tối ưu ảnh phân loại ${index + 1}/${total}...`,
+                );
+                return;
+              }
+              setMessage(
+                `Đã tối ưu ${formatProductImageBytes(optimized?.originalBytes ?? 0)} → ${formatProductImageBytes(optimized?.optimizedBytes ?? 0)}. Đang tải ảnh phân loại ${index + 1}/${total}...`,
+              );
+            },
+          });
+          const body = (await response.json()) as {
+            key?: string;
+            url?: string;
+            error?: { message?: string };
+          };
+          if (!response.ok || !body.key || !body.url)
+            throw new Error(body.error?.message ?? "Tải ảnh lên R2 thất bại.");
+          setVariants((current) =>
+            current.map((variant) => {
+              if (variant.clientId !== clientId) return variant;
+              const nextImage = {
+                r2Key: body.key!,
+                url: body.url!,
+                altText: variant.name || "Ảnh phân loại BabyJoy",
+                sortOrder: variant.images.length,
+                isPrimary: variant.images.length === 0,
+                variantId: variant.id,
+              };
+              return { ...variant, images: [...variant.images, nextImage] };
+            }),
+          );
+          uploadedCount += 1;
+        },
+      );
       setMessage(`Đã tải ${uploadedCount} ảnh phân loại. Hãy lưu sản phẩm để gắn ảnh.`);
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Tải ảnh phân loại thất bại.");
+      const messageText =
+        caught instanceof Error ? caught.message : "Tải ảnh phân loại thất bại.";
+      setMessage(
+        uploadedCount
+          ? `Đã tải ${uploadedCount}/${selectedFiles.length} ảnh phân loại. ${messageText}`
+          : messageText,
+      );
     } finally {
       setUploadingVariantId(null);
     }
@@ -1067,6 +1060,7 @@ export function ProductEditorPage() {
                           <small className="inventory-readonly">Đang giữ: {variant.reservedQuantity ?? 0} • Có thể bán: {variant.trackInventory ? Math.max(0, Number(variant.stockOnHand) - (variant.reservedQuantity ?? 0)) : "Không theo dõi"}</small>
                           <div className="variant-image-editor">
                             <b>Hình ảnh phân loại</b>
+                            <small className="field-help">JPEG, PNG hoặc WebP • Tối đa 30 MB/ảnh. Ảnh lớn sẽ được tự động tối ưu trước khi tải lên.</small>
                             <div className="variant-image-grid">
                               {variant.images.map((image, imageIndex) => (
                                 <div className="variant-image-tile" key={image.r2Key}>
@@ -2867,16 +2861,18 @@ export function AdminSettingsPage() {
   const uploadAvatar = async (file: File) => {
     setBusy(true);
     setError("");
-    setMessage("Đang tối ưu ảnh...");
     try {
-      const optimized = await optimizeProductImage(file);
-      setMessage(
-        `Đã tối ưu ${formatImageBytes(optimized.originalBytes)} → ${formatImageBytes(optimized.optimizedBytes)}. Đang tải ảnh lên...`,
-      );
-      const response = await fetch("/api/admin/images", {
-        method: "POST",
-        headers: { "content-type": optimized.mimeType },
-        body: optimized.blob,
+      const { response } = await optimizeAndUploadProductImage(file, {
+        endpoint: "/api/admin/images",
+        onPhase: (phase, optimized) => {
+          if (phase === "optimizing") {
+            setMessage("Đang tối ưu ảnh...");
+            return;
+          }
+          setMessage(
+            `Đã tối ưu ${formatProductImageBytes(optimized?.originalBytes ?? 0)} → ${formatProductImageBytes(optimized?.optimizedBytes ?? 0)}. Đang tải ảnh lên...`,
+          );
+        },
       });
       const body = (await response.json()) as {
         key?: string;

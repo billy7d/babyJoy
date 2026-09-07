@@ -403,6 +403,12 @@
   gap: 5px;
 }
 
+.product-description-upload-help {
+  flex: 1 0 100%;
+  color: #725b4b;
+  font-size: 0.75rem;
+}
+
 .product-description-upload-button input,
 .product-description-image-replace input {
   position: absolute;
