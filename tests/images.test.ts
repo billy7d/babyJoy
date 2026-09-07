@@ -15,6 +15,7 @@ import {
   validateAssociatedImages,
 } from "../workers/image-service";
 import { mapCartItemSnapshot } from "../workers/services";
+import worker from "../workers/app";
 
 async function consumeUploadBody(value: unknown) {
   if (value instanceof ReadableStream) {
@@ -174,6 +175,24 @@ describe("upload ảnh immutable", () => {
     await expect(uploadImmutableProductImage(request, bucket)).rejects.toMatchObject<
       ImageUploadError
     >({ code: "TOO_LARGE" });
+  });
+
+  it("endpoint /api/admin/images vẫn reject payload bypass lớn hơn hard cap", async () => {
+    const { bucket, puts } = fakeBucket();
+    const request = new Request("https://example.test/api/admin/images", {
+      method: "POST",
+      headers: { "content-type": "image/webp" },
+      body: new Blob([new Uint8Array(MAX_STORED_IMAGE_BYTES + 1)]),
+    });
+    request.headers.delete("content-length");
+    const response = await worker.fetch(
+      request,
+      { ENVIRONMENT: "development", PRODUCT_IMAGES: bucket } as unknown as Env,
+      { waitUntil: (promise: Promise<unknown>) => void promise } as ExecutionContext,
+    );
+
+    expect(response.status).toBe(413);
+    expect(puts).toHaveLength(0);
   });
 
   it("từ chối body rỗng mà không tạo R2 object", async () => {

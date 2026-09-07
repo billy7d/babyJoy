@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
@@ -18,6 +19,27 @@ const slug = `e2e-rich-description-${key}`;
 const imageFixture = fileURLToPath(
   new URL("../public/images/logo.png", import.meta.url),
 );
+const imageSource = readFileSync(
+  fileURLToPath(new URL("../public/images/product-heinz.jpg", import.meta.url)),
+);
+const largeImageFixture = {
+  name: "rich-description-over-5mb.jpg",
+  mimeType: "image/jpeg",
+  buffer: Buffer.concat([
+    imageSource,
+    Buffer.alloc(6 * 1024 * 1024 - imageSource.length),
+  ]),
+};
+const sourceLimitBytes = 30 * 1024 * 1024;
+
+function paddedJpeg(size, name) {
+  if (size < imageSource.length) throw new Error("Fixture JPEG lớn hơn kích thước test");
+  return {
+    name,
+    mimeType: "image/jpeg",
+    buffer: Buffer.concat([imageSource, Buffer.alloc(size - imageSource.length)]),
+  };
+}
 const expectedFontPixels = {
   small: "14px",
   normal: "16px",
@@ -107,6 +129,10 @@ try {
   await variant.locator("select").selectOption("SELLING");
 
   const editor = page.locator(".product-description-content .ProseMirror");
+  assert(
+    (await page.getByText("JPEG, PNG hoặc WebP", { exact: false }).count()) >= 1,
+    "Rich Description uploader thiếu helper text giới hạn ảnh",
+  );
   const fontSizeInput = page.locator('input[aria-label="Kích thước chữ"]');
   const fontSizeSelect = page.locator('select[aria-label="Chọn kích thước chữ"]');
   await editor.click();
@@ -191,7 +217,7 @@ try {
   const paragraphA = editor.locator("p").filter({ hasText: "Image anchor A" }).first();
   await paragraphA.click();
   await page.keyboard.press("Home");
-  await page.locator('input[aria-label="Thêm ảnh vào mô tả"]').setInputFiles(imageFixture);
+  await page.locator('input[aria-label="Thêm ảnh vào mô tả"]').setInputFiles(largeImageFixture);
   await waitForText("Đã tải ảnh lên.");
 
   const paragraphB = editor.locator("p").filter({ hasText: "Image anchor B" }).first();
@@ -218,6 +244,14 @@ try {
   assert(
     (await imageNodes.count()) === beforeFailedUploadCount,
     "Upload lỗi đã làm thay đổi document",
+  );
+  await page.locator('input[aria-label="Thêm ảnh vào mô tả"]').setInputFiles(
+    paddedJpeg(sourceLimitBytes + 1, "rich-description-over-30mb.jpg"),
+  );
+  await waitForText("Ảnh vượt quá giới hạn 30 MB");
+  assert(
+    (await imageNodes.count()) === beforeFailedUploadCount,
+    "Upload rich >30 MB đã làm thay đổi document",
   );
 
   const imageA = imageNodes.nth(0);
@@ -276,7 +310,7 @@ try {
   await imageA.getByRole("textbox", { name: "Alt text" }).fill("User authored alt A");
 
   const oldAssetId = await imageA.getAttribute("data-asset-id");
-  await imageA.locator('input[aria-label="Thay ảnh mô tả"]').setInputFiles(imageFixture);
+  await imageA.locator('input[aria-label="Thay ảnh mô tả"]').setInputFiles(largeImageFixture);
   await waitForText("Đã tải ảnh lên.");
   await page.waitForFunction(
     (oldId) => document.querySelector(".product-description-image-node")?.getAttribute("data-asset-id") !== oldId,

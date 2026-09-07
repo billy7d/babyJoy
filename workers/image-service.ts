@@ -240,9 +240,10 @@ export async function uploadImmutableProductImage(
     },
   } satisfies R2PutOptions;
 
-  let uploadValue: ReadableStream<Uint8Array> | Blob = boundedStream;
+  let uploadValue: ReadableStream<Uint8Array> = boundedStream;
   let streamPump: Promise<void> | undefined;
   const FixedLengthStream = getFixedLengthStreamConstructor();
+  // Khi thiếu Content-Length, mặc định truyền bounded stream trực tiếp để tránh buffer thêm payload.
   if (FixedLengthStream && contentLengthHeader !== null) {
     // R2 cần biết trước độ dài stream; FixedLengthStream vẫn truyền dữ liệu theo luồng.
     const fixedLength = new FixedLengthStream(Number(contentLengthHeader));
@@ -251,9 +252,6 @@ export async function uploadImmutableProductImage(
       if (caught instanceof ImageUploadError) throw caught;
       throw new ImageUploadError("TOO_LARGE");
     });
-  } else if (FixedLengthStream && contentLengthHeader === null) {
-    // Khi client không gửi Content-Length, chỉ giữ tối đa 1.5 MiB để tạo body có độ dài xác định cho R2.
-    uploadValue = await new Response(boundedStream).blob();
   }
 
   let uploaded: R2Object | null;

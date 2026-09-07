@@ -112,6 +112,15 @@ afterEach(() => {
 });
 
 describe("Migration và API ảnh riêng theo variant", () => {
+  it("variant uploader dùng pipeline chung và không xử lý ảnh song song", () => {
+    const source = readFileSync("app/components/admin-pages.tsx", "utf8");
+    expect(source).toContain("validateProductImageFiles");
+    expect(source).toContain("optimizeAndUploadProductImage");
+    expect(source).toContain("processProductImageFilesSequentially");
+    expect(source).toContain("Tối đa 30 MB/ảnh");
+    expect(source).not.toContain("Promise.all(selectedFiles");
+  });
+
   it("giữ dữ liệu cũ, FK sạch và chỉ cho một ảnh đại diện", () => {
     const { database } = createEnv();
     expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import worker from "../workers/app";
+import { MAX_STORED_IMAGE_BYTES } from "../shared/images";
 import type { ProductDescriptionDocument } from "../shared/product-description";
 import { cleanupOrphanedProductDescriptionAssets } from "../workers/product-description-assets";
 
@@ -116,6 +117,21 @@ afterEach(() => {
 function api(env: Env, path: string, init?: RequestInit, ctx?: ExecutionContext) {
   return worker.fetch(
     new Request(`https://metraphuong.com${path}`, init),
+    env,
+    ctx ?? ({ waitUntil: (promise: Promise<unknown>) => void promise } as ExecutionContext),
+  );
+}
+
+function apiWithoutContentLength(
+  env: Env,
+  path: string,
+  init?: RequestInit,
+  ctx?: ExecutionContext,
+) {
+  const request = new Request(`https://metraphuong.com${path}`, init);
+  request.headers.delete("content-length");
+  return worker.fetch(
+    request,
     env,
     ctx ?? ({ waitUntil: (promise: Promise<unknown>) => void promise } as ExecutionContext),
   );
@@ -239,6 +255,30 @@ describe("Product rich description API", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM product_description_assets WHERE id = ?")
         .get(abandonedBody.asset.id),
+    ).toEqual({ count: 0 });
+  });
+
+  it("endpoint description vẫn reject payload bypass vượt hard cap", async () => {
+    const { env, bucket, database } = createEnv();
+    const response = await apiWithoutContentLength(
+      env,
+      "/api/admin/product-description-assets",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "image/webp",
+          "x-upload-session-id": "oversized-description-session",
+        },
+        body: new Blob([new Uint8Array(MAX_STORED_IMAGE_BYTES + 1)]),
+      },
+    );
+
+    expect(response.status).toBe(413);
+    expect(bucket.objects.size).toBe(0);
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM product_description_assets")
+        .get(),
     ).toEqual({ count: 0 });
   });
 

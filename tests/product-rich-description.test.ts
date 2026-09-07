@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   addProductDescriptionRecentColor,
@@ -15,6 +16,19 @@ import {
 const validImageId = "pda_123e4567-e89b-12d3-a456-426614174000";
 
 describe("Product rich description validator", () => {
+  it("Rich Description insert và replace dùng cùng pipeline upload ảnh", () => {
+    const source = readFileSync(
+      "app/components/product-description-editor.tsx",
+      "utf8",
+    );
+    expect(source).toContain("validateProductImageFiles");
+    expect(source).toContain("optimizeAndUploadProductImage");
+    expect(source).toContain('endpoint: "/api/admin/product-description-assets"');
+    expect(source).toContain("replacePosition");
+    expect(source).toContain("replaceImage");
+    expect(source).toContain("Tối đa 30 MB/ảnh");
+  });
+
   it("chuẩn hóa HEX cho màu chữ và từ chối giá trị không an toàn", () => {
     expect(normalizeProductDescriptionHexColor("#FFFFFF")).toBe("#FFFFFF");
     expect(normalizeProductDescriptionHexColor("FFFFFF")).toBe("#FFFFFF");

@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
@@ -20,6 +21,20 @@ const skus = {
   vegetable: `E2E-VEGETABLE-${e2eKey}`,
 };
 let productId = "";
+const imageSource = readFileSync(
+  fileURLToPath(new URL("../public/images/product-heinz.jpg", import.meta.url)),
+);
+const sourceLimitBytes = 30 * 1024 * 1024;
+const storedLimitBytes = Math.floor(1.5 * 1024 * 1024);
+
+function paddedJpeg(size, name) {
+  if (size < imageSource.length) throw new Error("Fixture JPEG lớn hơn kích thước test");
+  return {
+    name,
+    mimeType: "image/jpeg",
+    buffer: Buffer.concat([imageSource, Buffer.alloc(size - imageSource.length)]),
+  };
+}
 
 const cards = page.locator(".variant-card");
 const openEditor = async (index) => {
@@ -41,13 +56,15 @@ const fillVariant = async (index, { name, packageSize, sku, price, compareAtPric
   await editor.getByLabel("Tồn kho thực tế").fill("10");
 };
 
-const uploadImage = async (index, relativePath) => {
+const uploadImage = async (index, source, expectedCount = 1) => {
   const editor = await openEditor(index);
   const input = editor.locator(".variant-image-add input");
   await input.setInputFiles(
-    fileURLToPath(new URL(relativePath, import.meta.url)),
+    typeof source === "string"
+      ? fileURLToPath(new URL(source, import.meta.url))
+      : source,
   );
-  await editor.locator(".variant-image-tile").first().waitFor({ state: "visible" });
+  await editor.locator(".variant-image-tile").nth(expectedCount - 1).waitFor({ state: "visible" });
   await input.waitFor({ state: "attached" });
   await page.waitForFunction(
     (selector) => !document.querySelector(selector)?.disabled,
@@ -86,7 +103,31 @@ try {
     status: "HIDDEN",
   });
 
-  await uploadImage(0, "../public/images/product-heinz.jpg");
+  const imageUploadRequestCount = { value: 0 };
+  const imageUploadSizes = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/admin/images")) {
+      imageUploadRequestCount.value += 1;
+      imageUploadSizes.push(request.postDataBuffer()?.length ?? 0);
+    }
+  });
+  const requestCountBeforeOversized = imageUploadRequestCount.value;
+  await uploadImage(0, [
+    paddedJpeg(6 * 1024 * 1024, "variant-over-5mb.jpg"),
+    paddedJpeg(sourceLimitBytes, "variant-exact-30mb.jpg"),
+  ], 2);
+  if (!(await page.getByText("JPEG, PNG hoặc WebP", { exact: false }).count()))
+    throw new Error("Variant uploader thiếu helper text giới hạn ảnh");
+  const variantZeroEditor = await openEditor(0);
+  const oversizedInput = variantZeroEditor.locator(".variant-image-add input");
+  await oversizedInput.setInputFiles(
+    paddedJpeg(sourceLimitBytes + 1, "variant-over-30mb.jpg"),
+  );
+  await page.waitForFunction(() => document.body.innerText.includes("Ảnh vượt quá giới hạn 30 MB"));
+  if (imageUploadRequestCount.value !== requestCountBeforeOversized + 2)
+    throw new Error("Ảnh variant >30 MB đã gửi request trước khi bị reject");
+  if (imageUploadSizes.some((size) => size > storedLimitBytes))
+    throw new Error("Variant uploader đã gửi source thô vượt hard cap lên Worker");
   await uploadImage(1, "../public/images/product-gerber.jpg");
   await uploadImage(2, "../public/images/product-hipp.jpg");
   await page.screenshot({
@@ -113,7 +154,7 @@ try {
   const adminResponse = await page.request.get(`${baseUrl}/api/admin/products/${productId}`);
   const adminBody = await adminResponse.json();
   const adminVariants = adminBody.data?.variants ?? [];
-  if (adminVariants.length !== 3 || adminVariants.some((variant) => variant.images?.length !== 1))
+  if (adminVariants.length !== 3 || adminVariants.find((variant) => variant.sku === skus.apple)?.images?.length !== 2 || adminVariants.filter((variant) => variant.sku !== skus.apple).some((variant) => variant.images?.length !== 1))
     throw new Error("Admin API không persist đủ ảnh phân loại");
   if (adminVariants.find((variant) => variant.sku === skus.apple)?.packageSize !== "120g")
     throw new Error("Admin API không persist quy cách");
@@ -126,7 +167,7 @@ try {
     throw new Error("Storefront thiếu phân loại SELLING hoặc OUT_OF_STOCK");
   if (await page.getByRole("button", { name: /Rau củ · 120g/ }).count() !== 0)
     throw new Error("Storefront vẫn hiển thị phân loại HIDDEN");
-  if (await page.getByRole("button", { name: /Xem ảnh .* của phân loại/ }).count() !== 2)
+  if (await page.getByRole("button", { name: /Xem ảnh .* của phân loại/ }).count() !== 3)
     throw new Error("Gallery không lọc ảnh của phân loại HIDDEN");
 
   await bananaButton.click();
@@ -136,7 +177,7 @@ try {
   if (await appleButton.getAttribute("aria-pressed") !== "true")
     throw new Error("Chọn ảnh không đồng bộ ngược về phân loại Táo");
   await bananaButton.click();
-  if (await page.locator(".detail-thumbs button.active").getAttribute("aria-label") !== "Xem ảnh 3 của phân loại")
+  if (await page.locator(".detail-thumbs button.active").getAttribute("aria-label") !== "Xem ảnh 4 của phân loại")
     throw new Error("Chọn phân loại không nhảy tới ảnh đại diện tương ứng");
 
   // Admin bật lại Chuối và storefront phải dùng trạng thái mới sau refresh.
