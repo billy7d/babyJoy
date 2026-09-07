@@ -15,10 +15,22 @@ import {
   buildInventoryReservationStatements,
   buildPromotionReservationStatements,
   cleanupExpiredReservations,
+  countReservedUnits,
+  getActiveReservationUsage,
   getCheckoutReservationConfig,
+  getReservationAbuseConfig,
   hasInventorySchema,
   mapInventoryError,
 } from "./inventory";
+import {
+  authorizeStorefrontSession,
+  hasStorefrontSessionBindingSchema,
+  isCartShareToken,
+  isStorefrontAccessGateEnabled,
+  storefrontGateMisconfiguredResponse,
+  storefrontSessionRequiredResponse,
+  type AccessSessionAuthorization,
+} from "./storefront-access";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -63,6 +75,7 @@ type ShareRequestRow = {
   createdAt: string;
   contactChannel: string;
   checkoutState?: string;
+  storefrontSessionId?: string | null;
   reservationStartedAt?: string | null;
   reservationExpiresAt?: string | null;
   reservationDurationMinutes?: number | null;
@@ -88,8 +101,92 @@ function json(data: unknown, status = 200, headers = jsonHeaders) {
   return new Response(JSON.stringify(data), { status, headers });
 }
 
-function failure(code: string, message: string, status: number, extra = {}) {
-  return json({ success: false, error: { code, message, ...extra } }, status);
+function failure(
+  code: string,
+  message: string,
+  status: number,
+  extra = {},
+  headers = jsonHeaders,
+) {
+  return json({ success: false, error: { code, message, ...extra } }, status, headers);
+}
+
+type StorefrontReservationContext = {
+  gateEnabled: boolean;
+  sessionId: string | null;
+  bindingSchema: boolean;
+  response?: Response;
+};
+
+async function resolveStorefrontReservationContext(
+  request: Request,
+  env: Env,
+  preauthorized?: AccessSessionAuthorization,
+): Promise<StorefrontReservationContext> {
+  const gateEnabled = isStorefrontAccessGateEnabled(env);
+  if (!gateEnabled) {
+    return {
+      gateEnabled: false,
+      sessionId: null,
+      bindingSchema: await hasStorefrontSessionBindingSchema(env),
+    };
+  }
+  const authorization =
+    preauthorized ?? (await authorizeStorefrontSession(request, env));
+  if (!authorization.valid) {
+    return {
+      gateEnabled: true,
+      sessionId: null,
+      bindingSchema: false,
+      response:
+        authorization.reason === "MISSING_SECRET"
+          ? storefrontGateMisconfiguredResponse()
+          : storefrontSessionRequiredResponse(),
+    };
+  }
+  if (!authorization.session?.id)
+    return {
+      gateEnabled: true,
+      sessionId: null,
+      bindingSchema: false,
+      response: storefrontSessionRequiredResponse(),
+    };
+  const bindingSchema = await hasStorefrontSessionBindingSchema(env);
+  if (!bindingSchema) {
+    return {
+      gateEnabled: true,
+      sessionId: authorization.session?.id ?? null,
+      bindingSchema: false,
+      response: failure(
+        "FEATURE_NOT_READY",
+        "Reservation storefront chưa được cài đặt đầy đủ. Vui lòng thử lại sau.",
+        503,
+      ),
+    };
+  }
+  return {
+    gateEnabled: true,
+    sessionId: authorization.session?.id ?? null,
+    bindingSchema: true,
+  };
+}
+
+function submissionSessionMismatch() {
+  return failure(
+    "SUBMISSION_SESSION_MISMATCH",
+    "Phiên storefront không khớp với lượt chốt giỏ hàng này.",
+    409,
+  );
+}
+
+function validateSubmissionSession(
+  row: ShareRequestRow,
+  context: StorefrontReservationContext,
+) {
+  if (!context.gateEnabled) return null;
+  return row.storefrontSessionId === context.sessionId
+    ? null
+    : submissionSessionMismatch();
 }
 
 function requiredString(value: unknown, max: number) {
@@ -330,12 +427,17 @@ export async function checkoutConfigResponse(env: Env) {
 }
 
 async function findShareRequest(submissionToken: string, env: Env) {
-  const inventorySchema = await hasInventorySchema(env);
+  const [inventorySchema, bindingSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasStorefrontSessionBindingSchema(env),
+  ]);
   return env.DB.prepare(
     `SELECT id, public_code AS publicCode, submission_token AS submissionToken,
       item_line_count AS itemLineCount, total_quantity AS totalQuantity,
       subtotal_vnd AS subtotalVnd, created_at AS createdAt,
-      contact_channel AS contactChannel${inventorySchema
+      contact_channel AS contactChannel${bindingSchema
+        ? ", storefront_session_id AS storefrontSessionId"
+        : ", NULL AS storefrontSessionId"}${inventorySchema
         ? ", checkout_state AS checkoutState, reservation_started_at AS reservationStartedAt, reservation_expires_at AS reservationExpiresAt, reservation_duration_minutes AS reservationDurationMinutes"
         : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes"}
      FROM cart_requests WHERE submission_token = ?`,
@@ -433,13 +535,25 @@ async function buildPreparedResponse(
 
 export const validateCartShareActivate = validateCartSharePrepare;
 
-export async function prepareCartShare(request: Request, env: Env) {
+export async function prepareCartShare(
+  request: Request,
+  env: Env,
+  preauthorized?: AccessSessionAuthorization,
+) {
   const startedAt = Date.now();
   console.info(JSON.stringify({ event: "cart_share_prepare_started" }));
   if (!isDirectSellerShareEnabled(env))
     return failure("FEATURE_DISABLED", "Tính năng chốt giỏ hàng chưa được bật.", 404);
+  const storefront = await resolveStorefrontReservationContext(
+    request,
+    env,
+    preauthorized,
+  );
+  if (storefront.response) return storefront.response;
   try {
-    await consumeRateLimit(env, request, "cart-share-prepare", 10);
+    await consumeRateLimit(env, request, "cart-share-prepare", 10, {
+      storefrontSessionId: storefront.sessionId,
+    });
   } catch (caught) {
     if (caught instanceof RateLimitError)
       return failure(caught.code, caught.message, caught.status);
@@ -462,6 +576,8 @@ export async function prepareCartShare(request: Request, env: Env) {
 
   const existing = await findShareRequest(body.submissionToken, env);
   if (existing) {
+    const sessionError = validateSubmissionSession(existing, storefront);
+    if (sessionError) return sessionError;
     if (existing.contactChannel !== "SHARE")
       return failure("SUBMISSION_CONFLICT", "Mã gửi đã được sử dụng.", 409);
     if (existing.checkoutState === "CANCELLED")
@@ -523,6 +639,10 @@ export async function prepareCartShare(request: Request, env: Env) {
     { consumeUsage: !inventorySchema },
   );
   const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
+  const storefrontSessionColumn = storefront.bindingSchema
+    ? ", storefront_session_id"
+    : "";
+  const storefrontSessionValue = storefront.bindingSchema ? ", ?" : "";
   const statements: D1PreparedStatement[] = [
     ...promotionStatements.usage,
     inventorySchema
@@ -531,9 +651,9 @@ export async function prepareCartShare(request: Request, env: Env) {
             id, public_code, submission_token, customer_name, customer_phone,
             item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
             final_total_vnd, status, telegram_status, contact_channel,
-            messenger_delivery_status, checkout_state, created_at, updated_at
+            messenger_delivery_status, checkout_state, created_at, updated_at${storefrontSessionColumn}
           ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
-            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', 'READY_TO_SEND', ?, ?)`,
+            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', 'READY_TO_SEND', ?, ?${storefrontSessionValue})`,
         ).bind(
           id,
           publicCode,
@@ -545,6 +665,7 @@ export async function prepareCartShare(request: Request, env: Env) {
           loaded.evaluation.finalTotalVnd,
           createdAt,
           createdAt,
+          ...(storefront.bindingSchema ? [storefront.sessionId] : []),
         )
       : loaded.promotionSchema
         ? env.DB.prepare(
@@ -552,9 +673,9 @@ export async function prepareCartShare(request: Request, env: Env) {
               id, public_code, submission_token, customer_name, customer_phone,
               item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
               final_total_vnd, status, telegram_status, contact_channel,
-              messenger_delivery_status, created_at, updated_at
+              messenger_delivery_status, created_at, updated_at${storefrontSessionColumn}
             ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
-              'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)` ,
+              'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?${storefrontSessionValue})`,
           ).bind(
             id,
             publicCode,
@@ -566,15 +687,16 @@ export async function prepareCartShare(request: Request, env: Env) {
             loaded.evaluation.finalTotalVnd,
             createdAt,
             createdAt,
+            ...(storefront.bindingSchema ? [storefront.sessionId] : []),
           )
         : env.DB.prepare(
           `INSERT INTO cart_requests (
             id, public_code, submission_token, customer_name, customer_phone,
             item_line_count, total_quantity, subtotal_vnd, status,
             telegram_status, contact_channel, messenger_delivery_status,
-            created_at, updated_at
+            created_at, updated_at${storefrontSessionColumn}
           ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'SUBMITTED',
-            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?)`,
+            'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?${storefrontSessionValue})`,
         ).bind(
           id,
           publicCode,
@@ -584,6 +706,7 @@ export async function prepareCartShare(request: Request, env: Env) {
           subtotalVnd,
           createdAt,
           createdAt,
+          ...(storefront.bindingSchema ? [storefront.sessionId] : []),
         ),
   ];
   loaded.pricedItems.forEach((item) => {
@@ -625,6 +748,8 @@ export async function prepareCartShare(request: Request, env: Env) {
   } catch (caught) {
     const duplicate = await findShareRequest(body.submissionToken, env);
     if (duplicate?.contactChannel === "SHARE") {
+      const sessionError = validateSubmissionSession(duplicate, storefront);
+      if (sessionError) return sessionError;
       const link = await loadLink(duplicate.id, env);
       if (link) {
         const duplicateToken = await deriveShareToken(
@@ -662,6 +787,7 @@ export async function prepareCartShare(request: Request, env: Env) {
     createdAt,
     contactChannel: "SHARE",
     checkoutState: inventorySchema ? "READY_TO_SEND" : "LEGACY",
+    storefrontSessionId: storefront.sessionId,
     reservationStartedAt: null,
     reservationExpiresAt: null,
     reservationDurationMinutes: null,
@@ -722,14 +848,26 @@ function promotionEvaluationChanged(
   return currentGifts.join("|") !== previousGifts.join("|");
 }
 
-export async function activateCartShare(request: Request, env: Env) {
+export async function activateCartShare(
+  request: Request,
+  env: Env,
+  preauthorized?: AccessSessionAuthorization,
+) {
   const startedAt = Date.now();
   if (!isDirectSellerShareEnabled(env))
     return failure("FEATURE_DISABLED", "Tính năng gửi giỏ hàng chưa được bật.", 404);
+  const storefront = await resolveStorefrontReservationContext(
+    request,
+    env,
+    preauthorized,
+  );
+  if (storefront.response) return storefront.response;
   if (!(await hasInventorySchema(env)))
     return failure("FEATURE_NOT_READY", "Reservation inventory chưa được cài đặt.", 503);
   try {
-    await consumeRateLimit(env, request, "cart-share-activate", 10);
+    await consumeRateLimit(env, request, "cart-share-activate", 10, {
+      storefrontSessionId: storefront.sessionId,
+    });
   } catch (caught) {
     if (caught instanceof RateLimitError)
       return failure(caught.code, caught.message, caught.status);
@@ -752,6 +890,8 @@ export async function activateCartShare(request: Request, env: Env) {
   const existing = await findShareRequest(body.submissionToken, env);
   if (!existing)
     return failure("ORDER_NOT_FOUND", "Không tìm thấy giỏ hàng đã chốt.", 404);
+  const sessionError = validateSubmissionSession(existing, storefront);
+  if (sessionError) return sessionError;
   if (existing.contactChannel !== "SHARE")
     return failure("SUBMISSION_CONFLICT", "Mã gửi đã được sử dụng.", 409);
   const link = await loadLink(existing.id, env);
@@ -847,6 +987,34 @@ export async function activateCartShare(request: Request, env: Env) {
       },
     );
 
+  if (storefront.gateEnabled && storefront.sessionId) {
+    const quota = await getReservationAbuseConfig(env);
+    const usage = await getActiveReservationUsage(
+      env,
+      storefront.sessionId,
+      new Date(),
+    );
+    const incomingReservedUnits = countReservedUnits(
+      loaded.pricedItems,
+      loaded.evaluation.gifts,
+    );
+    if (usage.activeCartCount >= quota.maxActiveReservationsPerSession)
+      return failure(
+        "ACTIVE_RESERVATION_LIMIT",
+        "Phiên storefront đang có quá nhiều lượt giữ hàng. Vui lòng hoàn tất hoặc chờ lượt cũ hết hạn.",
+        409,
+      );
+    if (
+      usage.reservedUnits + incomingReservedUnits >
+      quota.maxTotalReservedUnitsPerSession
+    )
+      return failure(
+        "RESERVED_UNITS_LIMIT",
+        "Phiên storefront đang giữ quá nhiều sản phẩm. Vui lòng hoàn tất hoặc chờ lượt cũ hết hạn.",
+        409,
+      );
+  }
+
   // Một lần resolve config tạo ra cả duration snapshot và deadline, không đọc lại setting giữa chừng.
   const reservation = await getCheckoutReservationConfig(env);
   const reservationStartedAt = new Date().toISOString();
@@ -935,6 +1103,10 @@ export async function activateCartShare(request: Request, env: Env) {
     await env.DB.batch(statements);
   } catch (caught) {
     const duplicate = await findShareRequest(body.submissionToken, env);
+    if (duplicate) {
+      const duplicateSessionError = validateSubmissionSession(duplicate, storefront);
+      if (duplicateSessionError) return duplicateSessionError;
+    }
     if (duplicate?.checkoutState === "WAITING_SELLER_CONFIRM") {
       const duplicateLink = await loadLink(duplicate.id, env);
       if (duplicateLink) {
@@ -980,8 +1152,12 @@ export async function activateCartShare(request: Request, env: Env) {
   );
 }
 
-export async function getPublicCartShare(rawToken: string, env: Env) {
-  if (!/^[A-Za-z0-9_-]{43}$/.test(rawToken))
+export async function getPublicCartShare(
+  rawToken: string,
+  env: Env,
+  request?: Request,
+) {
+  if (!isCartShareToken(rawToken))
     return json(
       {
         success: false,
@@ -993,7 +1169,16 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       404,
       publicShareHeaders,
     );
-  await cleanupExpiredReservations(env);
+  if (request) {
+    try {
+      // Token đúng format mới được phép chạm DB; bucket public chỉ dùng IP hash.
+      await consumeRateLimit(env, request, "cart-share-public-read", 60);
+    } catch (caught) {
+      if (caught instanceof RateLimitError)
+        return failure(caught.code, caught.message, caught.status, {}, publicShareHeaders);
+      throw caught;
+    }
+  }
   const tokenHash = await hashShareToken(rawToken);
   const inventorySchema = await hasInventorySchema(env);
   const row = await env.DB.prepare(
@@ -1033,6 +1218,12 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       404,
       publicShareHeaders,
     );
+  const checkoutState =
+    row.checkoutState === "WAITING_SELLER_CONFIRM" &&
+    row.reservationExpiresAt &&
+    Date.parse(row.reservationExpiresAt) <= Date.now()
+      ? "EXPIRED"
+      : row.checkoutState;
   const items = await loadSnapshots(row.id, env);
   const schema = await hasPromotionSchema(env);
   const history = await loadPromotionHistory(row.id, env);
@@ -1051,13 +1242,13 @@ export async function getPublicCartShare(rawToken: string, env: Env) {
       itemLineCount: row.itemLineCount,
       totalQuantity: row.totalQuantity,
       subtotalVnd: row.subtotalVnd,
-      checkoutState: row.checkoutState,
+      checkoutState,
       reservationStartedAt: row.reservationStartedAt,
       reservationExpiresAt: row.reservationExpiresAt,
       reservationDurationMinutes: row.reservationDurationMinutes,
-      orderExpired: row.checkoutState === "EXPIRED",
+      orderExpired: checkoutState === "EXPIRED",
       reservationMessage:
-        row.checkoutState === "EXPIRED"
+        checkoutState === "EXPIRED"
           ? "Đơn này đã hết thời gian giữ hàng."
           : undefined,
       promotionDiscountVnd: history.discountAmountVnd,

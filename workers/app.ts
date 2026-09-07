@@ -71,6 +71,7 @@ import {
   evaluateAuthoritativeCart,
   PromotionCartError,
 } from "./promotions";
+import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import {
   deleteAdminPromotion,
   duplicateAdminPromotion,
@@ -89,6 +90,7 @@ import {
   handleAccessRequest,
   isAccessEndpointPath,
   isAdminHtmlPath,
+  isCartShareToken,
   isStorefrontAccessGateEnabled,
   isStorefrontProtectedApiPath,
   isStorefrontProtectedHtmlPath,
@@ -103,6 +105,7 @@ import {
   testAccessLink,
   updateAccessLink,
   redactPathForLog,
+  type AccessSessionAuthorization,
 } from "./storefront-access";
 import {
   buildPaginationMeta,
@@ -187,7 +190,20 @@ async function readBoundedJson(request: Request, maxBytes = 64 * 1024) {
   return JSON.parse(text) as unknown;
 }
 
-async function evaluateCart(request: Request, env: Env) {
+async function evaluateCart(
+  request: Request,
+  env: Env,
+  preauthorizedStorefront?: AccessSessionAuthorization,
+) {
+  try {
+    await consumeRateLimit(env, request, "cart-evaluate", 60, {
+      storefrontSessionId: preauthorizedStorefront?.session?.id,
+    });
+  } catch (caught) {
+    if (caught instanceof RateLimitError)
+      return error(caught.code, caught.message, caught.status);
+    throw caught;
+  }
   let value: unknown;
   try {
     value = await readBoundedJson(request);
@@ -499,15 +515,33 @@ type ProductListQuery = {
   orderSql: string;
 };
 
+const MAX_CATALOG_TEXT_LENGTH = 120;
+const MAX_CATALOG_CSV_LENGTH = 2048;
+const MAX_CATALOG_CSV_ITEMS = 20;
+const MAX_CATALOG_PAGE = 10_000;
+
+function boundedCatalogText(value: string | null) {
+  const normalized = (value ?? "").trim();
+  return normalized.length <= MAX_CATALOG_TEXT_LENGTH ? normalized : null;
+}
+
 function csvQueryValue(value: string | null) {
-  return [
+  const raw = value ?? "";
+  if (raw.length > MAX_CATALOG_CSV_LENGTH) return null;
+  const values = [
     ...new Set(
-      (value ?? "")
+      raw
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean),
     ),
   ];
+  if (
+    values.length > MAX_CATALOG_CSV_ITEMS ||
+    values.some((item) => item.length > MAX_CATALOG_TEXT_LENGTH)
+  )
+    return null;
+  return values;
 }
 
 function parseBooleanQuery(value: string | null) {
@@ -635,14 +669,29 @@ function buildProductListQuery({
 }
 
 async function listProducts(request: Request, env: Env, includeHidden = false) {
-  // Dọn lazy để catalog không giữ trạng thái tồn kho đã quá hạn khi cron trễ.
-  await cleanupExpiredReservations(env);
+  const url = new URL(request.url);
+  const q = boundedCatalogText(url.searchParams.get("q"));
+  const tag = boundedCatalogText(url.searchParams.get("tag"));
+  const categories = csvQueryValue(url.searchParams.get("category"));
+  const brands = csvQueryValue(url.searchParams.get("brand"));
+  const sortValue = url.searchParams.get("sort");
+  if (
+    q === null ||
+    tag === null ||
+    categories === null ||
+    brands === null ||
+    (sortValue !== null && sortValue.length > 32)
+  )
+    return error(
+      "VALIDATION_ERROR",
+      "Bộ lọc tìm kiếm quá dài hoặc có quá nhiều giá trị.",
+      422,
+    );
   const [inventorySchema, variantRetirementSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
   ]);
   const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
-  const url = new URL(request.url);
   const ageValue = url.searchParams.get("age");
   let age: number | null = null;
   if (ageValue !== null) {
@@ -651,17 +700,22 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       return error("VALIDATION_ERROR", "Độ tuổi lọc không hợp lệ.", 422);
     age = parsedAge;
   }
-  const requestedPage = normalizePage(url.searchParams.get("page"));
+  // Chặn OFFSET quá lớn nhưng vẫn giữ behavior clamp page hiện tại cho input lỗi.
+  const requestedPage = Math.min(
+    normalizePage(url.searchParams.get("page")),
+    MAX_CATALOG_PAGE,
+  );
   const limit = normalizeLimit(url.searchParams.get("limit"));
+  await cleanupExpiredReservations(env);
   const query = buildProductListQuery({
-    q: (url.searchParams.get("q") ?? "").trim(),
-    categories: csvQueryValue(url.searchParams.get("category")),
-    brands: csvQueryValue(url.searchParams.get("brand")),
+    q,
+    categories,
+    brands,
     age,
     bestSeller: parseBooleanQuery(url.searchParams.get("bestSeller")),
-    tag: (url.searchParams.get("tag") ?? "").trim(),
+    tag,
     available: parseBooleanQuery(url.searchParams.get("available")),
-    sort: parseProductSort(url.searchParams.get("sort")),
+    sort: parseProductSort(sortValue),
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
     inventorySchema,
@@ -711,6 +765,8 @@ async function getProduct(
   env: Env,
   imageUrlStrategy: ProductImageUrlStrategy,
 ) {
+  if (slug.length > MAX_CATALOG_TEXT_LENGTH)
+    return error("VALIDATION_ERROR", "Định danh sản phẩm quá dài.", 422);
   await cleanupExpiredReservations(env);
   const descriptionSchema = await hasProductDescriptionSchema(env);
   const product = await env.DB.prepare(
@@ -2689,6 +2745,7 @@ async function handleApi(
   env: Env,
   ctx: ExecutionContext,
   preauthorizedAdmin?: AdminAuthorization,
+  preauthorizedStorefront?: AccessSessionAuthorization,
 ) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -2732,14 +2789,18 @@ async function handleApi(
       env,
     );
   if (request.method === "POST" && path === "/api/cart/evaluate")
-    return evaluateCart(request, env);
+    return evaluateCart(request, env, preauthorizedStorefront);
   if (request.method === "POST" && path === "/api/cart/share/prepare")
-    return prepareCartShare(request, env);
+    return prepareCartShare(request, env, preauthorizedStorefront);
   if (request.method === "POST" && path === "/api/cart/share/activate")
-    return activateCartShare(request, env);
+    return activateCartShare(request, env, preauthorizedStorefront);
   const publicShareMatch = path.match(/^\/api\/cart\/share\/([^/]+)$/);
-  if (request.method === "GET" && publicShareMatch)
-    return getPublicCartShare(decodeURIComponent(publicShareMatch[1]), env);
+  if (
+    request.method === "GET" &&
+    publicShareMatch &&
+    isCartShareToken(publicShareMatch[1])
+  )
+    return getPublicCartShare(decodeURIComponent(publicShareMatch[1]), env, request);
   if (request.method === "POST" && path === "/api/cart/messenger/start")
     return startMessengerCheckout(request, env);
   const messengerStatusMatch = path.match(
@@ -3003,18 +3064,21 @@ export default {
         return await handleAccessRequest(request, env);
       if (url.pathname.startsWith("/api/")) {
         let adminAuthorization: AdminAuthorization | undefined;
+        let storefrontAuthorization: AccessSessionAuthorization | undefined;
         if (url.pathname.startsWith("/api/admin/")) {
           adminAuthorization = await authorizeAdminRequest(request, env);
           if (!adminAuthorization.authorized)
             return adminAuthorizationError(adminAuthorization);
         }
-        if (isStorefrontProtectedApiPath(url.pathname) &&
-            isStorefrontAccessGateEnabled(env)) {
+        if (
+          isStorefrontProtectedApiPath(url.pathname, request.method) &&
+          isStorefrontAccessGateEnabled(env)
+        ) {
           if (!env.STOREFRONT_ACCESS_SECRET?.trim())
             return storefrontGateMisconfiguredResponse();
-          const authorization = await authorizeStorefrontSession(request, env);
-          if (!authorization.valid) {
-            if (authorization.reason === "MISSING_SECRET")
+          storefrontAuthorization = await authorizeStorefrontSession(request, env);
+          if (!storefrontAuthorization.valid) {
+            if (storefrontAuthorization.reason === "MISSING_SECRET")
               return storefrontGateMisconfiguredResponse();
             return storefrontSessionRequiredResponse();
           }
@@ -3024,6 +3088,7 @@ export default {
           env,
           ctx,
           adminAuthorization,
+          storefrontAuthorization,
         );
         return adminAuthorization?.authorized
           ? await addAdminAnalyticsExemption(response, request, env)

@@ -21,6 +21,7 @@ import {
   revokeAccessLink,
   saveStorefrontSettings,
   storefrontSessionRequiredResponse,
+  redactPathForLog,
   validateAccessLinkInput,
   validateSessionTtl,
   verifyAccessCredential,
@@ -245,9 +246,19 @@ describe("storefront access credentials", () => {
     expect(isStorefrontProtectedHtmlPath("/images/logo.png")).toBe(false);
     expect(isStorefrontProtectedApiPath("/api/products/slug")).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/content-pages/shipping-policy")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/tags")).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/admin/products")).toBe(false);
-    expect(isStorefrontProtectedApiPath("/api/cart/share/token")).toBe(false);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/" + "a".repeat(43))).toBe(false);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/" + "a".repeat(43), "POST")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/token")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/prepare")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/activate")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/prepare/")).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/" + "a".repeat(42))).toBe(true);
+    expect(isStorefrontProtectedApiPath("/api/cart/share/" + "a".repeat(44))).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/meta/messenger/webhook")).toBe(false);
+    expect(redactPathForLog("/api/cart/share/" + "a".repeat(43))).toBe("/api/cart/share/[REDACTED]");
+    expect(redactPathForLog("/c/" + "a".repeat(43))).toBe("/c/[REDACTED]");
     const response = storefrontSessionRequiredResponse();
     expect(response.status).toBe(401);
     expect(response.headers.get("content-type")).toContain("application/json");
