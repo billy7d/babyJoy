@@ -135,6 +135,7 @@ const e2eSkus = {
   oneHundred: `E2E-RICE-100-${e2eKey}`,
   twoHundred: `E2E-RICE-200-${e2eKey}`,
   fiveHundred: `E2E-RICE-500-${e2eKey}`,
+  hidden: `E2E-RICE-HIDDEN-${e2eKey}`,
 };
 try {
   await adminPage.goto(`${baseUrl}/admin/products/new`, { waitUntil: "domcontentloaded" });
@@ -142,27 +143,46 @@ try {
   await adminPage.locator('input[name="name"]').fill("E2E Baby Rice multi variant");
   await adminPage.locator('input[name="slug"]').fill(e2eSlug);
   await adminPage.locator('input[name="sortOrder"]').fill("-999");
-  const adminRows = adminPage.locator(".variant-row");
+  const adminCards = adminPage.locator(".variant-card");
   const addVariant = adminPage.getByRole("button", { name: "+ Thêm phân loại" });
-  const fillVariant = async (index, name, sku, price, availability) => {
-    const row = adminRows.nth(index);
+  const openVariantEditor = async (index) => {
+    const card = adminCards.nth(index);
+    if (await card.locator(".variant-row").count() === 0)
+      await card.getByRole("button", { name: "Sửa" }).click();
+    return card.locator(".variant-row");
+  };
+  const fillVariant = async (index, name, packageSize, sku, price, status) => {
+    const row = await openVariantEditor(index);
     await row.locator("input").nth(0).fill(name);
-    await row.locator("input").nth(1).fill(sku);
-    await row.locator("input").nth(2).fill(String(price));
-    await row.locator("select").selectOption(availability);
+    await row.locator("input").nth(1).fill(packageSize);
+    await row.locator("input").nth(2).fill(sku);
+    await row.locator("input").nth(3).fill(String(price));
+    await row.locator("select").selectOption(status);
     await row.getByLabel("Tồn kho thực tế").fill("10");
   };
-  await fillVariant(0, "50g", e2eSkus.fifty, 150000, "OUT_OF_STOCK");
+  const uploadVariantImage = async (index, relativePath) => {
+    const row = await openVariantEditor(index);
+    await row.locator(".variant-image-add input").setInputFiles(
+      fileURLToPath(new URL(relativePath, import.meta.url)),
+    );
+    await row.locator(".variant-image-tile").first().waitFor({ state: "visible" });
+  };
+  await fillVariant(0, "Táo", "50g", e2eSkus.fifty, 150000, "OUT_OF_STOCK");
   await addVariant.click();
   await addVariant.click();
-  await fillVariant(1, "100g", e2eSkus.oneHundred, 270000, "AVAILABLE");
-  await fillVariant(2, "200g", e2eSkus.twoHundred, 490000, "OUT_OF_STOCK");
+  await addVariant.click();
+  await fillVariant(1, "Chuối", "100g", e2eSkus.oneHundred, 270000, "SELLING");
+  await fillVariant(2, "Rau củ", "200g", e2eSkus.twoHundred, 490000, "OUT_OF_STOCK");
+  await fillVariant(3, "Nội bộ", "750g", e2eSkus.hidden, 990000, "HIDDEN");
+  await uploadVariantImage(0, "../public/images/product-heinz.jpg");
+  await uploadVariantImage(1, "../public/images/product-gerber.jpg");
+  await uploadVariantImage(2, "../public/images/product-hipp.jpg");
   await adminPage.getByRole("button", { name: "LƯU SẢN PHẨM" }).click();
   await adminPage.waitForURL(/\/admin\/products\/[^/]+\/edit$/);
   createdProductId = new URL(adminPage.url()).pathname.split("/").at(-2) ?? "";
   await adminPage.waitForTimeout(500);
-  if (await adminRows.count() !== 3) throw new Error("Admin reload không đủ 3 variants");
-  if (await adminRows.nth(1).locator("input").nth(1).inputValue() !== e2eSkus.oneHundred) throw new Error("Admin không giữ SKU row 2");
+  if (await adminCards.count() !== 4) throw new Error("Admin reload không đủ 4 variants");
+  if (await (await openVariantEditor(1)).locator("input").nth(2).inputValue() !== e2eSkus.oneHundred) throw new Error("Admin không giữ SKU row 2");
   const firstAdminRead = await adminPage.request.get(`${baseUrl}/api/admin/products/${createdProductId}`);
   const firstAdminBody = await firstAdminRead.json();
   const initialVariants = firstAdminBody.data?.variants ?? [];
@@ -175,20 +195,27 @@ try {
   // Availability phải độc lập theo từng variant: 50g bị chặn còn 100g vẫn mua được.
   await adminPage.goto(`${baseUrl}/product/${e2eSlug}`, { waitUntil: "domcontentloaded" });
   await adminPage.waitForTimeout(500);
-  await adminPage.getByRole("button", { name: "50g" }).click();
+  await adminPage.getByRole("button", { name: /Táo · 50g/ }).click();
   if (!(await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().isDisabled())) throw new Error("Variant 50g OUT_OF_STOCK vẫn cho thêm vào giỏ");
-  await adminPage.getByRole("button", { name: "100g" }).click();
+  await adminPage.getByRole("button", { name: /Chuối · 100g/ }).click();
   if (await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().isDisabled()) throw new Error("Variant 100g AVAILABLE bị chặn mua độc lập");
+  if (await adminPage.getByRole("button", { name: /Nội bộ · 750g/ }).count() !== 0) throw new Error("Variant HIDDEN vẫn xuất hiện trên storefront");
+  const variantThumbs = adminPage.getByRole("button", { name: /Xem ảnh .* của phân loại/ });
+  if (await variantThumbs.count() !== 3) throw new Error("Gallery không hiển thị đúng ảnh của 3 phân loại public");
+  await variantThumbs.nth(1).click();
+  if (!(await adminPage.getByRole("button", { name: /Chuối · 100g/ }).getAttribute("aria-pressed") === "true")) throw new Error("Chọn ảnh phân loại không đồng bộ selector");
   await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().click();
   await adminPage.evaluate(() => localStorage.removeItem("babyjoy.cart.v1"));
   await adminPage.goto(`${baseUrl}/admin/products/${createdProductId}/edit`, { waitUntil: "domcontentloaded" });
   await adminPage.waitForTimeout(500);
 
-  await adminRows.nth(0).locator("input").nth(2).fill("160000");
-  await adminRows.nth(0).locator("select").selectOption("AVAILABLE");
-  await adminRows.nth(1).getByRole("button", { name: /Xóa phân loại 100g/ }).click();
+  const firstEditor = await openVariantEditor(0);
+  await firstEditor.locator("input").nth(3).fill("160000");
+  await firstEditor.locator("select").selectOption("SELLING");
+  adminPage.once("dialog", (dialog) => dialog.accept());
+  await adminCards.nth(1).getByRole("button", { name: /Xóa phân loại Chuối/ }).click();
   await addVariant.click();
-  await fillVariant(2, "500g", e2eSkus.fiveHundred, 900000, "AVAILABLE");
+  await fillVariant(3, "Gia đình", "500g", e2eSkus.fiveHundred, 900000, "SELLING");
   const updateRequestPromise = adminPage.waitForRequest((request) =>
     request.method() === "PUT" && request.url().endsWith(`/api/admin/products/${createdProductId}`),
   );
@@ -197,34 +224,34 @@ try {
   const updatePayload = JSON.parse(updateRequest.postData() ?? "{}");
   if (!updatePayload.deletedVariantIds?.includes(deletedVariantId)) throw new Error("Save không gửi deletedVariantIds của 100g");
   await adminPage.waitForTimeout(700);
-  if (await adminRows.count() !== 3) throw new Error("Admin sau edit không còn đúng 3 variants");
-  const expectedRows = [[e2eSkus.fifty, "160000"], [e2eSkus.twoHundred, "490000"], [e2eSkus.fiveHundred, "900000"]];
+  if (await adminCards.count() !== 4) throw new Error("Admin sau edit không còn đúng 4 variants");
+  const expectedRows = [[e2eSkus.fifty, "160000"], [e2eSkus.twoHundred, "490000"], [e2eSkus.hidden, "990000"], [e2eSkus.fiveHundred, "900000"]];
   for (let index = 0; index < expectedRows.length; index++) {
-    const row = adminRows.nth(index);
-    if (await row.locator("input").nth(1).inputValue() !== expectedRows[index][0]) throw new Error("SKU sau edit không đúng");
-    if (await row.locator("input").nth(2).inputValue() !== expectedRows[index][1]) throw new Error("Giá sau edit không đúng");
+    const row = await openVariantEditor(index);
+    if (await row.locator("input").nth(2).inputValue() !== expectedRows[index][0]) throw new Error("SKU sau edit không đúng");
+    if (await row.locator("input").nth(3).inputValue() !== expectedRows[index][1]) throw new Error("Giá sau edit không đúng");
   }
   const afterAdminRead = await adminPage.request.get(`${baseUrl}/api/admin/products/${createdProductId}`);
   const afterAdminBody = await afterAdminRead.json();
   const afterVariants = afterAdminBody.data?.variants ?? [];
-  if (afterVariants.length !== 3 || afterVariants.some((variant) => variant.sku === e2eSkus.oneHundred)) throw new Error("Persisted delete 100g không đúng");
+  if (afterVariants.length !== 4 || afterVariants.some((variant) => variant.sku === e2eSkus.oneHundred)) throw new Error("Persisted delete 100g không đúng");
   if (afterVariants.find((variant) => variant.sku === e2eSkus.fifty)?.id !== retainedFiftyId || afterVariants.find((variant) => variant.sku === e2eSkus.twoHundred)?.id !== retainedTwoHundredId) throw new Error("Persisted variant ID bị đổi sau delete");
 
   await adminPage.evaluate(() => localStorage.removeItem("babyjoy.cart.v1"));
   await adminPage.goto(`${baseUrl}/product/${e2eSlug}`, { waitUntil: "domcontentloaded" });
   await adminPage.waitForTimeout(700);
   if (!(await adminPage.locator("body").innerText()).includes("E2E Baby Rice multi variant")) throw new Error("Public không đọc product E2E");
-  if (await adminPage.getByRole("button", { name: "500g" }).count() !== 1) throw new Error("Public thiếu variant 500g");
+  if (await adminPage.getByRole("button", { name: /Gia đình · 500g/ }).count() !== 1) throw new Error("Public thiếu variant 500g");
   const publicResponse = await adminPage.request.get(`${baseUrl}/api/products/${e2eSlug}`);
   const publicBody = await publicResponse.json();
   const publicVariants = publicBody.data?.variants ?? [];
-  if (publicVariants.length !== 3 || publicVariants.some((variant) => variant.sku === e2eSkus.oneHundred)) throw new Error("Public variants sau edit không đúng");
+  if (publicVariants.length !== 3 || publicVariants.some((variant) => variant.sku === e2eSkus.oneHundred || variant.sku === e2eSkus.hidden)) throw new Error("Public variants sau edit không đúng");
   const publicBySku = new Map(publicVariants.map((variant) => [variant.sku, variant]));
-  await adminPage.getByRole("button", { name: "200g" }).click();
+  await adminPage.getByRole("button", { name: /Rau củ · 200g/ }).click();
   if (!(await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().isDisabled())) throw new Error("Variant OUT_OF_STOCK vẫn cho thêm vào giỏ");
-  await adminPage.getByRole("button", { name: "50g" }).click();
+  await adminPage.getByRole("button", { name: /Táo · 50g/ }).click();
   await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().click();
-  await adminPage.getByRole("button", { name: "500g" }).click();
+  await adminPage.getByRole("button", { name: /Gia đình · 500g/ }).click();
   await adminPage.locator(".detail-quantity").getByRole("button", { name: "Tăng số lượng" }).click();
   await adminPage.getByRole("button", { name: "THÊM VÀO GIỎ" }).first().click();
   await adminPage.goto(`${baseUrl}/cart`, { waitUntil: "domcontentloaded" });

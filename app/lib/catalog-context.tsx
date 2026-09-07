@@ -9,6 +9,7 @@ import {
 import { getPublicImageUrl, PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
 import type { PaginatedResponse, PaginationMeta } from "../../shared/pagination";
 import {
+  getVariantStatus,
   categories as fallbackCategories,
   products as fallbackProducts,
   type Category,
@@ -134,6 +135,16 @@ export function mapApiProduct(row: ApiProduct): Product {
   const images = Array.isArray(row.images)
     ? [...row.images].sort((a, b) => a.sortOrder - b.sortOrder)
     : [];
+  const variants =
+    Array.isArray(row.variants) && row.variants.length
+      ? row.variants
+      : (fallback?.variants ?? []);
+  const defaultVisibleVariant =
+    variants.find((variant) => getVariantStatus(variant) === "SELLING") ??
+    variants.find((variant) => getVariantStatus(variant) !== "HIDDEN");
+  const variantPrimaryImage =
+    defaultVisibleVariant?.images?.find((image) => image.isPrimary) ??
+    defaultVisibleVariant?.images?.[0];
   return {
     id: row.id,
     slug: row.slug,
@@ -147,8 +158,8 @@ export function mapApiProduct(row: ApiProduct): Product {
     descriptionAssets: Array.isArray(row.descriptionAssets)
       ? row.descriptionAssets
       : [],
-    image: images[0]?.url ?? fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER,
-    imageKey: images[0]?.r2Key ?? null,
+    image: images[0]?.url ?? variantPrimaryImage?.url ?? fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER,
+    imageKey: images[0]?.r2Key ?? variantPrimaryImage?.r2Key ?? null,
     images,
     category:
       apiCategories !== null
@@ -168,10 +179,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
     tagSlugs: Array.isArray(row.tagSlugs) ? row.tagSlugs : (fallback?.tagSlugs ?? []),
     featured: Boolean(row.featured),
-    variants:
-      Array.isArray(row.variants) && row.variants.length
-        ? row.variants
-        : (fallback?.variants ?? []),
+    variants,
   };
 }
 

@@ -1,18 +1,27 @@
-import type { Availability, Variant } from "./catalog";
+import {
+  getVariantStatus,
+  type Availability,
+  type ProductImageRecord,
+  type Variant,
+  type VariantStatus,
+} from "./catalog";
 
 /** Trạng thái phân loại có thể chỉnh sửa trong Product Editor. */
 export type EditableVariant = {
   id?: string;
   clientId: string;
   name: string;
+  packageSize: string;
   sku: string;
   priceVnd: string;
-  compareAtPriceVnd?: number | null;
+  compareAtPriceVnd: string;
   availability: Availability;
+  status: VariantStatus;
   trackInventory: boolean;
   stockOnHand: string;
   reservedQuantity?: number;
   availableQuantity?: number;
+  images: Array<ProductImageRecord & { isPrimary: boolean; variantId?: string }>;
 };
 
 /** Tạo khóa tạm ổn định cho row draft mà không phụ thuộc SKU đang chỉnh sửa. */
@@ -26,13 +35,17 @@ export function createDraftVariant(): EditableVariant {
   return {
     clientId: createVariantClientId(),
     name: "",
+    packageSize: "",
     sku: "",
     priceVnd: "",
+    compareAtPriceVnd: "",
     availability: "AVAILABLE",
+    status: "SELLING",
     trackInventory: true,
     stockOnHand: "0",
     reservedQuantity: 0,
     availableQuantity: 0,
+    images: [],
   };
 }
 
@@ -41,22 +54,28 @@ export function toEditableVariant(variant: Variant): EditableVariant {
     id: variant.id,
     clientId: variant.id,
     name: variant.name,
+    packageSize: variant.packageSize ?? "",
     sku: variant.sku ?? "",
     priceVnd: String(variant.priceVnd),
-    compareAtPriceVnd: variant.compareAtPriceVnd ?? null,
+    compareAtPriceVnd: variant.compareAtPriceVnd == null ? "" : String(variant.compareAtPriceVnd),
     availability: variant.availability,
+    status: getVariantStatus(variant),
     trackInventory: Boolean(variant.trackInventory),
     stockOnHand: String(variant.stockOnHand ?? 0),
     reservedQuantity: variant.reservedQuantity ?? 0,
     availableQuantity: variant.availableQuantity ?? 0,
+    images: (variant.images ?? []).map((image) => ({ ...image })),
   };
 }
 
 export type VariantField =
   | "name"
+  | "packageSize"
   | "sku"
   | "priceVnd"
+  | "compareAtPriceVnd"
   | "availability"
+  | "status"
   | "trackInventory"
   | "stockOnHand";
 export type VariantFieldErrors = Partial<Record<VariantField, string>>;
@@ -69,6 +88,8 @@ export function validateEditableVariants(variants: EditableVariant[]) {
     const rowErrors: VariantFieldErrors = {};
     if (!variant.name.trim() || variant.name.trim().length > 180)
       rowErrors.name = "Tên phân loại là bắt buộc và tối đa 180 ký tự.";
+    if (variant.packageSize.trim().length > 120)
+      rowErrors.packageSize = "Quy cách tối đa 120 ký tự.";
     const sku = variant.sku.trim();
     if (!sku || sku.length > 120)
       rowErrors.sku = "Mã SKU là bắt buộc và tối đa 120 ký tự.";
@@ -84,10 +105,15 @@ export function validateEditableVariants(variants: EditableVariant[]) {
       } else seenSku.set(sku, variant);
     }
     const price = Number(variant.priceVnd);
-    if (!variant.priceVnd.trim() || !Number.isSafeInteger(price) || price <= 0)
-      rowErrors.priceVnd = "Giá bán phải là số nguyên lớn hơn 0.";
-    if (!(["AVAILABLE", "OUT_OF_STOCK", "HIDDEN"] as Availability[]).includes(variant.availability))
-      rowErrors.availability = "Tình trạng phân loại không hợp lệ.";
+    if (!variant.priceVnd.trim() || !Number.isSafeInteger(price) || price < 0)
+      rowErrors.priceVnd = "Giá bán phải là số nguyên không âm.";
+    const compareAtPrice = variant.compareAtPriceVnd.trim()
+      ? Number(variant.compareAtPriceVnd)
+      : null;
+    if (compareAtPrice !== null && (!Number.isSafeInteger(compareAtPrice) || compareAtPrice < 0))
+      rowErrors.compareAtPriceVnd = "Giá so sánh phải là số nguyên không âm.";
+    if (!(["SELLING", "OUT_OF_STOCK", "HIDDEN"] as VariantStatus[]).includes(variant.status))
+      rowErrors.status = "Trạng thái phân loại không hợp lệ.";
     const stockOnHand = Number(variant.stockOnHand);
     if (
       !variant.stockOnHand.trim() ||
@@ -111,9 +137,12 @@ export function mapVariantValidationIssue(
   const field = issue.field;
   if (
     field !== "name" &&
+    field !== "packageSize" &&
     field !== "sku" &&
     field !== "priceVnd" &&
+    field !== "compareAtPriceVnd" &&
     field !== "availability" &&
+    field !== "status" &&
     field !== "trackInventory" &&
     field !== "stockOnHand"
   )

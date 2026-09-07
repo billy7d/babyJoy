@@ -310,7 +310,6 @@ describe("Admin Product multi-variant", () => {
     ["name", { name: "" }, "INVALID_VARIANT_NAME"],
     ["sku", { sku: "" }, "INVALID_SKU"],
     ["empty price", { priceVnd: "" }, "INVALID_PRICE"],
-    ["zero price", { priceVnd: 0 }, "INVALID_PRICE"],
     ["negative price", { priceVnd: -100 }, "INVALID_PRICE"],
     ["text price", { priceVnd: "abc" }, "INVALID_PRICE"],
     ["invalid availability", { availability: "DISCONTINUED" }, "INVALID_AVAILABILITY"],
@@ -330,6 +329,18 @@ describe("Admin Product multi-variant", () => {
     expect((await response.json()) as { error?: { code?: string; details?: { field?: string } } }).toMatchObject({
       error: { code, details: { field: code === "INVALID_PRICE" ? "priceVnd" : String(_label) === "name" ? "name" : String(_label) === "sku" ? "sku" : "availability" } },
     });
+  });
+
+  it("cho phép giá bán bằng 0 theo contract không âm", async () => {
+    const { env } = createEnv();
+    const body = productPayload("multi-variant-zero-price");
+    body.variants[0].priceVnd = 0;
+    const response = await api(env, "/api/admin/products", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(201);
   });
 
   it("chặn duplicate SKU ngay trong cùng payload", async () => {
@@ -467,7 +478,7 @@ describe("Admin variant form helpers", () => {
     expect(errors[first.clientId]).toMatchObject({
       name: "Tên phân loại là bắt buộc và tối đa 180 ký tự.",
       sku: "Mã SKU bị trùng trong danh sách.",
-      priceVnd: "Giá bán phải là số nguyên lớn hơn 0.",
+      priceVnd: "Giá bán phải là số nguyên không âm.",
     });
   });
 

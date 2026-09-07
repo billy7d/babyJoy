@@ -5,19 +5,28 @@ import type {
 
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
+export type VariantStatus = "SELLING" | "OUT_OF_STOCK" | "HIDDEN";
+
+export type VariantImageRecord = ProductImageRecord & {
+  isPrimary: boolean;
+  variantId: string;
+};
 
 export type Variant = {
   id: string;
   name: string;
+  packageSize?: string;
   sku: string;
   priceVnd: number;
   compareAtPriceVnd?: number;
   availability: Availability;
+  status?: VariantStatus;
   trackInventory?: boolean;
   stockOnHand?: number;
   reservedQuantity?: number;
   availableQuantity?: number;
   inventoryAvailability?: InventoryAvailability;
+  images?: VariantImageRecord[];
 };
 
 export type ProductImageRecord = {
@@ -26,6 +35,7 @@ export type ProductImageRecord = {
   altText: string;
   sortOrder: number;
   url: string;
+  variantId?: string | null;
 };
 
 export type Product = {
@@ -217,23 +227,38 @@ export function findVariantInProducts(source: Product[], variantId: string) {
 export function getDefaultVariant(product: Product) {
   return (
     product.variants.find(isVariantPurchasable) ??
-    product.variants.find((variant) => variant.availability !== "HIDDEN") ??
+    product.variants.find((variant) => getVariantStatus(variant) !== "HIDDEN") ??
     product.variants.at(0)
   );
 }
 
 /** Giá đại diện luôn lấy mức thấp nhất đang hiển thị, không khóa vào phần tử đầu tiên. */
 export function getDisplayVariant(product: Product) {
-  return product.variants
-    .filter((variant) => variant.availability !== "HIDDEN")
-    .sort((left, right) => left.priceVnd - right.priceVnd)[0] ?? getDefaultVariant(product);
+  const visible = product.variants.filter(
+    (variant) => getVariantStatus(variant) !== "HIDDEN",
+  );
+  return (
+    visible.filter(isVariantPurchasable).sort((left, right) => left.priceVnd - right.priceVnd)[0] ??
+    visible.sort((left, right) => left.priceVnd - right.priceVnd)[0] ??
+    getDefaultVariant(product)
+  );
 }
 
 export function isVariantPurchasable(variant: Variant) {
   return (
-    variant.availability === "AVAILABLE" &&
+    getVariantStatus(variant) === "SELLING" &&
     (!variant.trackInventory || (variant.availableQuantity ?? 0) > 0)
   );
+}
+
+/** Chuẩn hóa enum public mới nhưng vẫn đọc được payload AVAILABLE cũ. */
+export function getVariantStatus(variant: Pick<Variant, "status" | "availability">): VariantStatus {
+  return variant.status ?? (variant.availability === "AVAILABLE" ? "SELLING" : variant.availability);
+}
+
+/** Ảnh riêng của variant được ưu tiên; sản phẩm cũ tiếp tục dùng gallery Product. */
+export function getVariantPrimaryImage(variant: Variant) {
+  return variant.images?.find((image) => image.isPrimary) ?? variant.images?.[0];
 }
 
 export function getVariantAvailableQuantity(variant: Variant) {

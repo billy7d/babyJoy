@@ -102,9 +102,9 @@ try {
   await page.locator('input[name="slug"]').fill(slug);
   const variant = page.locator(".variant-row").first();
   await variant.locator("input").nth(0).fill("Hộp rich");
-  await variant.locator("input").nth(1).fill(`E2E-RICH-${key}`);
-  await variant.locator("input").nth(2).fill("125000");
-  await variant.locator("select").selectOption("AVAILABLE");
+  await variant.locator("input").nth(2).fill(`E2E-RICH-${key}`);
+  await variant.locator("input").nth(3).fill("125000");
+  await variant.locator("select").selectOption("SELLING");
 
   const editor = page.locator(".product-description-content .ProseMirror");
   const fontSizeInput = page.locator('input[aria-label="Kích thước chữ"]');

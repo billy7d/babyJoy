@@ -17,6 +17,8 @@ export type CartLine = {
   variantName?: string;
   sku?: string;
   priceVnd?: number;
+  imageKey?: string | null;
+  imageUrl?: string;
 };
 type CartContextValue = {
   items: CartLine[];
@@ -73,6 +75,8 @@ export function parseStoredCart(raw: string | null): CartLine[] {
         (line.variantName === undefined || typeof line.variantName === "string") &&
         (line.sku === undefined || typeof line.sku === "string") &&
         (line.priceVnd === undefined || (typeof line.priceVnd === "number" && Number.isSafeInteger(line.priceVnd) && line.priceVnd >= 0))
+        && (line.imageKey === undefined || line.imageKey === null || typeof line.imageKey === "string")
+        && (line.imageUrl === undefined || typeof line.imageUrl === "string")
       );
     });
     return items.length === parsed.items.length ? items : [];
@@ -98,15 +102,23 @@ function snapshotCartLine(
       .find(({ variant }) => variant.id === variantId) ??
     findVariantInProducts(products, variantId);
   return found
-    ? {
-        variantId,
-        quantity,
-        productId: found.product.id,
-        productName: found.product.name,
-        variantName: found.variant.name,
-        sku: found.variant.sku,
-        priceVnd: found.variant.priceVnd,
-      }
+    ? (() => {
+        const image =
+          found.variant.images?.find((item) => item.isPrimary) ??
+          found.variant.images?.[0] ??
+          found.product.images?.[0];
+        return {
+          variantId,
+          quantity,
+          productId: found.product.id,
+          productName: found.product.name,
+          variantName: `${found.variant.name}${found.variant.packageSize ? ` · ${found.variant.packageSize}` : ""}`,
+          sku: found.variant.sku,
+          priceVnd: found.variant.priceVnd,
+          imageKey: image?.r2Key ?? found.product.imageKey ?? null,
+          imageUrl: image?.url ?? found.product.image,
+        };
+      })()
     : { variantId, quantity };
 }
 
