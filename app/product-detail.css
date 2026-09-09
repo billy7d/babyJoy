@@ -149,7 +149,7 @@
     width: min(280px, 100%);
     aspect-ratio: 1;
     margin: 0 auto;
-    padding: 24px;
+    padding: 10px;
     overflow: hidden;
     border: 1px solid #ece7e1;
     border-radius: 16px;
@@ -163,6 +163,7 @@
     aspect-ratio: auto;
     border-radius: 0;
     object-fit: contain;
+    object-position: center;
   }
 
   .public-shell-product-detail .detail-thumbs {
@@ -172,7 +173,7 @@
     padding: 0 12px;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: center;
     gap: 6px;
     overflow: visible;
   }
