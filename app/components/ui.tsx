@@ -173,15 +173,17 @@ export function PublicFooter() {
 export function PublicShell({
   children,
   hideMobileNav = false,
+  productDetail = false,
 }: {
   children: React.ReactNode;
   hideMobileNav?: boolean;
+  productDetail?: boolean;
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   return (
     <>
       <div
-        className="public-shell-content"
+        className={`public-shell-content${productDetail ? " public-shell-product-detail" : ""}`}
         inert={searchOpen ? true : undefined}
         aria-hidden={searchOpen ? true : undefined}
       >
@@ -468,13 +470,16 @@ export function QuantityStepper({
   return (
     <div className="quantity-stepper">
       <button
+        type="button"
         aria-label="Giảm số lượng"
+        disabled={value <= 1}
         onClick={() => update(Math.max(1, value - 1))}
       >
         <Icon>remove</Icon>
       </button>
-      <span>{value}</span>
+      <span aria-live="polite">{value}</span>
       <button
+        type="button"
         aria-label="Tăng số lượng"
         disabled={
           (availability !== undefined && availability !== "AVAILABLE") ||

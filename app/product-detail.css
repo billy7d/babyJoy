@@ -1,0 +1,429 @@
+/* Giao diện Product Detail theo Stitch, chỉ áp dụng trong shell của trang sản phẩm. */
+.public-shell-product-detail .product-detail-header {
+  display: none;
+}
+
+.public-shell-product-detail .detail-description-section {
+  grid-column: 1 / -1;
+  display: block;
+  margin-top: 80px;
+}
+
+.public-shell-product-detail .detail-description-card {
+  width: 100%;
+  padding: 24px;
+  border: 1px solid #f0e9e2;
+  border-radius: 16px;
+  background: #fcfaf8;
+  box-shadow: 0 2px 8px rgba(45, 37, 34, 0.04);
+}
+
+.public-shell-product-detail .detail-description-card img {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 639px) {
+  .public-shell-product-detail .public-header {
+    display: none;
+  }
+
+  .public-shell-product-detail .public-main {
+    padding-top: 0;
+  }
+
+  .public-shell-product-detail .product-detail-header {
+    position: sticky;
+    inset: 0 0 auto;
+    z-index: 80;
+    min-height: 60px;
+    padding: 0 12px;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 4px;
+    border-bottom: 1px solid var(--surface-container);
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(12px);
+  }
+
+  .public-shell-product-detail .product-detail-header > button,
+  .public-shell-product-detail .product-detail-cart {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: var(--on-variant);
+    cursor: pointer;
+  }
+
+  .public-shell-product-detail .product-detail-header > button:active,
+  .public-shell-product-detail .product-detail-cart:active {
+    background: var(--surface-low);
+  }
+
+  .public-shell-product-detail .product-detail-shop {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .public-shell-product-detail .product-detail-avatar {
+    position: relative;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    overflow: hidden;
+    border: 1px solid #ffd8b3;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: #ffeedb;
+  }
+
+  .public-shell-product-detail .product-detail-avatar img {
+    position: absolute;
+    top: -24px;
+    left: -30px;
+    width: 90px;
+    max-width: none;
+    height: 90px;
+    object-fit: contain;
+  }
+
+  .public-shell-product-detail .product-detail-shop-name {
+    min-width: 0;
+    overflow: hidden;
+    color: #443833;
+    font-family: "Quicksand", sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .public-shell-product-detail .product-detail-cart {
+    justify-self: end;
+    color: var(--on-surface);
+  }
+
+  .public-shell-product-detail .product-detail-cart-badge {
+    position: absolute;
+    top: 3px;
+    right: 1px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 3px;
+    border: 1px solid #fff;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: var(--tertiary);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .public-shell-product-detail .detail-page {
+    width: 100%;
+    margin: 0;
+    padding: 0 0 calc(112px + env(safe-area-inset-bottom));
+    display: block;
+  }
+
+  .public-shell-product-detail .detail-gallery {
+    position: relative;
+    padding: 28px 24px;
+    background: #f2f0ed;
+  }
+
+  .public-shell-product-detail .detail-main-image-wrap {
+    width: min(280px, 100%);
+    aspect-ratio: 1;
+    margin: 0 auto;
+    padding: 24px;
+    overflow: hidden;
+    border: 1px solid #ece7e1;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(45, 37, 34, 0.06);
+  }
+
+  .public-shell-product-detail .detail-main-image {
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+    border-radius: 0;
+    object-fit: contain;
+  }
+
+  .public-shell-product-detail .detail-thumbs {
+    position: static;
+    min-height: 10px;
+    margin: 16px 0 0;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .public-shell-product-detail .detail-thumbs button {
+    width: 8px;
+    min-width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #d6d3d0;
+    box-shadow: none;
+    cursor: pointer;
+  }
+
+  .public-shell-product-detail .detail-thumbs button.active {
+    border: 0;
+    background: var(--primary);
+  }
+
+  .public-shell-product-detail .detail-thumbs img,
+  .public-shell-product-detail .gallery-nav {
+    display: none;
+  }
+
+  .public-shell-product-detail .detail-info {
+    padding: 22px 16px 0;
+  }
+
+  .public-shell-product-detail .detail-breadcrumbs,
+  .public-shell-product-detail .detail-tags,
+  .public-shell-product-detail .detail-info > p {
+    display: none;
+  }
+
+  .public-shell-product-detail .detail-info h1 {
+    margin: 0;
+    color: var(--on-surface);
+    font-family: "Quicksand", sans-serif;
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .public-shell-product-detail .detail-price {
+    margin: 6px 0 14px;
+    padding: 0 0 16px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    border-bottom: 1px solid var(--surface-container);
+  }
+
+  .public-shell-product-detail .detail-price .price {
+    color: var(--primary);
+    font-family: "Quicksand", sans-serif;
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  .public-shell-product-detail .detail-price del {
+    color: var(--on-variant);
+    font-size: 13px;
+  }
+
+  .public-shell-product-detail .field-heading {
+    min-height: 24px;
+    margin-bottom: 12px;
+    align-items: center;
+  }
+
+  .public-shell-product-detail .field-heading > span {
+    color: var(--on-surface);
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .public-shell-product-detail .field-heading a {
+    color: #77706b;
+    font-size: 12px;
+    font-weight: 600;
+    text-underline-offset: 4px;
+  }
+
+  .public-shell-product-detail .variant-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 0;
+  }
+
+  .public-shell-product-detail .variant-buttons button {
+    width: 100%;
+    min-width: 0;
+    min-height: 64px;
+    padding: 11px 10px;
+    border: 1px solid var(--outline-variant);
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #5d5652;
+    background: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  .public-shell-product-detail .variant-buttons button > img {
+    display: none;
+  }
+
+  .public-shell-product-detail .variant-buttons button.active {
+    border: 2px solid var(--primary);
+    color: var(--primary);
+    background: #fffaf7;
+    font-weight: 700;
+  }
+
+  .public-shell-product-detail .variant-buttons button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+
+  .public-shell-product-detail .detail-quantity,
+  .public-shell-product-detail .add-cart,
+  .public-shell-product-detail .detail-benefits {
+    display: none;
+  }
+
+  .public-shell-product-detail .detail-description-section {
+    margin: 24px 0 0;
+    padding: 0 16px 24px;
+  }
+
+  .public-shell-product-detail .detail-description-card {
+    padding: 16px;
+    border-color: #f0e9e2;
+    border-radius: 16px;
+    background: #fcfaf8;
+  }
+
+  .public-shell-product-detail .detail-description-card .product-rich-description {
+    gap: 12px;
+    color: #625a55;
+  }
+
+  .public-shell-product-detail .detail-description-card .product-rich-image img {
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+  }
+
+  .public-shell-product-detail .mobile-add-bar {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 90;
+    height: auto;
+    min-height: 88px;
+    padding: 12px 16px calc(24px + env(safe-area-inset-bottom));
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-top: 1px solid var(--surface-container);
+    background: #fff;
+    box-shadow: 0 -6px 20px rgba(45, 37, 34, 0.06);
+  }
+
+  .public-shell-product-detail .mobile-add-bar .quantity-stepper {
+    width: 112px;
+    min-width: 112px;
+    height: 52px;
+    flex: 0 0 112px;
+    padding: 0 1px;
+    border: 1px solid var(--surface-container);
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(45, 37, 34, 0.05);
+  }
+
+  .public-shell-product-detail .mobile-add-bar .quantity-stepper button {
+    width: 40px;
+    height: 100%;
+    min-height: 40px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .quantity-stepper button:disabled {
+    color: var(--on-variant);
+    cursor: not-allowed;
+    opacity: 0.35;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .quantity-stepper span {
+    min-width: 22px;
+    color: var(--on-surface);
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .btn {
+    min-width: 0;
+    height: 52px;
+    min-height: 52px;
+    flex: 1 1 auto;
+    padding: 12px 10px;
+    gap: 7px;
+    border-radius: 999px;
+    font-size: 14px;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .btn .material-symbols-outlined {
+    flex: 0 0 auto;
+    font-size: 20px;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .public-shell-product-detail .toast {
+    right: 16px;
+    bottom: calc(92px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 359px) {
+  .public-shell-product-detail .product-detail-header {
+    padding-inline: 8px;
+  }
+
+  .public-shell-product-detail .mobile-add-bar {
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .public-shell-product-detail .mobile-add-bar .btn {
+    padding-inline: 8px;
+    font-size: 13px;
+  }
+}

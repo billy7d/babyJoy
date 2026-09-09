@@ -13,6 +13,7 @@ import "./admin-cart-requests.css";
 import "./mobile-cart.css";
 import "./product-description.css";
 import "./product-description-heading.css";
+import "./product-detail.css";
 import { StoreSettingsProvider } from "./lib/store-settings";
 
 export const links: Route.LinksFunction = () => [];
