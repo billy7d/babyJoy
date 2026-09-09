@@ -21,6 +21,7 @@ export type EditableVariant = {
   stockOnHand: string;
   reservedQuantity?: number;
   availableQuantity?: number;
+  tagIds: string[];
   images: Array<ProductImageRecord & { isPrimary: boolean; variantId?: string }>;
 };
 
@@ -45,6 +46,7 @@ export function createDraftVariant(): EditableVariant {
     stockOnHand: "0",
     reservedQuantity: 0,
     availableQuantity: 0,
+    tagIds: [],
     images: [],
   };
 }
@@ -64,6 +66,7 @@ export function toEditableVariant(variant: Variant): EditableVariant {
     stockOnHand: String(variant.stockOnHand ?? 0),
     reservedQuantity: variant.reservedQuantity ?? 0,
     availableQuantity: variant.availableQuantity ?? 0,
+    tagIds: (variant.tags ?? []).map((tag) => tag.id),
     images: (variant.images ?? []).map((image) => ({ ...image })),
   };
 }

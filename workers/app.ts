@@ -136,6 +136,13 @@ import {
   saveAdminStoreSettings,
 } from "./store-settings";
 import { hasVariantMediaSchema } from "./variant-media";
+import {
+  getVariantTagMap,
+  hasTagGroupSchema,
+  listTagGroups,
+  validateVariantTagAssignments,
+  VariantTagAssignmentError,
+} from "./tag-groups";
 
 const requestHandler = createRequestHandler(
   () => import("virtual:react-router/server-build"),
@@ -302,7 +309,345 @@ async function listTags(env: Env) {
      WHERE is_active = 1
      ORDER BY sort_order, name`,
   ).all();
-  return json({ data: result.results });
+  return json({ data: result.results, tagGroupsSupported: await hasTagGroupSchema(env) });
+}
+
+async function listPublicTagGroups(env: Env) {
+  if (!(await hasTagGroupSchema(env)))
+    return json({ supported: false, groups: [] });
+  const groups = await listTagGroups(env);
+  return json({ supported: true, groups });
+}
+
+function tagGroupWriteError(message = "Thông tin nhóm tag chưa hợp lệ.") {
+  return error("VALIDATION_ERROR", message, 422);
+}
+
+async function saveTagGroup(request: Request, env: Env, id?: string) {
+  if (!(await hasTagGroupSchema(env)))
+    return error(
+      "TAG_GROUP_SCHEMA_UNAVAILABLE",
+      "Nhóm tag chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  let body: Record<string, unknown>;
+  try {
+    const value = await readBoundedJson(request);
+    if (!value || typeof value !== "object") return tagGroupWriteError();
+    body = value as Record<string, unknown>;
+  } catch {
+    return tagGroupWriteError();
+  }
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const displayName =
+    typeof body.displayName === "string" ? body.displayName.trim() : name;
+  const slug = normalizeSlug(
+    typeof body.slug === "string" ? body.slug.trim() : name,
+  );
+  const assignmentMode = body.assignmentMode;
+  const selectionMode = body.selectionMode ?? "MULTI_OR";
+  const sortOrder = body.sortOrder === undefined ? 0 : Number(body.sortOrder);
+  if (
+    !name ||
+    name.length > 120 ||
+    !displayName ||
+    displayName.length > 120 ||
+    !slug ||
+    (assignmentMode !== undefined &&
+      assignmentMode !== "SINGLE" &&
+      assignmentMode !== "MULTI") ||
+    selectionMode !== "MULTI_OR" ||
+    !Number.isSafeInteger(sortOrder)
+  )
+    return tagGroupWriteError();
+  const groupId = id ?? crypto.randomUUID();
+  const now = new Date().toISOString();
+  const existing = id
+    ? await env.DB.prepare(
+        "SELECT id, system_key AS systemKey, assignment_mode AS assignmentMode, is_active AS isActive, is_filterable AS isFilterable FROM tag_groups WHERE id = ?",
+      )
+        .bind(id)
+        .first<{
+          id: string;
+          systemKey: string | null;
+          assignmentMode: string;
+          isActive: number;
+          isFilterable: number;
+        }>()
+    : null;
+  if (id && !existing)
+    return error("TAG_GROUP_NOT_FOUND", "Không tìm thấy nhóm tag.", 404);
+  if (
+    id &&
+    body.systemKey !== undefined &&
+    body.systemKey !== existing?.systemKey
+  )
+    return error(
+      "SYSTEM_TAG_GROUP_KEY_IMMUTABLE",
+      "Không thể thay đổi system key của nhóm tag.",
+      409,
+    );
+  const nextAssignmentMode =
+    existing?.systemKey === "age"
+      ? "SINGLE"
+      : existing?.systemKey === "merchandising"
+        ? "MULTI"
+        : (assignmentMode as string | undefined) ?? existing?.assignmentMode ?? "MULTI";
+  const nextIsFilterable =
+    existing?.systemKey === "age"
+      ? 1
+      : existing?.systemKey === "merchandising"
+        ? 0
+        : body.isFilterable === undefined
+          ? Number(existing?.isFilterable ?? 1)
+          : body.isFilterable === false
+            ? 0
+            : 1;
+  const nextIsActive =
+    body.isActive === undefined
+      ? Number(existing?.isActive ?? 1)
+      : body.isActive === false
+        ? 0
+        : 1;
+  if (id && nextAssignmentMode === "SINGLE") {
+    const conflict = await env.DB.prepare(
+      `SELECT 1
+       FROM variant_tags vt
+       JOIN tags t ON t.id = vt.tag_id
+       WHERE t.group_id = ?
+       GROUP BY vt.variant_id
+       HAVING COUNT(*) > 1
+       LIMIT 1`,
+    )
+      .bind(groupId)
+      .first();
+    if (conflict)
+      return error(
+        "SINGLE_TAG_GROUP_CONFLICT",
+        "Không thể chuyển sang SINGLE khi đã có phân loại gắn nhiều tag trong nhóm.",
+        409,
+      );
+  }
+  const systemKey = existing?.systemKey ?? null;
+  try {
+    const statement = id
+      ? env.DB.prepare(
+          `UPDATE tag_groups
+           SET name = ?, slug = ?, display_name = ?, is_active = ?,
+             is_filterable = ?, assignment_mode = ?, selection_mode = ?,
+             sort_order = ?, updated_at = ?
+           WHERE id = ?`,
+        ).bind(
+          name,
+          slug,
+          displayName,
+          nextIsActive,
+          nextIsFilterable,
+          nextAssignmentMode,
+          selectionMode,
+          sortOrder,
+          now,
+          groupId,
+        )
+      : env.DB.prepare(
+          `INSERT INTO tag_groups
+           (id, name, slug, system_key, display_name, is_active, is_filterable,
+            assignment_mode, selection_mode, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          groupId,
+          name,
+          slug,
+          systemKey,
+          displayName,
+          nextIsActive,
+          nextIsFilterable,
+          nextAssignmentMode,
+          selectionMode,
+          sortOrder,
+          now,
+          now,
+        );
+    const result = await statement.run();
+    if (id && !result.meta.changes)
+      return error("TAG_GROUP_NOT_FOUND", "Không tìm thấy nhóm tag.", 404);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    if (message.includes("UNIQUE"))
+      return error("SLUG_CONFLICT", `Slug "${slug}" đã tồn tại.`, 409);
+    if (message.includes("SINGLE_TAG_GROUP_CONFLICT"))
+      return error(
+        "SINGLE_TAG_GROUP_CONFLICT",
+        "Không thể chuyển nhóm sang SINGLE khi dữ liệu hiện tại bị trùng assignment.",
+        409,
+      );
+    throw caught;
+  }
+  return json({ success: true, id: groupId }, id ? 200 : 201);
+}
+
+async function saveTagInGroup(
+  request: Request,
+  env: Env,
+  groupId: string,
+  id?: string,
+) {
+  if (!(await hasTagGroupSchema(env)))
+    return error(
+      "TAG_GROUP_SCHEMA_UNAVAILABLE",
+      "Nhóm tag chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  let body: Record<string, unknown>;
+  try {
+    const value = await readBoundedJson(request);
+    if (!value || typeof value !== "object") return tagGroupWriteError("Thông tin tag chưa hợp lệ.");
+    body = value as Record<string, unknown>;
+  } catch {
+    return tagGroupWriteError("Thông tin tag chưa hợp lệ.");
+  }
+  const group = await env.DB.prepare("SELECT id FROM tag_groups WHERE id = ?")
+    .bind(groupId)
+    .first<{ id: string }>();
+  if (!group) return error("TAG_GROUP_NOT_FOUND", "Không tìm thấy nhóm tag.", 404);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const displayName =
+    typeof body.displayName === "string" ? body.displayName.trim() : name;
+  const slug = normalizeSlug(
+    typeof body.slug === "string" ? body.slug.trim() : name,
+  );
+  const sortOrder = body.sortOrder === undefined ? 0 : Number(body.sortOrder);
+  if (!name || name.length > 120 || !displayName || displayName.length > 120 || !slug || !Number.isSafeInteger(sortOrder))
+    return tagGroupWriteError("Thông tin tag chưa hợp lệ.");
+  const tagId = id ?? crypto.randomUUID();
+  const existing = id
+    ? await env.DB.prepare(
+        `SELECT id, group_id AS groupId, system_key AS systemKey,
+           featured_section_key AS featuredSectionKey, show_badge AS showBadge
+         FROM tags WHERE id = ?`,
+      )
+        .bind(id)
+        .first<{
+          id: string;
+          groupId: string;
+          systemKey: string | null;
+          featuredSectionKey: string | null;
+          showBadge: number;
+        }>()
+    : null;
+  if (id && !existing)
+    return error("TAG_NOT_FOUND", "Không tìm thấy tag.", 404);
+  const existingTag = existing!;
+  if (id && existingTag.groupId !== groupId)
+    return error("TAG_GROUP_MISMATCH", "Tag không thuộc nhóm này.", 422);
+  if (
+    id &&
+    ((body.systemKey !== undefined && body.systemKey !== existingTag.systemKey) ||
+      (body.featuredSectionKey !== undefined &&
+        body.featuredSectionKey !== existingTag.featuredSectionKey))
+  )
+    return error(
+      "SYSTEM_TAG_KEY_IMMUTABLE",
+      "Không thể thay đổi system key hoặc featured section của tag hệ thống.",
+      409,
+    );
+  if (!id && (body.systemKey !== undefined || body.featuredSectionKey !== undefined))
+    return error(
+      "SYSTEM_TAG_KEY_IMMUTABLE",
+      "Tag hệ thống chỉ được tạo bởi migration chuẩn.",
+      409,
+    );
+  const now = new Date().toISOString();
+  const showBadge = existingTag?.systemKey
+    ? existingTag.showBadge
+    : body.showBadge === true
+      ? 1
+      : 0;
+  try {
+    const statement = id
+      ? env.DB.prepare(
+          `UPDATE tags
+           SET name = ?, display_name = ?, slug = ?, sort_order = ?,
+             is_active = ?, show_badge = ?, updated_at = ?
+           WHERE id = ? AND group_id = ?`,
+        ).bind(
+          name,
+          displayName,
+          slug,
+          sortOrder,
+          body.isActive === false ? 0 : 1,
+          showBadge,
+          now,
+          tagId,
+          groupId,
+        )
+      : env.DB.prepare(
+          `INSERT INTO tags
+           (id, group_id, name, slug, system_key, display_name, sort_order,
+            is_active, show_badge, featured_section_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?)`,
+        ).bind(
+          tagId,
+          groupId,
+          name,
+          slug,
+          displayName,
+          sortOrder,
+          body.isActive === false ? 0 : 1,
+          body.showBadge === true ? 1 : 0,
+          now,
+          now,
+        );
+    const result = await statement.run();
+    if (id && !result.meta.changes)
+      return error("TAG_NOT_FOUND", "Không tìm thấy tag.", 404);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    if (message.includes("UNIQUE"))
+      return error("SLUG_CONFLICT", `Slug "${slug}" đã tồn tại.`, 409);
+    throw caught;
+  }
+  return json({ success: true, id: tagId }, id ? 200 : 201);
+}
+
+async function deleteTagGroup(id: string, env: Env) {
+  if (!(await hasTagGroupSchema(env)))
+    return error("TAG_GROUP_SCHEMA_UNAVAILABLE", "Nhóm tag chưa sẵn sàng trên cơ sở dữ liệu.", 409);
+  const group = await env.DB.prepare(
+    "SELECT id, system_key AS systemKey FROM tag_groups WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; systemKey: string | null }>();
+  if (!group) return error("TAG_GROUP_NOT_FOUND", "Không tìm thấy nhóm tag.", 404);
+  if (group.systemKey)
+    return error("SYSTEM_TAG_GROUP_PROTECTED", "Không thể xóa nhóm tag hệ thống; hãy tắt nhóm thay vì xóa.", 409);
+  const tagCount = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM tags WHERE group_id = ?",
+  )
+    .bind(id)
+    .first<{ count: number }>();
+  if (Number(tagCount?.count ?? 0) > 0)
+    return error("TAG_GROUP_HAS_TAGS", "Hãy xóa hoặc chuyển các tag trước khi xóa nhóm.", 409);
+  await env.DB.prepare("DELETE FROM tag_groups WHERE id = ?").bind(id).run();
+  return json({ success: true, id, deleted: true });
+}
+
+async function deleteTagInGroup(id: string, groupId: string, env: Env) {
+  if (!(await hasTagGroupSchema(env)))
+    return error("TAG_GROUP_SCHEMA_UNAVAILABLE", "Nhóm tag chưa sẵn sàng trên cơ sở dữ liệu.", 409);
+  const tag = await env.DB.prepare(
+    "SELECT id, system_key AS systemKey, group_id AS groupId FROM tags WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; systemKey: string | null; groupId: string }>();
+  if (!tag || tag.groupId !== groupId)
+    return error("TAG_NOT_FOUND", "Không tìm thấy tag.", 404);
+  if (tag.systemKey)
+    return error("SYSTEM_TAG_PROTECTED", "Tag hệ thống không thể xóa; hãy tắt tag thay vì xóa.", 409);
+  await env.DB.prepare("DELETE FROM tags WHERE id = ? AND group_id = ?")
+    .bind(id, groupId)
+    .run();
+  return json({ success: true, id, deleted: true });
 }
 
 type ProductRow = {
@@ -323,6 +668,34 @@ type ProductRow = {
   featured: number;
   sortOrder: number;
   categorySlug: string | null;
+  matchedVariantId?: string | null;
+};
+type ProductVariantTagRow = {
+  variantId: string;
+  id: string;
+  name: string;
+  displayName: string | null;
+  slug: string;
+  groupId: string;
+  groupName: string;
+  groupSlug: string;
+  tagSystemKey: string | null;
+  groupSystemKey: string | null;
+  tagSortOrder: number;
+  showBadge: number;
+  featuredSectionKey: string | null;
+};
+type ProductVariantTag = {
+  id: string;
+  name: string;
+  displayName: string;
+  slug: string;
+  groupId: string;
+  groupName: string;
+  groupSlug: string;
+  systemKey: string | null;
+  showBadge: boolean;
+  featuredSectionKey: string | null;
 };
 type ProductVariantRow = {
   productId: string;
@@ -337,6 +710,7 @@ type ProductVariantRow = {
   trackInventory?: number;
   stockOnHand?: number;
   reservedQuantity?: number;
+  tags?: ProductVariantTag[];
 };
 type ProductVariantImageRow = {
   variantId: string;
@@ -370,6 +744,7 @@ async function hydrateProducts(
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
   ]);
+  const tagGroupSchema = await hasTagGroupSchema(env);
   const descriptionSchema =
     includeDescription && (await hasProductDescriptionSchema(env));
   const inventorySelect = inventorySchema
@@ -381,9 +756,9 @@ async function hydrateProducts(
   const variantPackageSelect = variantMediaSchema
     ? ", package_size AS packageSize"
     : ", '' AS packageSize";
-  const [variants, variantImages, images, tags, categories] = await Promise.all([
+  const [variants, variantImages, images, tags, categories, variantTags] = await Promise.all([
     env.DB.prepare(
-      `SELECT product_id AS productId, id, name${variantPackageSelect}, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, created_at, id`,
+      `SELECT product_id AS productId, id, name${variantPackageSelect}, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySelect} FROM product_variants WHERE product_id IN (${placeholders})${activeVariantWhere} ORDER BY sort_order, id`,
     )
       .bind(...ids)
       .all<ProductVariantRow>(),
@@ -415,6 +790,25 @@ async function hydrateProducts(
     )
       .bind(...ids)
       .all<ProductCategoryRow>(),
+    tagGroupSchema
+      ? env.DB.prepare(
+          `SELECT vt.variant_id AS variantId, t.id, t.name,
+             t.display_name AS displayName, t.slug,
+             tg.id AS groupId, tg.name AS groupName, tg.slug AS groupSlug,
+             t.system_key AS tagSystemKey, tg.system_key AS groupSystemKey,
+             t.sort_order AS tagSortOrder, t.show_badge AS showBadge,
+             t.featured_section_key AS featuredSectionKey
+           FROM variant_tags vt
+           JOIN product_variants tag_variant ON tag_variant.id = vt.variant_id
+           JOIN tags t ON t.id = vt.tag_id
+           JOIN tag_groups tg ON tg.id = t.group_id
+           WHERE tag_variant.product_id IN (${placeholders})
+             AND t.is_active = 1 AND tg.is_active = 1
+           ORDER BY vt.variant_id, tg.sort_order, t.sort_order, t.name, t.id`,
+        )
+          .bind(...ids)
+          .all<ProductVariantTagRow>()
+      : Promise.resolve({ results: [] as ProductVariantTagRow[] }),
   ]);
   const descriptionAssetRows = descriptionSchema
     ? await listProductDescriptionAssets(env, ids, imageUrlStrategy)
@@ -432,6 +826,14 @@ async function hydrateProducts(
       .filter((variant) => variant.productId === product.id)
       .map(({ productId: _productId, ...variant }) => ({
         ...variant,
+        tags: variantTags.results
+          .filter((tag) => tag.variantId === variant.id)
+          .map(({ variantId: _variantId, tagSystemKey, groupSystemKey: _groupSystemKey, ...tag }) => ({
+            ...tag,
+            displayName: tag.displayName ?? tag.name,
+            systemKey: tagSystemKey,
+            showBadge: Boolean(tag.showBadge),
+          })),
         status:
           variant.availability === "AVAILABLE"
             ? "SELLING"
@@ -582,6 +984,8 @@ function buildProductListQuery({
   status,
   inventorySchema,
   variantRetirementSchema,
+  variantTagGroups = [],
+  tagGroupSchema = false,
 }: {
   q: string;
   categories: string[];
@@ -595,6 +999,8 @@ function buildProductListQuery({
   status: ProductListStatus;
   inventorySchema: boolean;
   variantRetirementSchema: boolean;
+  variantTagGroups?: string[][];
+  tagGroupSchema?: boolean;
 }): ProductListQuery {
   const activeVariantPredicate = (alias: string) =>
     variantRetirementSchema ? ` AND ${alias}.archived_at IS NULL` : "";
@@ -628,16 +1034,42 @@ function buildProductListQuery({
     where.push(`b.slug IN (${brandPlaceholders})`);
     values.push(...brands);
   }
-  if (age !== null) {
+  if (!tagGroupSchema && age !== null) {
     where.push("p.min_age_months <= ?");
     values.push(age);
   }
-  if (bestSeller) where.push("p.is_best_seller = 1");
-  if (tag) {
+  if (!tagGroupSchema && bestSeller) where.push("p.is_best_seller = 1");
+  if (!tagGroupSchema && tag) {
     where.push(
       "EXISTS (SELECT 1 FROM product_tags spt JOIN tags st ON st.id = spt.tag_id WHERE spt.product_id = p.id AND st.is_active = 1 AND st.slug = ?)",
     );
     values.push(tag);
+  }
+  if (variantTagGroups.length) {
+    const sameVariantPredicates = variantTagGroups.map((groupTagIds) => {
+      const tagPlaceholders = groupTagIds.map(() => "?").join(",");
+      values.push(...groupTagIds);
+      return `EXISTS (
+        SELECT 1
+        FROM variant_tags svt
+        JOIN tags svt_tag ON svt_tag.id = svt.tag_id
+        JOIN tag_groups svt_group ON svt_group.id = svt_tag.group_id
+        WHERE svt.variant_id = pv.id
+          AND svt.tag_id IN (${tagPlaceholders})
+          AND svt_tag.is_active = 1
+          AND svt_group.is_active = 1
+      )`;
+    });
+    where.push(
+      `EXISTS (
+        SELECT 1
+        FROM product_variants pv
+        WHERE pv.product_id = p.id
+          AND pv.availability != 'HIDDEN'
+          ${activeVariantPredicate("pv")}
+          AND ${sameVariantPredicates.join(" AND ")}
+      )`,
+    );
   }
   if (available)
     where.push(
@@ -663,7 +1095,17 @@ function buildProductListQuery({
         : sort === "newest"
           ? "p.created_at DESC, p.id DESC"
           : sort === "best_seller" || bestSeller
-            ? "p.is_best_seller DESC, COALESCE(p.best_seller_rank, 2147483647) ASC, p.sort_order ASC, p.name ASC, p.id ASC"
+            ? tagGroupSchema
+              ? `CASE WHEN EXISTS (
+                   SELECT 1 FROM product_variants bsv
+                   JOIN variant_tags bvt ON bvt.variant_id = bsv.id
+                   JOIN tags bst ON bst.id = bvt.tag_id
+                   WHERE bsv.product_id = p.id
+                     AND bst.system_key = 'best_seller'
+                     AND bst.is_active = 1
+                     ${activeVariantPredicate("bsv")}
+                 ) THEN 0 ELSE 1 END, p.sort_order ASC, p.name ASC, p.id ASC`
+              : "p.is_best_seller DESC, COALESCE(p.best_seller_rank, 2147483647) ASC, p.sort_order ASC, p.name ASC, p.id ASC"
             : "p.sort_order ASC, p.name ASC, p.id ASC";
   return { whereSql: where.join(" AND "), values, orderSql };
 }
@@ -672,12 +1114,14 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
   const url = new URL(request.url);
   const q = boundedCatalogText(url.searchParams.get("q"));
   const tag = boundedCatalogText(url.searchParams.get("tag"));
+  const tagIds = csvQueryValue(url.searchParams.get("tagIds"));
   const categories = csvQueryValue(url.searchParams.get("category"));
   const brands = csvQueryValue(url.searchParams.get("brand"));
   const sortValue = url.searchParams.get("sort");
   if (
     q === null ||
     tag === null ||
+    tagIds === null ||
     categories === null ||
     brands === null ||
     (sortValue !== null && sortValue.length > 32)
@@ -687,18 +1131,42 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       "Bộ lọc tìm kiếm quá dài hoặc có quá nhiều giá trị.",
       422,
     );
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, tagGroupSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasTagGroupSchema(env),
   ]);
   const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
   const ageValue = url.searchParams.get("age");
   let age: number | null = null;
-  if (ageValue !== null) {
+  if (!tagGroupSchema && ageValue !== null) {
     const parsedAge = Number(ageValue);
     if (!Number.isSafeInteger(parsedAge) || parsedAge < 0 || parsedAge > 240)
       return error("VALIDATION_ERROR", "Độ tuổi lọc không hợp lệ.", 422);
     age = parsedAge;
+  }
+  let variantTagGroups: string[][] = [];
+  if (tagGroupSchema && tagIds.length) {
+    const filterGroups = await listTagGroups(env);
+    const groupByTagId = new Map<string, string>();
+    filterGroups.forEach((group) =>
+      group.tags.forEach((tag) => groupByTagId.set(tag.id, group.id)),
+    );
+    const selectedByGroup = new Map<string, string[]>();
+    for (const tagId of tagIds) {
+      const groupId = groupByTagId.get(tagId);
+      if (!groupId)
+        return error(
+          "INVALID_TAG_FILTER",
+          "Một lựa chọn bộ lọc không tồn tại hoặc không được hiển thị.",
+          422,
+          { tagId },
+        );
+      const selected = selectedByGroup.get(groupId) ?? [];
+      selected.push(tagId);
+      selectedByGroup.set(groupId, selected);
+    }
+    variantTagGroups = [...selectedByGroup.values()];
   }
   // Chặn OFFSET quá lớn nhưng vẫn giữ behavior clamp page hiện tại cho input lỗi.
   const requestedPage = Math.min(
@@ -711,15 +1179,19 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     q,
     categories,
     brands,
-    age,
-    bestSeller: parseBooleanQuery(url.searchParams.get("bestSeller")),
-    tag,
+    age: tagGroupSchema ? null : age,
+    bestSeller: tagGroupSchema
+      ? false
+      : parseBooleanQuery(url.searchParams.get("bestSeller")),
+    tag: tagGroupSchema ? "" : tag,
     available: parseBooleanQuery(url.searchParams.get("available")),
     sort: parseProductSort(sortValue),
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
     inventorySchema,
     variantRetirementSchema,
+    variantTagGroups,
+    tagGroupSchema,
   });
   const count = await env.DB.prepare(
     `SELECT COUNT(DISTINCT p.id) AS totalItems
@@ -757,6 +1229,18 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
         (variant) => variant.availability !== "HIDDEN",
       );
     });
+  if (variantTagGroups.length) {
+    products.forEach((product) => {
+      const matchedVariant = product.variants.find((variant) =>
+        variantTagGroups.every((groupTagIds) =>
+          groupTagIds.some((tagId) =>
+            variant.tags?.some((tag) => tag.id === tagId),
+          ),
+        ),
+      );
+      product.matchedVariantId = matchedVariant?.id ?? null;
+    });
+  } else products.forEach((product) => (product.matchedVariantId = null));
   return json({ data: products, pagination });
 }
 
@@ -795,6 +1279,64 @@ async function getProduct(
     (variant) => variant.availability !== "HIDDEN",
   );
   return json({ data: hydrated });
+}
+
+type CuratedVariantRow = ProductRow & { featuredVariantId: string };
+
+async function listCuratedVariantSection(
+  env: Env,
+  systemKey: "best_seller" | "must_try",
+  limit = 4,
+) {
+  const tagGroupSchema = await hasTagGroupSchema(env);
+  if (!tagGroupSchema) return [];
+  const variantRetirementSchema = await hasVariantRetirementSchema(env);
+  const result = await env.DB.prepare(
+    `SELECT DISTINCT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
+       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
+       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
+       p.archived_at AS archivedAt, p.short_description AS shortDescription,
+       p.description, p.status, p.featured, p.sort_order AS sortOrder,
+       pv.id AS featuredVariantId,
+       (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+        WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order, c.id LIMIT 1) AS categorySlug
+     FROM product_variants pv
+     JOIN products p ON p.id = pv.product_id
+     JOIN variant_tags vt ON vt.variant_id = pv.id
+     JOIN tags t ON t.id = vt.tag_id
+     JOIN tag_groups tg ON tg.id = t.group_id
+     LEFT JOIN brands b ON b.id = p.brand_id
+     WHERE t.system_key = ?
+       AND t.is_active = 1
+       AND tg.is_active = 1
+       AND p.status != 'HIDDEN'
+       AND p.archived_at IS NULL
+       AND pv.availability != 'HIDDEN'
+       ${variantRetirementSchema ? "AND pv.archived_at IS NULL" : ""}
+     ORDER BY pv.sort_order, pv.id
+     LIMIT ?`,
+  )
+    .bind(systemKey, Math.min(Math.max(limit, 1), 12))
+    .all<CuratedVariantRow>();
+  const products = await hydrateProducts(
+    result.results,
+    env,
+    getProductImageUrlStrategy(env.ENVIRONMENT),
+  );
+  return products.map((product, index) => ({
+    ...product,
+    matchedVariantId: result.results[index]?.featuredVariantId ?? null,
+  }));
+}
+
+async function listCuratedVariants(env: Env) {
+  if (!(await hasTagGroupSchema(env)))
+    return json({ supported: false, bestSellers: [], mustTry: [] });
+  const [bestSellers, mustTry] = await Promise.all([
+    listCuratedVariantSection(env, "best_seller"),
+    listCuratedVariantSection(env, "must_try"),
+  ]);
+  return json({ supported: true, bestSellers, mustTry });
 }
 
 async function hasDatabaseTable(env: Env, tableName: string) {
@@ -1077,6 +1619,7 @@ type AdminProductInput = {
     sortOrder?: number;
     trackInventory?: boolean;
     stockOnHand?: number | string;
+    tagIds?: string[];
     images?: Array<{
       id?: string;
       r2Key?: string;
@@ -1128,6 +1671,13 @@ function validateAdminProduct(input: unknown) {
   };
   if (!input || typeof input !== "object") invalid();
   const body = input as AdminProductInput;
+  const legacyProductFieldsProvided =
+    Object.prototype.hasOwnProperty.call(body, "minAgeMonths") ||
+    Object.prototype.hasOwnProperty.call(body, "isBestSeller") ||
+    Object.prototype.hasOwnProperty.call(body, "bestSellerRank");
+  const legacyProductTaxonomyProvided =
+    legacyProductFieldsProvided ||
+    Object.prototype.hasOwnProperty.call(body, "tagIds");
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const slugInput = typeof body.slug === "string" ? body.slug.trim() : "";
   const slug = normalizeSlug(slugInput || name);
@@ -1183,6 +1733,14 @@ function validateAdminProduct(input: unknown) {
         : typeof rawStockOnHand === "number" || typeof rawStockOnHand === "string"
           ? Number(rawStockOnHand)
           : Number.NaN;
+    const tagIds = variant.tagIds;
+    if (
+      tagIds !== undefined &&
+      (!Array.isArray(tagIds) ||
+        tagIds.some((value) => typeof value !== "string" || !value.trim()) ||
+        new Set(tagIds).size !== tagIds.length)
+    )
+      invalid("Danh sách tag của phân loại không hợp lệ.");
     const issue = (code: string, field: VariantValidationIssue["field"], message: string) => {
       throw new AdminProductValidationError({
         code,
@@ -1252,6 +1810,10 @@ function validateAdminProduct(input: unknown) {
       status: availability === "AVAILABLE" ? "SELLING" : availability,
       trackInventory: trackInventory === null ? undefined : trackInventory,
       stockOnHand,
+      tagIds:
+        tagIds === undefined
+          ? undefined
+          : tagIds.map((tagId) => tagId.trim()),
       images,
       sortOrder: Number.isFinite(variant.sortOrder)
         ? Number(variant.sortOrder)
@@ -1377,6 +1939,8 @@ function validateAdminProduct(input: unknown) {
     images,
     descriptionContent,
     descriptionUploadSessionId,
+    legacyProductFieldsProvided,
+    legacyProductTaxonomyProvided,
   };
 }
 
@@ -1404,6 +1968,7 @@ async function readAdminProductData(
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
   ]);
+  const tagGroupSchema = await hasTagGroupSchema(env);
   const activeVariantWhere = variantRetirementSchema
     ? " AND archived_at IS NULL"
     : "";
@@ -1411,10 +1976,17 @@ async function readAdminProductData(
     `SELECT id, name, ${variantMediaSchema ? "package_size" : "''"} AS packageSize, sku, price_vnd AS priceVnd, compare_at_price_vnd AS compareAtPriceVnd, availability, sort_order AS sortOrder${inventorySchema
       ? ", track_inventory AS trackInventory, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity"
       : ", 0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"}
-     FROM product_variants WHERE product_id = ?${activeVariantWhere} ORDER BY sort_order, created_at, id`,
+     FROM product_variants WHERE product_id = ?${activeVariantWhere} ORDER BY sort_order, id`,
   )
     .bind(id)
     .all();
+  const variantTagMap = tagGroupSchema
+    ? await getVariantTagMap(
+        env,
+        variants.results.map((variant) => String(variant.id)),
+        { includeInactive: true },
+      )
+    : new Map();
   const variantImages = variantMediaSchema
     ? await env.DB.prepare(
         `SELECT pvi.variant_id AS variantId, pvi.id, pvi.r2_key AS r2Key,
@@ -1472,6 +2044,7 @@ async function readAdminProductData(
         0,
         Number(variant.stockOnHand ?? 0) - Number(variant.reservedQuantity ?? 0),
       ),
+      tags: variantTagMap.get(String(variant.id)) ?? [],
       images: variantImages.results
         .filter((image) => image.variantId === variant.id)
         .map(({ variantId, isPrimary, ...image }) => ({
@@ -1534,9 +2107,18 @@ async function saveAdminProduct(
   }
   const productId = id ?? crypto.randomUUID();
   const existingProduct = id
-    ? await env.DB.prepare("SELECT id FROM products WHERE id = ?")
+    ? await env.DB.prepare(
+        `SELECT id, min_age_months AS minAgeMonths,
+           is_best_seller AS isBestSeller, best_seller_rank AS bestSellerRank
+         FROM products WHERE id = ?`,
+      )
         .bind(id)
-        .first<{ id: string }>()
+        .first<{
+          id: string;
+          minAgeMonths: number | null;
+          isBestSeller: number;
+          bestSellerRank: number | null;
+        }>()
     : null;
   if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
@@ -1590,6 +2172,7 @@ async function saveAdminProduct(
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
   ]);
+  const tagGroupSchema = await hasTagGroupSchema(env);
   const variantMediaRequested = body.variants.some(
     (variant) => Boolean(variant.packageSize) || Boolean(variant.images?.length),
   );
@@ -1899,6 +2482,26 @@ async function saveAdminProduct(
         );
     }
   }
+  const persistedVariantIds = body.variants.map(
+    (variant) => variant.id ?? crypto.randomUUID(),
+  );
+  if (tagGroupSchema) {
+    try {
+      await validateVariantTagAssignments(
+        env,
+        body.variants
+          .map((variant, index) => ({
+            variantId: persistedVariantIds[index]!,
+            tagIds: variant.tagIds,
+          }))
+          .filter((assignment) => assignment.tagIds !== undefined),
+      );
+    } catch (caught) {
+      if (caught instanceof VariantTagAssignmentError)
+        return error(caught.code, caught.message, 422, caught.details);
+      throw caught;
+    }
+  }
   const now = new Date().toISOString();
   const legacyDescription = body.descriptionContent
     ? extractProductDescriptionText(body.descriptionContent)
@@ -1906,89 +2509,117 @@ async function saveAdminProduct(
   const richDescriptionJson = body.descriptionContent
     ? JSON.stringify(body.descriptionContent)
     : null;
-  const productStatement = id
-    ? env.DB.prepare(
-        descriptionContentProvided && descriptionSchema
-          ? "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, description_content = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?"
-          : "UPDATE products SET name = ?, slug = ?, brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END, brand_id = ?, min_age_months = ?, is_best_seller = ?, best_seller_rank = ?, short_description = ?, description = ?, status = ?, archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END, featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
-      ).bind(
-        ...(descriptionContentProvided && descriptionSchema
-          ? [
-              body.name,
-              body.slug,
-              body.brandId,
-              body.brandId,
-              body.minAgeMonths,
-              body.isBestSeller,
-              body.bestSellerRank,
-              body.shortDescription ?? "",
-              legacyDescription,
-              richDescriptionJson,
-              body.status,
-              body.status,
-              body.featured,
-              body.sortOrder,
-              now,
-              productId,
-            ]
-          : [
-              body.name,
-              body.slug,
-              body.brandId,
-              body.brandId,
-              body.minAgeMonths,
-              body.isBestSeller,
-              body.bestSellerRank,
-              body.shortDescription ?? "",
-              legacyDescription,
-              body.status,
-              body.status,
-              body.featured,
-              body.sortOrder,
-              now,
-              productId,
-            ]),
-      )
-    : env.DB.prepare(
-        descriptionContentProvided && descriptionSchema
-          ? "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, description_content, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-          : "INSERT INTO products (id, name, slug, brand_id, min_age_months, is_best_seller, best_seller_rank, short_description, description, status, featured, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).bind(
-        ...(descriptionContentProvided && descriptionSchema
-          ? [
-              productId,
-              body.name,
-              body.slug,
-              body.brandId,
-              body.minAgeMonths,
-              body.isBestSeller,
-              body.bestSellerRank,
-              body.shortDescription ?? "",
-              legacyDescription,
-              richDescriptionJson,
-              body.status,
-              body.featured,
-              body.sortOrder,
-              now,
-              now,
-            ]
-          : [
-              productId,
-              body.name,
-              body.slug,
-              body.brandId,
-              body.minAgeMonths,
-              body.isBestSeller,
-              body.bestSellerRank,
-              body.shortDescription ?? "",
-              legacyDescription,
-              body.status,
-              body.featured,
-              body.sortOrder,
-              now,
-              now,
-            ]),
+  const preserveLegacyProductFields = Boolean(
+    !id || body.legacyProductFieldsProvided,
+  );
+  const legacyMinAgeMonths = preserveLegacyProductFields
+    ? body.minAgeMonths
+    : (existingProduct?.minAgeMonths ?? null);
+  const legacyIsBestSeller = preserveLegacyProductFields
+    ? body.isBestSeller
+    : (existingProduct?.isBestSeller ?? 0);
+  const legacyBestSellerRank = preserveLegacyProductFields
+    ? body.bestSellerRank
+    : (existingProduct?.bestSellerRank ?? null);
+  let productStatement: D1PreparedStatement;
+  if (id) {
+    const setClauses = [
+      "name = ?",
+      "slug = ?",
+      "brand = CASE WHEN ? IS NULL THEN brand ELSE NULL END",
+      "brand_id = ?",
+    ];
+    const values: Array<string | number | null> = [
+      body.name,
+      body.slug,
+      body.brandId,
+      body.brandId,
+    ];
+    if (preserveLegacyProductFields) {
+      setClauses.push(
+        "min_age_months = ?",
+        "is_best_seller = ?",
+        "best_seller_rank = ?",
       );
+      values.push(
+        legacyMinAgeMonths,
+        legacyIsBestSeller,
+        legacyBestSellerRank,
+      );
+    }
+    setClauses.push(
+      "short_description = ?",
+      "description = ?",
+      ...(descriptionContentProvided && descriptionSchema
+        ? ["description_content = ?"]
+        : []),
+      "status = ?",
+      "archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END",
+      "featured = ?",
+      "sort_order = ?",
+      "updated_at = ?",
+    );
+    values.push(
+      body.shortDescription ?? "",
+      legacyDescription,
+      ...(descriptionContentProvided && descriptionSchema
+        ? [richDescriptionJson]
+        : []),
+      body.status,
+      body.status,
+      body.featured,
+      body.sortOrder,
+      now,
+      productId,
+    );
+    productStatement = env.DB.prepare(
+      `UPDATE products SET ${setClauses.join(", ")} WHERE id = ?`,
+    ).bind(...values);
+  } else {
+    const columns = [
+      "id",
+      "name",
+      "slug",
+      "brand_id",
+      "min_age_months",
+      "is_best_seller",
+      "best_seller_rank",
+      "short_description",
+      "description",
+      ...(descriptionContentProvided && descriptionSchema
+        ? ["description_content"]
+        : []),
+      "status",
+      "featured",
+      "sort_order",
+      "created_at",
+      "updated_at",
+    ];
+    const values: Array<string | number | null> = [
+      productId,
+      body.name,
+      body.slug,
+      body.brandId,
+      legacyMinAgeMonths,
+      legacyIsBestSeller,
+      legacyBestSellerRank,
+      body.shortDescription ?? "",
+      legacyDescription,
+      ...(descriptionContentProvided && descriptionSchema
+        ? [richDescriptionJson]
+        : []),
+      body.status,
+      body.featured,
+      body.sortOrder,
+      now,
+      now,
+    ];
+    productStatement = env.DB.prepare(
+      `INSERT INTO products (${columns.join(", ")}) VALUES (${columns
+        .map(() => "?")
+        .join(", ")})`,
+    ).bind(...values);
+  }
   const descriptionPersistence = descriptionContentProvided
     ? await prepareProductDescriptionAssetPersistence(
         env,
@@ -2042,8 +2673,8 @@ async function saveAdminProduct(
         ).bind(variantId, productId),
       );
   });
-  body.variants.forEach((variant) => {
-    const persistedVariantId = variant.id ?? crypto.randomUUID();
+  body.variants.forEach((variant, variantIndex) => {
+    const persistedVariantId = persistedVariantIds[variantIndex]!;
     if (variant.id) {
       const current = existingVariants.results.find((item) => item.id === variant.id);
       const trackInventory =
@@ -2253,6 +2884,20 @@ async function saveAdminProduct(
         );
       });
     }
+    if (tagGroupSchema && variant.tagIds !== undefined) {
+      statements.push(
+        env.DB.prepare("DELETE FROM variant_tags WHERE variant_id = ?").bind(
+          persistedVariantId,
+        ),
+      );
+      variant.tagIds.forEach((tagId) =>
+        statements.push(
+          env.DB.prepare(
+            "INSERT INTO variant_tags (variant_id, tag_id) VALUES (?, ?)",
+          ).bind(persistedVariantId, tagId),
+        ),
+      );
+    }
   });
   if (body.images !== undefined) {
     const existingImages = id
@@ -2337,6 +2982,7 @@ async function duplicateAdminProduct(id: string, env: Env) {
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
   ]);
+  const tagGroupSchema = await hasTagGroupSchema(env);
   const variants = await env.DB.prepare(
     `SELECT * FROM product_variants WHERE product_id = ?${variantRetirementSchema
       ? " AND archived_at IS NULL"
@@ -2344,6 +2990,13 @@ async function duplicateAdminProduct(id: string, env: Env) {
   )
     .bind(id)
     .all<Record<string, unknown>>();
+  const sourceVariantTags = tagGroupSchema
+    ? await env.DB.prepare(
+        "SELECT variant_id AS variantId, tag_id AS tagId FROM variant_tags WHERE variant_id IN (SELECT id FROM product_variants WHERE product_id = ?)",
+      )
+        .bind(id)
+        .all<{ variantId: string; tagId: string }>()
+    : { results: [] as Array<{ variantId: string; tagId: string }> };
   const newId = crypto.randomUUID();
   const suffix = crypto.randomUUID().slice(0, 6);
   const now = new Date().toISOString();
@@ -2417,6 +3070,16 @@ async function duplicateAdminProduct(id: string, env: Env) {
             now,
           ),
         );
+      if (tagGroupSchema)
+        sourceVariantTags.results
+          .filter((assignment) => assignment.variantId === variant.id)
+          .forEach((assignment) =>
+            statements.push(
+              env.DB.prepare(
+                "INSERT INTO variant_tags (variant_id, tag_id) VALUES (?, ?)",
+              ).bind(variantId, assignment.tagId),
+            ),
+          );
     })(),
   );
   await env.DB.batch(statements);
@@ -2610,6 +3273,20 @@ async function deleteTaxonomy(id: string, env: Env, kind: TaxonomyKind) {
     return json({ success: true, id, deleted: true });
   }
 
+  if (await hasTagGroupSchema(env)) {
+    const tag = await env.DB.prepare(
+      "SELECT system_key AS systemKey FROM tags WHERE id = ?",
+    )
+      .bind(id)
+      .first<{ systemKey: string | null }>();
+    if (tag?.systemKey)
+      return error(
+        "SYSTEM_TAG_PROTECTED",
+        "Tag hệ thống không thể xóa; hãy tắt tag thay vì xóa.",
+        409,
+      );
+  }
+
   const result = await env.DB.prepare("DELETE FROM tags WHERE id = ?")
     .bind(id)
     .run();
@@ -2634,6 +3311,7 @@ async function saveTaxonomy(
     groupType?: string;
     sortOrder?: number;
     isActive?: boolean;
+    displayName?: string;
   };
   const name = body.name?.trim() ?? "";
   const slug = normalizeSlug(body.slug?.trim() || name);
@@ -2680,13 +3358,53 @@ async function saveTaxonomy(
       throw caught;
     }
   } else {
-    await env.DB.prepare(
-      id
-        ? "UPDATE tags SET name = ?, slug = ?, group_type = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
-        : "INSERT INTO tags (id, name, slug, group_type, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-      .bind(
-        ...(id
+    const tagGroupSchema = await hasTagGroupSchema(env);
+    const defaultGroup = tagGroupSchema
+      ? await env.DB.prepare(
+          "SELECT id FROM tag_groups WHERE system_key IS NULL ORDER BY sort_order, id LIMIT 1",
+        ).first<{ id: string }>()
+      : null;
+    if (tagGroupSchema && !defaultGroup)
+      return error(
+        "TAG_GROUP_NOT_FOUND",
+        "Không tìm thấy nhóm tag mặc định.",
+        409,
+      );
+    const displayName = body.displayName?.trim() || name;
+    const statement = env.DB.prepare(
+      tagGroupSchema
+        ? id
+          ? "UPDATE tags SET name = ?, slug = ?, group_type = ?, display_name = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
+          : "INSERT INTO tags (id, group_id, name, slug, group_type, display_name, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        : id
+          ? "UPDATE tags SET name = ?, slug = ?, group_type = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
+          : "INSERT INTO tags (id, name, slug, group_type, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(
+      ...(tagGroupSchema
+        ? id
+          ? [
+              name,
+              slug,
+              body.groupType ?? null,
+              displayName,
+              body.sortOrder ?? 0,
+              body.isActive === false ? 0 : 1,
+              now,
+              rowId,
+            ]
+          : [
+              rowId,
+              defaultGroup!.id,
+              name,
+              slug,
+              body.groupType ?? null,
+              displayName,
+              body.sortOrder ?? 0,
+              body.isActive === false ? 0 : 1,
+              now,
+              now,
+            ]
+        : id
           ? [
               name,
               slug,
@@ -2706,8 +3424,16 @@ async function saveTaxonomy(
               now,
               now,
             ]),
-      )
-      .run();
+    );
+    try {
+      const result = await statement.run();
+      if (id && !result.meta.changes)
+        return error("TAG_NOT_FOUND", "Không tìm thấy tag.", 404);
+    } catch (caught) {
+      if (caught instanceof Error && caught.message.includes("UNIQUE"))
+        return error("SLUG_CONFLICT", `Slug "${slug}" đã tồn tại.`, 409);
+      throw caught;
+    }
   }
   return json({ success: true, id: rowId }, id ? 200 : 201);
 }
@@ -2767,6 +3493,10 @@ async function handleApi(
     return listCategories(env);
   if (request.method === "GET" && path === "/api/tags")
     return listTags(env);
+  if (request.method === "GET" && path === "/api/tag-groups")
+    return listPublicTagGroups(env);
+  if (request.method === "GET" && path === "/api/curated-variants")
+    return listCuratedVariants(env);
   if (request.method === "GET" && path === "/api/brands")
     return listBrands(env);
   if (
@@ -2957,6 +3687,61 @@ async function handleApi(
       "SELECT id, name, slug, group_type AS groupType, sort_order AS sortOrder, is_active AS isActive FROM tags ORDER BY sort_order, name",
     ).all();
     return json({ data: result.results });
+  }
+  const adminTagGroupItemMatch = path.match(/^\/api\/admin\/tag-groups\/([^/]+)$/);
+  const adminTagGroupTagMatch = path.match(
+    /^\/api\/admin\/tag-groups\/([^/]+)\/tags(?:\/([^/]+))?$/,
+  );
+  if (request.method === "GET" && path === "/api/admin/tag-groups") {
+    if (!(await hasTagGroupSchema(env)))
+      return json({ data: [], supported: false });
+    return json({
+      data: await listTagGroups(env, {
+        includeInactiveGroups: true,
+        includeInactiveTags: true,
+      }),
+      supported: true,
+    });
+  }
+  if (request.method === "POST" && path === "/api/admin/tag-groups")
+    return saveTagGroup(request, env);
+  if (request.method === "GET" && adminTagGroupItemMatch) {
+    if (!(await hasTagGroupSchema(env)))
+      return error(
+        "TAG_GROUP_SCHEMA_UNAVAILABLE",
+        "Nhóm tag chưa sẵn sàng trên cơ sở dữ liệu.",
+        409,
+      );
+    const groups = await listTagGroups(env, {
+      includeInactiveGroups: true,
+      includeInactiveTags: true,
+    });
+    const group = groups.find(
+      (item) => item.id === decodeURIComponent(adminTagGroupItemMatch[1]),
+    );
+    return group
+      ? json({ data: group })
+      : error("TAG_GROUP_NOT_FOUND", "Không tìm thấy nhóm tag.", 404);
+  }
+  if (request.method === "PUT" && adminTagGroupItemMatch)
+    return saveTagGroup(
+      request,
+      env,
+      decodeURIComponent(adminTagGroupItemMatch[1]),
+    );
+  if (request.method === "DELETE" && adminTagGroupItemMatch)
+    return deleteTagGroup(decodeURIComponent(adminTagGroupItemMatch[1]), env);
+  if (adminTagGroupTagMatch) {
+    const groupId = decodeURIComponent(adminTagGroupTagMatch[1]);
+    const tagId = adminTagGroupTagMatch[2]
+      ? decodeURIComponent(adminTagGroupTagMatch[2])
+      : undefined;
+    if (request.method === "POST" && !tagId)
+      return saveTagInGroup(request, env, groupId);
+    if (request.method === "PUT" && tagId)
+      return saveTagInGroup(request, env, groupId, tagId);
+    if (request.method === "DELETE" && tagId)
+      return deleteTagInGroup(tagId, groupId, env);
   }
   const categoryMatch = path.match(/^\/api\/admin\/categories\/([^/]+)$/);
   const categoryProductsMatch = path.match(

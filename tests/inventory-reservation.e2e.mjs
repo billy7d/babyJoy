@@ -133,23 +133,30 @@ async function openCustomer(label) {
 }
 
 async function activateCustomer(customer, label) {
-  const activationResponse = customer.page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      url.pathname === "/api/cart/share/activate"
-    );
+  const activationResponse = new Promise((resolve, reject) => {
+    const onResponse = (response) => {
+      const url = new URL(response.url());
+      if (
+        response.request().method() !== "POST" ||
+        url.pathname !== "/api/cart/share/activate"
+      )
+        return;
+      customer.page.off("response", onResponse);
+      void response
+        .body()
+        .then((buffer) =>
+          resolve({ response, body: JSON.parse(buffer.toString("utf8")) }),
+        )
+        .catch(reject);
+    };
+    customer.page.on("response", onResponse);
   });
   const button = customer.page
     .locator(".cart-guide-actions button.btn.primary:visible")
     .first();
   await button.waitFor({ state: "visible" });
-  // Đọc body trước khi navigation sang Messenger làm response bị detach.
-  const responseWithBody = activationResponse.then(async (response) => ({
-    response,
-    body: JSON.parse((await response.body()).toString("utf8")),
-  }));
-  const { response, body } = await Promise.all([responseWithBody, button.click()]).then(
+  // Đọc body ngay tại response event trước khi navigation sang Messenger.
+  const { response, body } = await Promise.all([activationResponse, button.click()]).then(
     ([result]) => result,
   );
   assert(response.status() < 500, label + " activation trả lỗi server " + response.status());
@@ -172,7 +179,10 @@ async function prepareCancelledCustomer(customer, oldToken, label) {
       response.request().method() === "POST" &&
       pathname === "/api/cart/share/prepare"
     )
-      responses.push({ response, bodyPromise: response.json() });
+      responses.push({
+        response,
+        bodyPromise: response.body().then((buffer) => JSON.parse(buffer.toString("utf8"))),
+      });
   };
   customer.page.on("response", onResponse);
   const button = customer.page.locator("button.direct-prepare:visible").first();
@@ -221,7 +231,10 @@ async function activateCancelledCustomer(customer, oldToken, label) {
       response.request().method() === "POST" &&
       (pathname === "/api/cart/share/prepare" || pathname === "/api/cart/share/activate")
     )
-      responses.push({ response, bodyPromise: response.json() });
+      responses.push({
+        response,
+        bodyPromise: response.body().then((buffer) => JSON.parse(buffer.toString("utf8"))),
+      });
   };
   customer.page.on("response", onResponse);
   const button = customer.page
@@ -312,7 +325,7 @@ try {
     description: "Promotion dùng để kiểm tra reservation.",
     type: "ORDER_FIXED_DISCOUNT",
     status: "ACTIVE",
-    priority: 100,
+    priority: 1000,
     stackable: false,
     usageLimitTotal: 1,
     config: {

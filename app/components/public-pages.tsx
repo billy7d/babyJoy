@@ -45,6 +45,7 @@ export function resolveGallerySelection(
 import {
   loadProductBySlug,
   loadProductPage,
+  loadCuratedVariants,
   ProductNotFoundError,
   type ProductPageResult,
   useCatalog,
@@ -101,13 +102,31 @@ import {
 export function HomePage() {
   const { products, categories } = useCatalog();
   const { displayName } = useStoreSettings();
-  const bestSellers = products
+  const [curated, setCurated] = useState<Awaited<ReturnType<typeof loadCuratedVariants>> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void loadCuratedVariants()
+      .then((result) => {
+        if (!cancelled) setCurated(result);
+      })
+      .catch(() => {
+        if (!cancelled) setCurated(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const legacyBestSellers = products
     .filter((product) => product.isBestSeller)
     .sort(
       (left, right) =>
         (left.bestSellerRank ?? Number.MAX_SAFE_INTEGER) -
         (right.bestSellerRank ?? Number.MAX_SAFE_INTEGER),
     );
+  const bestSellers = curated?.supported
+    ? curated.bestSellers
+    : legacyBestSellers;
+  const mustTry = curated?.supported ? curated.mustTry : [];
   const featured = (bestSellers.length
     ? bestSellers
     : products.filter((product) => product.featured)
@@ -223,11 +242,29 @@ export function HomePage() {
             </div>
           ) : (
             featured.map((product) => (
-              <ProductCard key={product.id} product={product} compact />
+              <ProductCard key={`${product.id}-${product.matchedVariantId ?? "default"}`} product={product} compact />
             ))
           )}
         </div>
       </section>
+      {mustTry.length > 0 && (
+        <section className="featured section must-try-section">
+          <div className="section-heading">
+            <div>
+              <h2>Must Try</h2>
+              <p>Những lựa chọn mới đáng để mẹ thử cho bé.</p>
+            </div>
+            <Link to="/shop">
+              Xem tất cả <Icon>arrow_forward</Icon>
+            </Link>
+          </div>
+          <div className="product-grid">
+            {mustTry.map((product) => (
+              <ProductCard key={`${product.id}-${product.matchedVariantId ?? "default"}`} product={product} compact />
+            ))}
+          </div>
+        </section>
+      )}
     </PublicShell>
   );
 }
@@ -295,9 +332,17 @@ export function ProductListPage({
   searchMode?: boolean;
   categorySlug?: string;
 }) {
-  const { categories, brands, tagOptions, mergeProducts } = useCatalog();
+  const {
+    categories,
+    brands,
+    tagOptions,
+    filterGroups,
+    tagGroupsSupported,
+    mergeProducts,
+  } = useCatalog();
   const { displayName } = useStoreSettings();
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const [mobileFilters, setMobileFilters] = useState(false);
   const [listing, setListing] = useState<ProductPageResult | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -349,6 +394,25 @@ export function ProductListPage({
     else selected.add(value);
     setFilter(key, [...selected].join(","));
   };
+  const toggleTagFilter = (tagId: string) => {
+    const selected = new Set((params.get("tagIds") ?? "").split(",").filter(Boolean));
+    if (selected.has(tagId)) selected.delete(tagId);
+    else selected.add(tagId);
+    setFilter("tagIds", [...selected].join(","));
+  };
+  const clearProductFilters = () => {
+    const next = new URLSearchParams();
+    for (const key of ["q", "sort"] as const) {
+      const value = params.get(key);
+      if (value) next.set(key, value);
+    }
+    next.set("page", "1");
+    if (categorySlug) {
+      navigate(`/shop?${next.toString()}`);
+      return;
+    }
+    setParams(next);
+  };
   const title = searchMode
     ? `Kết quả tìm kiếm${params.get("q") ? ` cho “${params.get("q")}”` : ""}`
     : categorySlug
@@ -361,9 +425,9 @@ export function ProductListPage({
       params.get("q") ||
       params.get("category") ||
       params.get("brand") ||
-      params.get("age") ||
-      params.get("bestSeller") ||
-      params.get("tag") ||
+      (!tagGroupsSupported &&
+        (params.get("age") || params.get("bestSeller") || params.get("tag"))) ||
+      params.get("tagIds") ||
       params.get("available"),
   );
   const filters = (
@@ -384,18 +448,6 @@ export function ProductListPage({
           {item.name}
         </label>
       ))}
-      <h3>Độ tuổi</h3>
-      {["6", "7", "10", "12"].map((item) => (
-        <label key={item}>
-          <input
-            type="radio"
-            name="age"
-            checked={params.get("age") === item}
-            onChange={() => setFilter("age", item)}
-          />
-          {item}m+
-        </label>
-      ))}
       <h3>Thương hiệu</h3>
       {brands.map((item) => (
         <label key={item.id}>
@@ -408,32 +460,70 @@ export function ProductListPage({
           {item.name}
         </label>
       ))}
-      <h3>Best seller</h3>
-      <label>
-        <input
-          type="checkbox"
-          checked={params.get("bestSeller") === "1"}
-          onChange={(event) =>
-            setFilter("bestSeller", event.target.checked ? "1" : "")
-          }
-        />
-        Chỉ xem Best seller
-      </label>
-      <h3>Đặc tính</h3>
-      <div className="filter-tags">
-        {/* Chỉ hiển thị tag active do D1 trả về để tag đã xóa không còn trong filter. */}
-        {tagOptions.map((item) => (
-          <button
-            className={params.get("tag") === item.slug ? "active" : ""}
-            key={item.slug}
-            onClick={() =>
-              setFilter("tag", params.get("tag") === item.slug ? "" : item.slug)
-            }
-          >
-            {item.name}
-          </button>
-        ))}
-      </div>
+      {tagGroupsSupported ? (
+        filterGroups.map((group) => {
+          const selected = new Set((params.get("tagIds") ?? "").split(",").filter(Boolean));
+          return (
+            <section className="dynamic-filter-group" key={group.id}>
+              <h3>{group.displayName}</h3>
+              <div className="filter-tags">
+                {group.tags.map((tag) => (
+                  <button
+                    type="button"
+                    className={selected.has(tag.id) ? "active" : ""}
+                    key={tag.id}
+                    aria-pressed={selected.has(tag.id)}
+                    onClick={() => toggleTagFilter(tag.id)}
+                  >
+                    {tag.displayName ?? tag.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          );
+        })
+      ) : (
+        <>
+          <h3>Độ tuổi</h3>
+          {["6", "7", "10", "12"].map((item) => (
+            <label key={item}>
+              <input
+                type="radio"
+                name="age"
+                checked={params.get("age") === item}
+                onChange={() => setFilter("age", item)}
+              />
+              {item}m+
+            </label>
+          ))}
+          <h3>Best seller</h3>
+          <label>
+            <input
+              type="checkbox"
+              checked={params.get("bestSeller") === "1"}
+              onChange={(event) =>
+                setFilter("bestSeller", event.target.checked ? "1" : "")
+              }
+            />
+            Chỉ xem Best seller
+          </label>
+          <h3>Đặc tính</h3>
+          <div className="filter-tags">
+            {tagOptions.map((item) => (
+              <button
+                type="button"
+                className={params.get("tag") === item.slug ? "active" : ""}
+                key={item.slug}
+                onClick={() =>
+                  setFilter("tag", params.get("tag") === item.slug ? "" : item.slug)
+                }
+              >
+                {item.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       <h3>Tình trạng</h3>
       <label>
         <input
@@ -447,7 +537,7 @@ export function ProductListPage({
       </label>
       <button
         className="clear-filter"
-        onClick={() => setParams(new URLSearchParams("page=1"))}
+        onClick={clearProductFilters}
       >
         Xóa bộ lọc
       </button>
@@ -487,7 +577,7 @@ export function ProductListPage({
         <div className="mobile-category-chips">
           <button
             className={!categorySlug && !params.get("category") ? "active" : ""}
-            onClick={() => setFilter("category", "")}
+            onClick={clearProductFilters}
           >
             Tất cả
           </button>
@@ -693,20 +783,25 @@ export function ProductDetailPage() {
   }, [mergeProducts, slug]);
   useEffect(() => {
     const defaultVariant = product ? getDefaultVariant(product) : undefined;
-    const nextVariantId = defaultVariant?.id ?? "";
+    const requestedVariantId = new URLSearchParams(location.search).get("variant");
+    const requestedVariant = requestedVariantId
+      ? product?.variants.find((item) => item.id === requestedVariantId)
+      : undefined;
+    const nextVariantId = requestedVariant?.id ?? defaultVariant?.id ?? "";
     selectedVariantIdRef.current = nextVariantId;
     setVariantId(nextVariantId);
     setQuantity(1);
     const gallery = product ? buildVariantGallery(product) : [];
-    const primary = defaultVariant
-      ? getVariantPrimaryImage(defaultVariant)
+    const selectedInitialVariant = requestedVariant ?? defaultVariant;
+    const primary = selectedInitialVariant
+      ? getVariantPrimaryImage(selectedInitialVariant)
       : undefined;
     setSelectedImage(
       primary
         ? Math.max(0, gallery.findIndex((image) => image.r2Key === primary.r2Key))
         : 0,
     );
-  }, [product]);
+  }, [location.search, product]);
   if (loading) {
     return (
       <PublicShell hideMobileNav>
@@ -746,6 +841,8 @@ export function ProductDetailPage() {
   const variant =
     product.variants.find((item) => item.id === variantId) ??
     getDefaultVariant(product);
+  const variantTags = variant?.tags ?? [];
+  const hasVariantTagPayload = variant?.tags !== undefined;
   const variantPurchasable = Boolean(variant && isVariantPurchasable(variant));
   const productImages = buildVariantGallery(product);
   const selectVariant = (nextVariantId: string) => {
@@ -868,15 +965,21 @@ export function ProductDetailPage() {
               ))}
             </div>
           )}
-        </div>
-        <div className="detail-info">
+          </div>
+          <div className="detail-info">
           <div className="detail-breadcrumbs">
             Trang chủ <Icon>chevron_right</Icon> {product.brand || "Sản phẩm"}{" "}
             <Icon>chevron_right</Icon> {product.name}
           </div>
           <div className="detail-tags">
-            {product.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
-            {product.age !== "Chưa xác định" && <Tag tone="primary">{product.age}</Tag>}
+            {variantTags.length
+              ? variantTags.map((tag) => (
+                  <Tag key={tag.id} tone={tag.showBadge ? "primary" : "secondary"}>
+                    {tag.displayName ?? tag.name}
+                  </Tag>
+                ))
+              : !hasVariantTagPayload && product.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            {!variantTags.length && !hasVariantTagPayload && product.age !== "Chưa xác định" && <Tag tone="primary">{product.age}</Tag>}
           </div>
           <h1>{product.name}</h1>
           <p>{product.shortDescription || product.description}</p>

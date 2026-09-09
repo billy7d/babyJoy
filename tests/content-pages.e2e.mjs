@@ -147,6 +147,8 @@ try {
     "Storefront không đọc content mới sau Admin save",
   );
   const publicLink = page.locator('.product-rich-description a[href="https://example.com"]');
+  // Chờ rich content hydrate xong trước khi kiểm tra thuộc tính liên kết.
+  await publicLink.waitFor({ state: "attached" });
   assert(await publicLink.count() === 1, "Storefront không render liên kết rich text");
   assert(await publicLink.getAttribute("target") === "_blank", "Liên kết ngoài thiếu target an toàn");
   assert(

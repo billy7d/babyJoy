@@ -126,7 +126,7 @@ try {
   await variant.locator("input").nth(0).fill("Hộp rich");
   await variant.locator("input").nth(2).fill(`E2E-RICH-${key}`);
   await variant.locator("input").nth(3).fill("125000");
-  await variant.locator("select").selectOption("SELLING");
+  await variant.locator('select[aria-invalid]').selectOption("SELLING");
 
   const editor = page.locator(".product-description-content .ProseMirror");
   assert(
