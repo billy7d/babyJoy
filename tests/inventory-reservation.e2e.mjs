@@ -188,6 +188,15 @@ async function prepareCancelledCustomer(customer, oldToken, label) {
   const button = customer.page.locator("button.direct-prepare:visible").first();
   try {
     await button.waitFor({ state: "visible", timeout: 10000 });
+    // Chờ catalog hydrate xong để trạng thái khả dụng của nút phản ánh dữ liệu thật.
+    await customer.page.waitForFunction(
+      () => {
+        const element = document.querySelector("button.direct-prepare");
+        return element instanceof HTMLButtonElement && !element.disabled;
+      },
+      undefined,
+      { timeout: 10000 },
+    );
     assert(!(await button.isDisabled()), label + " nút prepare đang bị disabled");
     await Promise.all([
       customer.page.waitForURL(/\/cart\/guide\/GH-/),
