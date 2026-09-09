@@ -393,6 +393,8 @@ function isStaticPath(path: string) {
     path.startsWith("/fonts/") ||
     path.startsWith("/media/") ||
     path === "/favicon.ico" ||
+    path === "/favicon-32x32.png" ||
+    path === "/apple-touch-icon.png" ||
     path === "/robots.txt" ||
     path === "/manifest.webmanifest"
   );
