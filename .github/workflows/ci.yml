@@ -65,6 +65,11 @@ jobs:
       - name: Install Playwright Chromium
         shell: bash
         run: |
+          for apt_source in /etc/apt/sources.list.d/*; do
+            if [ -f "$apt_source" ] && grep -q "dl.google.com" "$apt_source"; then
+              sudo mv "$apt_source" "$apt_source.disabled"
+            fi
+          done
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           npx playwright install --with-deps chromium
