@@ -207,6 +207,51 @@ describe("Variant Facet / Tag Group Engine", () => {
     ).toThrow(/TAG_GROUP_REQUIRED/);
   });
 
+  it("migration tái sử dụng slug tuổi legacy mà không làm mất liên kết product_tags", () => {
+    const database = createDatabase("0018_variant_tag_groups_v1.sql");
+    database.exec(`
+      INSERT INTO tags (id, name, slug, group_type, sort_order) VALUES
+        ('legacy-age-7', '7 tháng', '7-thang', 'AGES', 5),
+        ('legacy-age-8', '8 tháng', '8-thang', 'AGES', 6),
+        ('legacy-age-10', '10 tháng', '10-thang', 'AGES', 7),
+        ('legacy-age-12', '12 tháng', '12-thang', 'AGES', 8);
+    `);
+    insertProduct(database, "legacy-slug-product", "legacy-slug-product", [
+      { id: "legacy-slug-variant", name: "Legacy", sku: "LEGACY-SLUG", priceVnd: 10000, sortOrder: 1 },
+    ]);
+    database
+      .prepare("INSERT INTO product_tags (product_id, tag_id) VALUES ('legacy-slug-product', 'legacy-age-8')")
+      .run();
+    database.exec(
+      readFileSync(
+        new URL("../migrations/0018_variant_tag_groups_v1.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+
+    expect(
+      database
+        .prepare(
+          `SELECT id, slug, group_id AS groupId, system_key AS systemKey
+           FROM tags
+           WHERE slug IN ('6-thang', '7-thang', '8-thang', '10-thang', '12-thang')
+           ORDER BY CAST(REPLACE(slug, '-thang', '') AS INTEGER)`,
+        )
+        .all(),
+    ).toEqual([
+      { id: "tag-age-6", slug: "6-thang", groupId: "tag-group-age", systemKey: "age_6_months" },
+      { id: "legacy-age-7", slug: "7-thang", groupId: "tag-group-age", systemKey: "age_7_months" },
+      { id: "legacy-age-8", slug: "8-thang", groupId: "tag-group-age", systemKey: "age_8_months" },
+      { id: "legacy-age-10", slug: "10-thang", groupId: "tag-group-age", systemKey: "age_10_months" },
+      { id: "legacy-age-12", slug: "12-thang", groupId: "tag-group-age", systemKey: "age_12_months" },
+    ]);
+    expect(
+      database
+        .prepare("SELECT tag_id AS tagId FROM product_tags WHERE product_id = 'legacy-slug-product'")
+        .all(),
+    ).toEqual([{ tagId: "legacy-age-8" }]);
+  });
+
   it("public chỉ trả group filterable, admin bảo vệ system key và tag hệ thống", async () => {
     const { env } = createEnv();
     const publicResponse = await api(env, "/api/tag-groups");
