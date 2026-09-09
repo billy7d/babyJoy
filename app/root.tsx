@@ -16,7 +16,24 @@ import "./product-description-heading.css";
 import "./product-detail.css";
 import { StoreSettingsProvider } from "./lib/store-settings";
 
-export const links: Route.LinksFunction = () => [];
+export const links: Route.LinksFunction = () => [
+  {
+    rel: "icon",
+    href: "/favicon.ico",
+    sizes: "any",
+  },
+  {
+    rel: "icon",
+    type: "image/png",
+    sizes: "32x32",
+    href: "/favicon-32x32.png",
+  },
+  {
+    rel: "apple-touch-icon",
+    sizes: "180x180",
+    href: "/apple-touch-icon.png",
+  },
+];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (

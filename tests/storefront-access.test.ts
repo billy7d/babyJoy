@@ -244,6 +244,9 @@ describe("storefront access credentials", () => {
     expect(isStorefrontProtectedHtmlPath("/access-required")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/c/share-token")).toBe(false);
     expect(isStorefrontProtectedHtmlPath("/images/logo.png")).toBe(false);
+    expect(isStorefrontProtectedHtmlPath("/favicon.ico")).toBe(false);
+    expect(isStorefrontProtectedHtmlPath("/favicon-32x32.png")).toBe(false);
+    expect(isStorefrontProtectedHtmlPath("/apple-touch-icon.png")).toBe(false);
     expect(isStorefrontProtectedApiPath("/api/products/slug")).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/content-pages/shipping-policy")).toBe(true);
     expect(isStorefrontProtectedApiPath("/api/tags")).toBe(true);
