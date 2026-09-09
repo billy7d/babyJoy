@@ -8,6 +8,7 @@ import {
 
 const detailSource = readFileSync("app/components/public-pages.tsx", "utf8");
 const detailStyles = readFileSync("app/product-detail.css", "utf8");
+const appStyles = readFileSync("app/app.css", "utf8");
 
 describe("Product Detail Stitch UI", () => {
   it("giữ binding gallery, variant, description và cart thật", () => {
@@ -57,5 +58,25 @@ describe("Product Detail Stitch UI", () => {
       "padding: 12px 16px calc(24px + env(safe-area-inset-bottom))",
     );
     expect(detailStyles).not.toContain("max-width: 430px");
+  });
+
+  it("giữ trọn ảnh trong preview và căn giữa toàn bộ dots", () => {
+    expect(appStyles).toMatch(
+      /\.detail-main-image\{[^}]*object-fit:contain;[^}]*object-position:center/,
+    );
+    expect(detailStyles).toMatch(
+      /\.public-shell-product-detail \.detail-main-image-wrap \{[^}]*padding: 10px;[^}]*\}/s,
+    );
+    expect(detailStyles).toMatch(
+      /\.public-shell-product-detail \.detail-main-image \{[^}]*object-fit: contain;[^}]*object-position: center;[^}]*\}/s,
+    );
+    expect(detailStyles).toMatch(
+      /\.public-shell-product-detail \.detail-thumbs \{[^}]*justify-content: center;[^}]*\}/s,
+    );
+    expect(detailStyles).not.toContain("justify-content: flex-start");
+    expect(detailStyles).toContain("width: min(280px, 100%)");
+    expect(detailStyles).toContain("aspect-ratio: 1");
+    expect(detailStyles).toContain("border-radius: 16px");
+    expect(detailStyles).toContain("box-shadow: 0 2px 8px rgba(45, 37, 34, 0.06)");
   });
 });
