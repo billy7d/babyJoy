@@ -3000,6 +3000,9 @@ function AdminTagGroupsPage() {
                 <span>
                   <b>{group.displayName}</b>
                   <small>{group.tags.length} tags · {group.assignmentMode}</small>
+                  <small className="tag-group-admin-tag-summary">
+                    {group.tags.map((tag) => tag.displayName ?? tag.name).join(", ")}
+                  </small>
                 </span>
               </button>
               <div className="tag-group-admin-actions">
