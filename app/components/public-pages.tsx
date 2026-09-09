@@ -665,7 +665,8 @@ export function ProductDetailPage() {
   const [selectedImage, setSelectedImage] = useState(0);
   const swipeStartX = useRef<number | null>(null);
   const selectedVariantIdRef = useRef("");
-  const { addItem } = useCart();
+  const { addItem, totalQuantity } = useCart();
+  const navigate = useNavigate();
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -782,14 +783,43 @@ export function ProductDetailPage() {
     setToast(true);
     window.setTimeout(() => setToast(false), 2200);
   };
+  const goBack = () => {
+    const historyIndex =
+      typeof window !== "undefined" &&
+      typeof window.history.state?.idx === "number"
+        ? window.history.state.idx
+        : 0;
+    if (historyIndex > 0) {
+      navigate(-1);
+      return;
+    }
+    navigate("/shop");
+  };
   return (
-    <PublicShell hideMobileNav>
-      <div className="mobile-detail-header">
-        <Link to="/shop">
+    <PublicShell hideMobileNav productDetail>
+      <header className="product-detail-header" aria-label="Điều hướng sản phẩm">
+        <button type="button" aria-label="Quay lại" onClick={goBack}>
           <Icon>arrow_back_ios_new</Icon>
+        </button>
+        <div className="product-detail-shop">
+          <span className="product-detail-avatar">
+            <img src="/images/logo.png" alt="" />
+          </span>
+          <span className="product-detail-shop-name">{displayName}</span>
+        </div>
+        <Link
+          className="product-detail-cart"
+          to="/cart"
+          aria-label={`Giỏ hàng, ${totalQuantity} sản phẩm`}
+        >
+          <Icon>shopping_cart</Icon>
+          {totalQuantity > 0 && (
+            <span className="product-detail-cart-badge">
+              {totalQuantity > 9 ? "10+" : totalQuantity}
+            </span>
+          )}
         </Link>
-        <strong>Chi Tiết Món Ăn</strong>
-      </div>
+      </header>
       <article className="detail-page">
         <div className="detail-gallery">
           <div
@@ -817,23 +847,27 @@ export function ProductDetailPage() {
               </>
             )}
           </div>
-          <div className="detail-thumbs">
-            {productImages.map((image, index) => (
-              <button
-                key={`${image.r2Key || image.url}-${index}`}
-                className={index === selectedImage ? "active" : ""}
-                onClick={() => selectGalleryImage(index)}
-                aria-label={`Xem ảnh ${index + 1}${image.variantId ? " của phân loại" : " chung"}`}
-              >
-                <ProductImage
-                  product={product}
-                  image={image}
-                  alt=""
-                  loading={index === selectedImage ? "eager" : "lazy"}
-                />
-              </button>
-            ))}
-          </div>
+          {productImages.length > 1 && (
+            <div className="detail-thumbs" aria-label="Chọn ảnh sản phẩm">
+              {productImages.map((image, index) => (
+                <button
+                  key={`${image.r2Key || image.url}-${index}`}
+                  type="button"
+                  className={index === selectedImage ? "active" : ""}
+                  onClick={() => selectGalleryImage(index)}
+                  aria-current={index === selectedImage ? "true" : undefined}
+                  aria-label={`Xem ảnh ${index + 1}${image.variantId ? " của phân loại" : " chung"}`}
+                >
+                  <ProductImage
+                    product={product}
+                    image={image}
+                    alt=""
+                    loading={index === selectedImage ? "eager" : "lazy"}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="detail-info">
           <div className="detail-breadcrumbs">
@@ -852,7 +886,7 @@ export function ProductDetailPage() {
               <del>{formatVnd(variant.compareAtPriceVnd)}</del>
             )}
           </div>
-          <div className="variant-block">
+          <div className="variant-block" id="guide">
             <div className="field-heading">
               <span>Chọn quy cách</span>
               <a href="#guide">Hướng dẫn chọn loại</a>
@@ -861,6 +895,7 @@ export function ProductDetailPage() {
               {product.variants.map((item) => (
                 <button
                   key={item.id}
+                  type="button"
                   className={variantId === item.id ? "active" : ""}
                   onClick={() => selectVariant(item.id)}
                   aria-pressed={variantId === item.id}
@@ -918,12 +953,14 @@ export function ProductDetailPage() {
             </div>
           </div>
         </div>
-        <section className="nutrition">
-          <ProductRichDescription
-            content={product.descriptionContent}
-            assets={product.descriptionAssets}
-            fallback={product.description}
-          />
+        <section className="nutrition detail-description-section" aria-label="Mô tả sản phẩm">
+          <div className="detail-description-card">
+            <ProductRichDescription
+              content={product.descriptionContent}
+              assets={product.descriptionAssets}
+              fallback={product.description}
+            />
+          </div>
         </section>
       </article>
       <div className="mobile-add-bar">
