@@ -41,38 +41,124 @@ UPDATE tags
 SET group_id = 'tag-group-age',
     display_name = name
 WHERE group_id IS NULL
-  AND UPPER(COALESCE(group_type, '')) = 'AGE';
+  AND UPPER(COALESCE(group_type, '')) IN ('AGE', 'AGES');
 
 UPDATE tags
 SET group_id = 'tag-group-attributes',
     display_name = name
 WHERE group_id IS NULL;
 
+-- Giữ nguyên ID legacy khi slug tuổi đã tồn tại trên production.
 UPDATE tags
 SET group_id = 'tag-group-age',
     name = '6 tháng',
     display_name = '6 tháng',
     slug = '6-thang',
     sort_order = 1,
-    system_key = 'age_6_months'
-WHERE id = 'tag-age-6';
+    system_key = 'age_6_months',
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE id = 'tag-age-6'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tags conflicting
+    WHERE conflicting.slug = '6-thang'
+      AND conflicting.id <> tags.id
+  );
+
+-- Production có thể đã seed tag tuổi bằng ID khác; nâng cấp theo slug để không tạo
+-- bản ghi trùng UNIQUE(slug) và không làm mất các liên kết product_tags hiện hữu.
+UPDATE tags
+SET group_id = 'tag-group-age',
+    name = '6 tháng',
+    slug = '6-thang',
+    system_key = 'age_6_months',
+    display_name = '6 tháng',
+    sort_order = 1,
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE slug = '6-thang';
+
+UPDATE tags
+SET group_id = 'tag-group-age',
+    name = '8 tháng',
+    system_key = 'age_8_months',
+    display_name = '8 tháng',
+    sort_order = 2,
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE slug = '8-thang';
 
 INSERT INTO tags (
   id, group_id, name, slug, system_key, display_name, sort_order, is_active,
   show_badge, featured_section_key
 )
-VALUES
-  ('tag-age-8', 'tag-group-age', '8 tháng', '8-thang', 'age_8_months', '8 tháng', 2, 1, 0, NULL),
-  ('tag-age-10', 'tag-group-age', '10 tháng', '10-thang', 'age_10_months', '10 tháng', 3, 1, 0, NULL),
-  ('tag-age-12', 'tag-group-age', '12 tháng', '12-thang', 'age_12_months', '12 tháng', 4, 1, 0, NULL)
-ON CONFLICT(id) DO UPDATE SET
-  group_id = excluded.group_id,
-  name = excluded.name,
-  slug = excluded.slug,
-  system_key = excluded.system_key,
-  display_name = excluded.display_name,
-  sort_order = excluded.sort_order,
-  is_active = excluded.is_active;
+SELECT 'tag-age-8', 'tag-group-age', '8 tháng', '8-thang', 'age_8_months', '8 tháng', 2, 1, 0, NULL
+WHERE NOT EXISTS (
+  SELECT 1 FROM tags
+  WHERE slug = '8-thang' OR system_key = 'age_8_months' OR id = 'tag-age-8'
+);
+
+UPDATE tags
+SET group_id = 'tag-group-age',
+    name = '10 tháng',
+    system_key = 'age_10_months',
+    display_name = '10 tháng',
+    sort_order = 3,
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE slug = '10-thang';
+
+INSERT INTO tags (
+  id, group_id, name, slug, system_key, display_name, sort_order, is_active,
+  show_badge, featured_section_key
+)
+SELECT 'tag-age-10', 'tag-group-age', '10 tháng', '10-thang', 'age_10_months', '10 tháng', 3, 1, 0, NULL
+WHERE NOT EXISTS (
+  SELECT 1 FROM tags
+  WHERE slug = '10-thang' OR system_key = 'age_10_months' OR id = 'tag-age-10'
+);
+
+UPDATE tags
+SET group_id = 'tag-group-age',
+    name = '12 tháng',
+    system_key = 'age_12_months',
+    display_name = '12 tháng',
+    sort_order = 4,
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE slug = '12-thang';
+
+INSERT INTO tags (
+  id, group_id, name, slug, system_key, display_name, sort_order, is_active,
+  show_badge, featured_section_key
+)
+SELECT 'tag-age-12', 'tag-group-age', '12 tháng', '12-thang', 'age_12_months', '12 tháng', 4, 1, 0, NULL
+WHERE NOT EXISTS (
+  SELECT 1 FROM tags
+  WHERE slug = '12-thang' OR system_key = 'age_12_months' OR id = 'tag-age-12'
+);
+
+-- Đồng bộ các slug tuổi legacy khác (ví dụ 7-thang) trước khi tạo tag mới.
+UPDATE tags
+SET group_id = 'tag-group-age',
+    name = CAST(REPLACE(slug, '-thang', '') AS INTEGER) || ' tháng',
+    system_key = 'age_' || CAST(REPLACE(slug, '-thang', '') AS INTEGER) || '_months',
+    display_name = CAST(REPLACE(slug, '-thang', '') AS INTEGER) || ' tháng',
+    sort_order = CAST(REPLACE(slug, '-thang', '') AS INTEGER),
+    is_active = 1,
+    show_badge = 0,
+    featured_section_key = NULL
+WHERE slug LIKE '%-thang'
+  AND REPLACE(slug, '-thang', '') <> ''
+  AND REPLACE(slug, '-thang', '') NOT GLOB '*[^0-9]*'
+  AND CAST(REPLACE(slug, '-thang', '') AS INTEGER) BETWEEN 0 AND 240
+  AND CAST(REPLACE(slug, '-thang', '') AS INTEGER) NOT IN (6, 8, 10, 12);
 
 INSERT INTO tags (
   id, group_id, name, slug, system_key, display_name, sort_order, is_active,
@@ -93,33 +179,55 @@ FROM products p
 WHERE p.min_age_months IS NOT NULL
   AND p.min_age_months BETWEEN 0 AND 240
   AND p.min_age_months NOT IN (6, 8, 10, 12)
-GROUP BY p.min_age_months
-ON CONFLICT(id) DO UPDATE SET
-  group_id = excluded.group_id,
-  name = excluded.name,
-  slug = excluded.slug,
-  system_key = excluded.system_key,
-  display_name = excluded.display_name,
-  sort_order = excluded.sort_order,
-  is_active = excluded.is_active;
+  AND NOT EXISTS (
+    SELECT 1 FROM tags existing
+    WHERE existing.slug = CAST(p.min_age_months AS TEXT) || '-thang'
+       OR existing.system_key = 'age_' || CAST(p.min_age_months AS TEXT) || '_months'
+       OR existing.id = 'tag-age-' || CAST(p.min_age_months AS TEXT)
+  )
+GROUP BY p.min_age_months;
+
+UPDATE tags
+SET group_id = 'tag-group-merchandising',
+    name = 'Best Seller',
+    system_key = 'best_seller',
+    display_name = 'Best Seller',
+    sort_order = 1,
+    is_active = 1,
+    show_badge = 1,
+    featured_section_key = 'best_seller'
+WHERE slug = 'best-seller';
 
 INSERT INTO tags (
   id, group_id, name, slug, system_key, display_name, sort_order, is_active,
   show_badge, featured_section_key
 )
-VALUES
-  ('tag-best-seller', 'tag-group-merchandising', 'Best Seller', 'best-seller', 'best_seller', 'Best Seller', 1, 1, 1, 'best_seller'),
-  ('tag-must-try', 'tag-group-merchandising', 'Must Try', 'must-try', 'must_try', 'Must Try', 2, 1, 1, 'must_try')
-ON CONFLICT(id) DO UPDATE SET
-  group_id = excluded.group_id,
-  name = excluded.name,
-  slug = excluded.slug,
-  system_key = excluded.system_key,
-  display_name = excluded.display_name,
-  sort_order = excluded.sort_order,
-  is_active = excluded.is_active,
-  show_badge = excluded.show_badge,
-  featured_section_key = excluded.featured_section_key;
+SELECT 'tag-best-seller', 'tag-group-merchandising', 'Best Seller', 'best-seller', 'best_seller', 'Best Seller', 1, 1, 1, 'best_seller'
+WHERE NOT EXISTS (
+  SELECT 1 FROM tags
+  WHERE slug = 'best-seller' OR system_key = 'best_seller' OR id = 'tag-best-seller'
+);
+
+UPDATE tags
+SET group_id = 'tag-group-merchandising',
+    name = 'Must Try',
+    system_key = 'must_try',
+    display_name = 'Must Try',
+    sort_order = 2,
+    is_active = 1,
+    show_badge = 1,
+    featured_section_key = 'must_try'
+WHERE slug = 'must-try';
+
+INSERT INTO tags (
+  id, group_id, name, slug, system_key, display_name, sort_order, is_active,
+  show_badge, featured_section_key
+)
+SELECT 'tag-must-try', 'tag-group-merchandising', 'Must Try', 'must-try', 'must_try', 'Must Try', 2, 1, 1, 'must_try'
+WHERE NOT EXISTS (
+  SELECT 1 FROM tags
+  WHERE slug = 'must-try' OR system_key = 'must_try' OR id = 'tag-must-try'
+);
 
 CREATE INDEX idx_tags_group_active_sort ON tags(group_id, is_active, sort_order, name);
 CREATE INDEX idx_tags_system_key ON tags(system_key);
