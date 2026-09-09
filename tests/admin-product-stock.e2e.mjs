@@ -22,7 +22,7 @@ async function createProduct(name, sku, variants) {
       slug: `${name.toLowerCase().replaceAll(" ", "-")}-${suffix}`,
       status: "AVAILABLE",
       featured: false,
-      sortOrder: -1000,
+      sortOrder: -2000000,
       categoryIds: [],
       tagIds: [],
       images: [],

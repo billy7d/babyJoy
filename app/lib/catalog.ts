@@ -2,6 +2,7 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
+import type { CatalogTag } from "../../shared/tag-groups";
 
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
@@ -27,6 +28,7 @@ export type Variant = {
   availableQuantity?: number;
   inventoryAvailability?: InventoryAvailability;
   images?: VariantImageRecord[];
+  tags?: CatalogTag[];
 };
 
 export type ProductImageRecord = {
@@ -63,6 +65,7 @@ export type Product = {
   tags: string[];
   tagSlugs?: string[];
   featured?: boolean;
+  matchedVariantId?: string | null;
   variants: Variant[];
 };
 
@@ -230,6 +233,15 @@ export function getDefaultVariant(product: Product) {
     product.variants.find((variant) => getVariantStatus(variant) !== "HIDDEN") ??
     product.variants.at(0)
   );
+}
+
+export function getMatchedVariant(product: Product) {
+  const matched = product.matchedVariantId
+    ? product.variants.find((variant) => variant.id === product.matchedVariantId)
+    : undefined;
+  return matched && getVariantStatus(matched) !== "HIDDEN"
+    ? matched
+    : getDefaultVariant(product);
 }
 
 /** Giá đại diện luôn lấy mức thấp nhất đang hiển thị, không khóa vào phần tử đầu tiên. */

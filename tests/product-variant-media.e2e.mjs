@@ -52,7 +52,7 @@ const fillVariant = async (index, { name, packageSize, sku, price, compareAtPric
   await inputs.nth(2).fill(sku);
   await inputs.nth(3).fill(String(price));
   await inputs.nth(4).fill(compareAtPrice ? String(compareAtPrice) : "");
-  await editor.locator("select").selectOption(status);
+  await editor.locator('select[aria-invalid]').selectOption(status);
   await editor.getByLabel("Tồn kho thực tế").fill("10");
 };
 
@@ -184,7 +184,7 @@ try {
   await page.goto(`${baseUrl}/admin/products/${productId}/edit`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(500);
   const bananaEditor = await openEditor(1);
-  await bananaEditor.locator("select").selectOption("SELLING");
+  await bananaEditor.locator('select[aria-invalid]').selectOption("SELLING");
   const updateResponsePromise = page.waitForResponse(
     (response) => response.request().method() === "PUT" && response.url().endsWith(`/api/admin/products/${productId}`),
   );

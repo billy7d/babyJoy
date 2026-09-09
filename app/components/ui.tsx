@@ -14,6 +14,8 @@ import {
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  getMatchedVariant,
+  getVariantPrimaryImage,
   getVariantStatus,
   isVariantPurchasable,
 } from "../lib/catalog";
@@ -224,46 +226,78 @@ export function ProductCard({
   product: Product;
   compact?: boolean;
 }) {
-  const variant = getDefaultVariant(product);
-  const displayVariant = getDisplayVariant(product) ?? variant;
+  const matchedVariant = getMatchedVariant(product);
+  const displayVariant = getDisplayVariant(product) ?? matchedVariant;
+  const cardVariant = product.matchedVariantId ? matchedVariant : displayVariant;
   const visibleVariants = product.variants.filter(
     (item) => getVariantStatus(item) !== "HIDDEN",
   );
-  const unavailable = !variant || !isVariantPurchasable(variant);
+  const unavailable = !cardVariant || !isVariantPurchasable(cardVariant);
+  const variantTags = cardVariant?.tags ?? [];
+  const hasVariantTagPayload = cardVariant?.tags !== undefined;
+  const cardTags = variantTags.length
+    ? variantTags
+        .filter((tag) => tag.showBadge)
+        .concat(variantTags.filter((tag) => !tag.showBadge).slice(0, 1))
+    : hasVariantTagPayload
+      ? []
+      : [
+          ...(product.isBestSeller
+            ? [{ name: "BEST SELLER", displayName: "BEST SELLER", id: "legacy-best-seller", showBadge: true }]
+            : []),
+          ...product.tags.slice(0, 1).map((name) => ({ name, displayName: name, id: name, showBadge: false })),
+        ];
+  const productLink = product.matchedVariantId
+    ? `/product/${product.slug}?variant=${encodeURIComponent(product.matchedVariantId)}`
+    : `/product/${product.slug}`;
   return (
     <article
       className={`product-card ${compact ? "compact" : ""} ${unavailable ? "unavailable" : ""}`}
     >
-      <Link to={`/product/${product.slug}`} className="product-image">
-        <ProductImage product={product} loading="lazy" />
+      <Link to={productLink} className="product-image">
+        <ProductImage
+          product={product}
+          image={cardVariant ? getVariantPrimaryImage(cardVariant) : undefined}
+          loading="lazy"
+        />
         <span className="product-tags">
-          {product.isBestSeller && <Tag tone="primary">BEST SELLER</Tag>}
-          {unavailable ? (
-            <Tag tone="error">Hết hàng</Tag>
-          ) : (
-            product.tags.slice(0, 1).map((tag) => <Tag key={tag}>{tag}</Tag>)
-          )}
-          <Tag tone="neutral">{product.age}</Tag>
+          {cardTags.map((tag) => (
+            <Tag key={tag.id} tone={tag.showBadge ? "primary" : "secondary"}>
+              {tag.displayName ?? tag.name}
+            </Tag>
+          ))}
+          {unavailable && <Tag tone="error">Hết hàng</Tag>}
+          {!variantTags.length && !hasVariantTagPayload && <Tag tone="neutral">{product.age}</Tag>}
         </span>
-      </Link>
-      <div className="product-body">
-        <Link to={`/product/${product.slug}`}>
-          <h3>{product.name}</h3>
         </Link>
+        <div className="product-body">
+          <Link to={productLink}>
+            <h3>{product.name}</h3>
+          </Link>
+        {cardVariant && product.matchedVariantId && (
+          <small className="product-variant-label">
+            {cardVariant.name}{cardVariant.packageSize ? ` · ${cardVariant.packageSize}` : ""}
+          </small>
+        )}
         {!compact && <p>{product.shortDescription}</p>}
         <div className="product-foot">
-          {visibleVariants.length > 1 && <small className="price-prefix">Từ</small>}
-          <Price value={displayVariant?.priceVnd ?? 0} />
-          <InlineCartControl product={product} />
+          {visibleVariants.length > 1 && !product.matchedVariantId && <small className="price-prefix">Từ</small>}
+          <span className="product-card-price">
+            <Price value={cardVariant?.priceVnd ?? 0} />
+            {cardVariant?.compareAtPriceVnd && cardVariant.compareAtPriceVnd > cardVariant.priceVnd && (
+              <del>{formatVnd(cardVariant.compareAtPriceVnd)}</del>
+            )}
+          </span>
+          <InlineCartControl product={product} variant={cardVariant} />
         </div>
       </div>
     </article>
   );
 }
 
-export function InlineCartControl({ product }: { product: Product }) {
+export function InlineCartControl({ product, variant: requestedVariant }: { product: Product; variant?: Variant }) {
   const cart = useCart();
-  const variant = getDefaultVariant(product);
+  const variant = requestedVariant ?? getMatchedVariant(product);
   if (!variant) return null;
   const quantity =
     cart.items.find((item) => item.variantId === variant.id)?.quantity ?? 0;

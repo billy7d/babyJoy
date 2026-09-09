@@ -56,6 +56,7 @@ import {
   type ProductDescriptionAsset,
   type ProductDescriptionDocument,
 } from "../../shared/product-description";
+import type { CatalogTagGroup } from "../../shared/tag-groups";
 import { ProductDescriptionEditor } from "./product-description-editor";
 import {
   CART_CHECKOUT_STATE_LABELS,
@@ -442,16 +443,13 @@ export function ProductEditorPage() {
   const [classificationCategories, setClassificationCategories] =
     useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [tagGroups, setTagGroups] = useState<CatalogTagGroup[]>([]);
   const [editing, setEditing] = useState<
     (Product & {
       categoryIds?: string[];
-      tagIds?: string[];
       sortOrder?: number;
       status?: string;
       brandId?: string | null;
-      minAgeMonths?: number | null;
-      isBestSeller?: boolean | number;
-      bestSellerRank?: number | null;
     }) | null
   >(null);
   const [images, setImages] = useState<ProductImageRecord[]>([]);
@@ -470,9 +468,7 @@ export function ProductEditorPage() {
     () => variants[0]?.clientId ?? null,
   );
   const [uploadingVariantId, setUploadingVariantId] = useState<string | null>(null);
-  const [tags, setTags] = useState<Array<{ id: string; name: string }>>([]);
   const [featured, setFeatured] = useState(false);
-  const [bestSeller, setBestSeller] = useState(false);
   const [visible, setVisible] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -500,19 +496,19 @@ export function ProductEditorPage() {
         setDescriptionAssets([]);
       }
       const requests: Promise<Response>[] = [
-        fetch("/api/admin/tags"),
+        fetch("/api/admin/tag-groups"),
         fetch("/api/admin/categories"),
         fetch("/api/admin/brands"),
       ];
       if (id) requests.push(fetch(`/api/admin/products/${id}`));
-      const [tagsResponse, categoriesResponse, brandsResponse, productResponse] =
+      const [tagGroupsResponse, categoriesResponse, brandsResponse, productResponse] =
         await Promise.all(requests);
       if (cancelled) return;
-      if (tagsResponse.ok) {
-        const body = (await tagsResponse.json()) as {
-          data?: Array<{ id: string; name: string }>;
+      if (tagGroupsResponse.ok) {
+        const body = (await tagGroupsResponse.json()) as {
+          data?: CatalogTagGroup[];
         };
-        setTags(body.data ?? []);
+        setTagGroups(body.data ?? []);
       }
       if (categoriesResponse.ok) {
         const body = (await categoriesResponse.json()) as { data?: Category[] };
@@ -536,13 +532,9 @@ export function ProductEditorPage() {
         const body = (await productResponse.json()) as { data: Product };
         const product = body.data as Product & {
           categoryIds?: string[];
-          tagIds?: string[];
           sortOrder?: number;
           status?: string;
           brandId?: string | null;
-          minAgeMonths?: number | null;
-          isBestSeller?: boolean | number;
-          bestSellerRank?: number | null;
         };
         setEditing(product);
         setVariants(product.variants.map(toEditableVariant));
@@ -556,7 +548,6 @@ export function ProductEditorPage() {
         );
         setDescriptionAssets(product.descriptionAssets ?? []);
         setFeatured(Boolean(product.featured));
-        setBestSeller(Boolean(product.isBestSeller));
         setVisible(product.status !== "HIDDEN");
       } else if (id) {
         setMessage("Không tải được dữ liệu sản phẩm.");
@@ -680,6 +671,29 @@ export function ProductEditorPage() {
       else delete next[clientId];
       return next;
     });
+  };
+
+  const updateVariantTag = (
+    clientId: string,
+    group: CatalogTagGroup,
+    tagId: string,
+    selected: boolean,
+  ) => {
+    setVariants((current) =>
+      current.map((variant) => {
+        if (variant.clientId !== clientId) return variant;
+        const groupTagIds = new Set(group.tags.map((tag) => tag.id));
+        if (group.assignmentMode === "SINGLE") {
+          const nextTagIds = variant.tagIds.filter((id) => !groupTagIds.has(id));
+          if (selected) nextTagIds.push(tagId);
+          return { ...variant, tagIds: [...new Set(nextTagIds)] };
+        }
+        const nextTagIds = new Set(variant.tagIds);
+        if (selected) nextTagIds.add(tagId);
+        else nextTagIds.delete(tagId);
+        return { ...variant, tagIds: [...nextTagIds] };
+      }),
+    );
   };
 
   const uploadVariantFiles = async (
@@ -832,11 +846,6 @@ export function ProductEditorPage() {
       name: form.get("name"),
       slug: form.get("slug"),
       brandId: form.get("brandId") || null,
-      minAgeMonths: form.get("minAgeMonths")
-        ? Number(form.get("minAgeMonths"))
-        : null,
-      isBestSeller: bestSeller,
-      bestSellerRank: bestSeller ? Number(form.get("bestSellerRank")) : null,
       shortDescription: form.get("shortDescription"),
       description: form.get("description") ?? "",
       descriptionContent,
@@ -845,7 +854,6 @@ export function ProductEditorPage() {
       featured,
       sortOrder: Number(form.get("sortOrder")),
       categoryIds: form.getAll("categoryIds"),
-      tagIds: form.getAll("tagIds"),
       images: images.map(({ id: imageId, r2Key, altText }, sortOrder) => ({
         id: imageId,
         r2Key,
@@ -858,6 +866,7 @@ export function ProductEditorPage() {
         compareAtPriceVnd: variant.compareAtPriceVnd.trim()
           ? Number(variant.compareAtPriceVnd)
           : null,
+        tagIds: variant.tagIds,
         availability: variant.status === "SELLING" ? "AVAILABLE" : variant.status,
         images: variant.images.map(({ id: imageId, r2Key, altText, isPrimary }, sortOrder) => ({
           id: imageId,
@@ -1058,6 +1067,64 @@ export function ProductEditorPage() {
                             <label>Số lượng tồn<input type="number" min="0" step="1" value={variant.stockOnHand} onChange={(event) => updateVariant(variant.clientId, "stockOnHand", event.target.value)} aria-label="Tồn kho thực tế" aria-invalid={Boolean(errors.stockOnHand)} />{errors.stockOnHand && <small className="form-error">{errors.stockOnHand}</small>}</label>
                           </div>
                           <small className="inventory-readonly">Đang giữ: {variant.reservedQuantity ?? 0} • Có thể bán: {variant.trackInventory ? Math.max(0, Number(variant.stockOnHand) - (variant.reservedQuantity ?? 0)) : "Không theo dõi"}</small>
+                          {tagGroups.length > 0 && (
+                            <div className="variant-tag-groups">
+                              <b>Thuộc tính phân loại</b>
+                              {tagGroups.map((group) => {
+                                const selectedTagId = group.tags.find((tag) =>
+                                  variant.tagIds.includes(tag.id),
+                                )?.id ?? "";
+                                return (
+                                  <fieldset className="variant-tag-group" key={group.id}>
+                                    <legend>{group.displayName}</legend>
+                                    {group.assignmentMode === "SINGLE" ? (
+                                      <select
+                                        aria-label={group.displayName}
+                                        value={selectedTagId}
+                                        onChange={(event) =>
+                                          updateVariantTag(
+                                            variant.clientId,
+                                            group,
+                                            event.target.value,
+                                            Boolean(event.target.value),
+                                          )
+                                        }
+                                      >
+                                        <option value="">Chưa chọn</option>
+                                        {group.tags.map((tag) => (
+                                          <option key={tag.id} value={tag.id}>
+                                            {tag.displayName ?? tag.name}{tag.isActive === false ? " (đã ẩn)" : ""}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <div className="selected-tags">
+                                        {group.tags.map((tag) => (
+                                          <label className="tag-choice" key={tag.id}>
+                                            <input
+                                              type="checkbox"
+                                              checked={variant.tagIds.includes(tag.id)}
+                                              onChange={(event) =>
+                                                updateVariantTag(
+                                                  variant.clientId,
+                                                  group,
+                                                  tag.id,
+                                                  event.target.checked,
+                                                )
+                                              }
+                                            />
+                                            <Tag tone={tag.isActive === false ? "neutral" : "secondary"}>
+                                              {tag.displayName ?? tag.name}{tag.isActive === false ? " (đã ẩn)" : ""}
+                                            </Tag>
+                                          </label>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </fieldset>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div className="variant-image-editor">
                             <b>Hình ảnh phân loại</b>
                             <small className="field-help">JPEG, PNG hoặc WebP • Tối đa 30 MB/ảnh. Ảnh lớn sẽ được tự động tối ưu trước khi tải lên.</small>
@@ -1161,7 +1228,7 @@ export function ProductEditorPage() {
                 />
               </label>
             </EditorCard>
-            <EditorCard icon="sell" title="Phân loại & Tags">
+            <EditorCard icon="sell" title="Nhóm sản phẩm">
               <label>Nhóm sản phẩm</label>
               <div className="selected-tags taxonomy-choices">
                 {classificationCategories.map((category) => (
@@ -1182,38 +1249,9 @@ export function ProductEditorPage() {
                   </label>
                 ))}
               </div>
-              <label>
-                Tuổi tối thiểu (tháng)
-                <input
-                  name="minAgeMonths"
-                  type="number"
-                  min="0"
-                  max="240"
-                  list="age-presets"
-                  defaultValue={editing?.minAgeMonths ?? ""}
-                  placeholder="Ví dụ: 6"
-                />
-                <datalist id="age-presets">
-                  {[6, 7, 10, 12].map((age) => <option key={age} value={age} />)}
-                </datalist>
-              </label>
-              <label>Đặc điểm nổi bật (Tags)</label>
-              <div className="selected-tags">
-                {tags.map((tag) => (
-                  <label key={tag.id} className="tag-choice">
-                    <input
-                      type="checkbox"
-                      name="tagIds"
-                      value={tag.id}
-                      defaultChecked={editing?.tagIds?.includes(tag.id)}
-                    />
-                    <Tag>{tag.name}</Tag>
-                  </label>
-                ))}
-              </div>
-              <button className="outline-add" type="button">
-                <Icon>add</Icon> Thêm tag
-              </button>
+              <small className="field-help">
+                Độ tuổi, đặc điểm và nhãn nổi bật được gán độc lập trong từng phân loại.
+              </small>
             </EditorCard>
             <EditorCard icon="visibility" title="Trạng thái hiển thị">
               <Toggle
@@ -1228,24 +1266,6 @@ export function ProductEditorPage() {
                 value={featured}
                 onChange={setFeatured}
               />
-              <Toggle
-                label="Best seller"
-                description="Hiển thị huy hiệu và xếp hạng Best seller"
-                value={bestSeller}
-                onChange={setBestSeller}
-              />
-              {bestSeller && (
-                <label>
-                  Thứ tự Best seller
-                  <input
-                    name="bestSellerRank"
-                    type="number"
-                    min="1"
-                    required
-                    defaultValue={editing?.bestSellerRank ?? 1}
-                  />
-                </label>
-              )}
               <label>
                 Thứ tự hiển thị (Tùy chọn)
                 <input name="sortOrder" type="number" defaultValue={0} />
@@ -2324,6 +2344,7 @@ export function AdminCartRequestDetailPage() {
 }
 
 export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
+  if (type === "tags") return <AdminTagGroupsPage />;
   const isCategories = type === "categories";
   type CategoryStatusFilter = "ALL" | "ACTIVE" | "HIDDEN";
   type TaxonomyRow = {
@@ -2728,6 +2749,362 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
             </button>
           </div>
         </div>
+      </form>
+    </AdminShell>
+  );
+}
+
+function AdminTagGroupsPage() {
+  const [groups, setGroups] = useState<CatalogTagGroup[]>([]);
+  const [editingGroup, setEditingGroup] = useState<CatalogTagGroup | null>(null);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+  const [editingTag, setEditingTag] = useState<{
+    groupId: string;
+    tag: CatalogTagGroup["tags"][number] | null;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const loadGroups = async () => {
+    const response = await fetch("/api/admin/tag-groups");
+    if (!response.ok) throw new Error("TAG_GROUP_LOAD_FAILED");
+    const body = (await response.json()) as {
+      data?: CatalogTagGroup[];
+    };
+    setGroups(body.data ?? []);
+  };
+
+  useEffect(() => {
+    void loadGroups().catch(() =>
+      setMessage("Không tải được nhóm tag từ D1. Hãy chạy migration mới nhất."),
+    );
+  }, []);
+
+  const saveGroup = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    try {
+      const response = await fetch(
+        editingGroup
+          ? `/api/admin/tag-groups/${editingGroup.id}`
+          : "/api/admin/tag-groups",
+        {
+          method: editingGroup ? "PUT" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: form.get("name"),
+            slug: form.get("slug"),
+            displayName: form.get("displayName"),
+            assignmentMode: form.get("assignmentMode"),
+            isActive: form.get("isActive") === "on",
+            isFilterable: form.get("isFilterable") === "on",
+            sortOrder: Number(form.get("sortOrder")),
+          }),
+        },
+      );
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? "Chưa thể lưu nhóm tag.");
+        return;
+      }
+      setEditingGroup(null);
+      await loadGroups();
+      setMessage("Đã lưu nhóm tag.");
+    } catch {
+      setMessage("Chưa thể lưu nhóm tag. Vui lòng thử lại.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveTag = async (
+    event: React.FormEvent<HTMLFormElement>,
+    groupId: string,
+    tag: CatalogTagGroup["tags"][number] | null,
+  ) => {
+    event.preventDefault();
+    if (busy) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    try {
+      const response = await fetch(
+        tag
+          ? `/api/admin/tag-groups/${groupId}/tags/${tag.id}`
+          : `/api/admin/tag-groups/${groupId}/tags`,
+        {
+          method: tag ? "PUT" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: form.get("name"),
+            slug: form.get("slug"),
+            displayName: form.get("displayName"),
+            isActive: form.get("isActive") === "on",
+            showBadge: form.get("showBadge") === "on",
+            sortOrder: Number(form.get("sortOrder")),
+          }),
+        },
+      );
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? "Chưa thể lưu tag.");
+        return;
+      }
+      setEditingTag(null);
+      await loadGroups();
+      setMessage("Đã lưu tag.");
+    } catch {
+      setMessage("Chưa thể lưu tag. Vui lòng thử lại.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleGroup = async (group: CatalogTagGroup) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/tag-groups/${group.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: group.name,
+          slug: group.slug,
+          displayName: group.displayName,
+          assignmentMode: group.assignmentMode,
+          isActive: !group.isActive,
+          isFilterable: group.isFilterable,
+          sortOrder: group.sortOrder,
+        }),
+      });
+      if (!response.ok) throw new Error("TAG_GROUP_UPDATE_FAILED");
+      await loadGroups();
+      setMessage(group.isActive ? "Đã ẩn nhóm khỏi storefront." : "Đã kích hoạt nhóm tag.");
+    } catch {
+      setMessage("Chưa thể đổi trạng thái nhóm tag.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteGroup = async (group: CatalogTagGroup) => {
+    if (busy || group.systemKey) return;
+    if (!window.confirm(`Xóa nhóm "${group.displayName}"? Nhóm chỉ xóa được khi không còn tag.`)) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/tag-groups/${group.id}`, {
+        method: "DELETE",
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? "Chưa thể xóa nhóm tag.");
+        return;
+      }
+      if (expandedGroupId === group.id) setExpandedGroupId(null);
+      if (editingGroup?.id === group.id) setEditingGroup(null);
+      await loadGroups();
+      setMessage("Đã xóa nhóm tag.");
+    } catch {
+      setMessage("Chưa thể xóa nhóm tag.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleTag = async (group: CatalogTagGroup, tag: CatalogTagGroup["tags"][number]) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/tag-groups/${group.id}/tags/${tag.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: tag.name,
+          slug: tag.slug,
+          displayName: tag.displayName ?? tag.name,
+          isActive: !tag.isActive,
+          showBadge: tag.showBadge,
+          sortOrder: tag.sortOrder,
+        }),
+      });
+      if (!response.ok) throw new Error("TAG_UPDATE_FAILED");
+      await loadGroups();
+      setMessage(tag.isActive ? "Đã ẩn tag." : "Đã kích hoạt tag.");
+    } catch {
+      setMessage("Chưa thể đổi trạng thái tag.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteTag = async (
+    group: CatalogTagGroup,
+    tag: CatalogTagGroup["tags"][number],
+  ) => {
+    if (busy || tag.systemKey) return;
+    if (!window.confirm(`Xóa tag "${tag.displayName ?? tag.name}"?`)) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/tag-groups/${group.id}/tags/${tag.id}`, {
+        method: "DELETE",
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setMessage(body.error?.message ?? "Chưa thể xóa tag.");
+        return;
+      }
+      await loadGroups();
+      setMessage("Đã xóa tag; quan hệ variant được dọn theo FK.");
+    } catch {
+      setMessage("Chưa thể xóa tag.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AdminShell title="Tags">
+      <div className="admin-page-heading">
+        <div>
+          <h1>Nhóm bộ lọc</h1>
+          <p>Quản lý Tag Group và các tag được gán cho từng phân loại.</p>
+        </div>
+        <button className="btn primary" type="button" onClick={() => setEditingGroup(null)}>
+          <Icon>add</Icon> THÊM NHÓM
+        </button>
+      </div>
+      {message && <p className="form-message">{message}</p>}
+      <div className="tag-group-admin-list">
+        {groups.map((group) => (
+          <section className="admin-table-card tag-group-admin-card" key={group.id}>
+            <div className="tag-group-admin-heading">
+              <button
+                type="button"
+                className="tag-group-admin-toggle"
+                onClick={() => {
+                  setExpandedGroupId(expandedGroupId === group.id ? null : group.id);
+                  setEditingTag(null);
+                }}
+                aria-expanded={expandedGroupId === group.id}
+              >
+                <Icon>{expandedGroupId === group.id ? "expand_less" : "expand_more"}</Icon>
+                <span>
+                  <b>{group.displayName}</b>
+                  <small>{group.tags.length} tags · {group.assignmentMode}</small>
+                  <small className="tag-group-admin-tag-summary">
+                    {group.tags.map((tag) => tag.displayName ?? tag.name).join(", ")}
+                  </small>
+                </span>
+              </button>
+              <div className="tag-group-admin-actions">
+                <StatusBadge status={group.isActive ? "ACTIVE" : "HIDDEN"} />
+                <span className="tag-group-filter-state">
+                  {group.isFilterable ? "Hiển thị storefront" : "Không hiển thị filter"}
+                </span>
+                <button type="button" onClick={() => setEditingGroup(group)} aria-label={`Sửa ${group.displayName}`}>
+                  <Icon>edit</Icon>
+                </button>
+                <button type="button" disabled={busy} onClick={() => void toggleGroup(group)}>
+                  <Icon>{group.isActive ? "visibility_off" : "restore"}</Icon>
+                </button>
+                {!group.systemKey && (
+                  <button type="button" disabled={busy} onClick={() => void deleteGroup(group)} aria-label={`Xóa ${group.displayName}`}>
+                    <Icon>delete</Icon>
+                  </button>
+                )}
+              </div>
+            </div>
+            {expandedGroupId === group.id && (
+              <div className="tag-group-admin-content">
+                <div className="tag-group-admin-tags">
+                  {group.tags.map((tag) => (
+                    <div className="tag-group-admin-tag" key={tag.id}>
+                      <span>
+                        <Tag tone={tag.isActive === false ? "neutral" : "secondary"}>
+                          {tag.displayName ?? tag.name}
+                        </Tag>
+                        {tag.systemKey && <small>{tag.systemKey}</small>}
+                      </span>
+                      <span className="taxonomy-row-actions">
+                        <StatusBadge status={tag.isActive ? "ACTIVE" : "HIDDEN"} />
+                        <button type="button" onClick={() => setEditingTag({ groupId: group.id, tag })}>
+                          <Icon>edit</Icon>
+                        </button>
+                        <button type="button" disabled={busy} onClick={() => void toggleTag(group, tag)}>
+                          <Icon>{tag.isActive ? "visibility_off" : "restore"}</Icon>
+                        </button>
+                        {!tag.systemKey && (
+                          <button type="button" disabled={busy} onClick={() => void deleteTag(group, tag)}>
+                            <Icon>delete</Icon>
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="outline-add"
+                  type="button"
+                  onClick={() => setEditingTag({ groupId: group.id, tag: null })}
+                >
+                  <Icon>add</Icon> Thêm tag
+                </button>
+                {editingTag?.groupId === group.id && (
+                  <form
+                    className="tag-group-tag-editor"
+                    key={editingTag.tag?.id ?? "new-tag"}
+                    onSubmit={(event) => void saveTag(event, group.id, editingTag.tag)}
+                  >
+                    <div className="form-grid">
+                      <label>Tên *<input name="name" required defaultValue={editingTag.tag?.name} /></label>
+                      <label>Display name<input name="displayName" defaultValue={editingTag.tag?.displayName ?? editingTag.tag?.name} /></label>
+                      <label>Slug<input name="slug" defaultValue={editingTag.tag?.slug} /></label>
+                      <label>Thứ tự<input name="sortOrder" type="number" defaultValue={editingTag.tag?.sortOrder ?? group.tags.length + 1} /></label>
+                    </div>
+                    {editingTag.tag?.systemKey && <small className="field-help">System key: {editingTag.tag.systemKey} (không thể sửa)</small>}
+                    <div className="taxonomy-inline-options">
+                      <label><input name="isActive" type="checkbox" defaultChecked={editingTag.tag ? editingTag.tag.isActive !== false : true} /> Đang hoạt động</label>
+                      <label><input name="showBadge" type="checkbox" disabled={Boolean(editingTag.tag?.systemKey)} defaultChecked={Boolean(editingTag.tag?.showBadge)} /> Hiện badge</label>
+                    </div>
+                    <button className="btn primary" type="submit" disabled={busy}>LƯU TAG</button>
+                  </form>
+                )}
+              </div>
+            )}
+          </section>
+        ))}
+      </div>
+      <form className="editor-card taxonomy-editor tag-group-editor" onSubmit={saveGroup} key={editingGroup?.id ?? "new-group"}>
+        <div className="editor-card-title">
+          <span><Icon>filter_alt</Icon><h2>{editingGroup ? "Sửa nhóm tag" : "Thêm nhóm tag"}</h2></span>
+        </div>
+        <div className="form-grid">
+          <label>Tên hệ thống *<input name="name" required defaultValue={editingGroup?.name} /></label>
+          <label>Slug<input name="slug" defaultValue={editingGroup?.slug} /></label>
+          <label>Tên hiển thị *<input name="displayName" required defaultValue={editingGroup?.displayName} /></label>
+          <label>Thứ tự<input name="sortOrder" type="number" defaultValue={editingGroup?.sortOrder ?? groups.length + 1} /></label>
+        </div>
+        {editingGroup?.systemKey && <small className="field-help">System key: {editingGroup.systemKey} (không thể sửa)</small>}
+        <div className="form-grid">
+          <label>Kiểu gán
+            <select name="assignmentMode" disabled={Boolean(editingGroup?.systemKey)} defaultValue={editingGroup?.assignmentMode ?? "MULTI"}>
+              <option value="SINGLE">SINGLE · một tag/variant</option>
+              <option value="MULTI">MULTI · nhiều tag/variant</option>
+            </select>
+          </label>
+          <label className="taxonomy-status-field"><span>Storefront filter</span><span className="taxonomy-status-checkbox"><input name="isFilterable" type="checkbox" disabled={editingGroup?.systemKey === "merchandising"} defaultChecked={editingGroup ? editingGroup.isFilterable : true} /><span>Hiển thị trong bộ lọc</span></span></label>
+          <label className="taxonomy-status-field"><span>Trạng thái</span><span className="taxonomy-status-checkbox"><input name="isActive" type="checkbox" defaultChecked={editingGroup ? editingGroup.isActive : true} /><span>Đang hoạt động</span></span></label>
+        </div>
+        <button className="btn primary" type="submit" disabled={busy}><Icon>save</Icon> LƯU NHÓM</button>
       </form>
     </AdminShell>
   );

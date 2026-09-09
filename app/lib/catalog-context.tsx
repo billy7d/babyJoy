@@ -22,6 +22,7 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
+import type { CatalogTagGroup } from "../../shared/tag-groups";
 
 export type ApiProduct = {
   id: string;
@@ -45,6 +46,7 @@ export type ApiProduct = {
   categorySlugs?: string[];
   tagNames?: string[];
   tagSlugs?: string[];
+  matchedVariantId?: string | null;
   variants?: Variant[];
   images?: ProductImageRecord[];
 };
@@ -76,12 +78,20 @@ type ApiTag = {
 };
 export type CatalogTag = { name: string; slug: string };
 
-type CatalogLoadResult = {
+export type CuratedVariantsResult = {
+  supported: boolean;
+  bestSellers: Product[];
+  mustTry: Product[];
+};
+
+export type CatalogLoadResult = {
   products: Product[];
   categories: Category[];
   brands: Brand[];
   tags: string[];
   tagOptions: CatalogTag[];
+  filterGroups: CatalogTagGroup[];
+  tagGroupsSupported: boolean;
 };
 export type ProductPageResult = {
   products: Product[];
@@ -98,6 +108,8 @@ type CatalogContextValue = {
   brands: Brand[];
   tags: string[];
   tagOptions: CatalogTag[];
+  filterGroups: CatalogTagGroup[];
+  tagGroupsSupported: boolean;
   loading: boolean;
   refresh: () => Promise<void>;
   mergeProducts: (products: Product[]) => void;
@@ -179,6 +191,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
     tagSlugs: Array.isArray(row.tagSlugs) ? row.tagSlugs : (fallback?.tagSlugs ?? []),
     featured: Boolean(row.featured),
+    matchedVariantId: row.matchedVariantId ?? null,
     variants,
   };
 }
@@ -208,6 +221,7 @@ const productQueryKeys = [
   "age",
   "bestSeller",
   "tag",
+  "tagIds",
   "available",
   "sort",
 ] as const;
@@ -300,6 +314,29 @@ export async function loadProductBySlug(
   return mapApiProduct(body.data);
 }
 
+export async function loadCuratedVariants(
+  fetcher: CatalogFetcher = fetch,
+  onAccessRequired?: AccessRedirect,
+): Promise<CuratedVariantsResult> {
+  const response = await fetcher("/api/curated-variants", {
+    headers: { accept: "application/json" },
+  });
+  redirectForCatalogAccess(response, onAccessRequired);
+  if (!response.ok) throw new Error("CURATED_VARIANTS_LOAD_FAILED");
+  const body = (await response.json()) as {
+    supported?: boolean;
+    bestSellers?: ApiProduct[];
+    mustTry?: ApiProduct[];
+  };
+  if (!Array.isArray(body.bestSellers) || !Array.isArray(body.mustTry))
+    throw new Error("CURATED_VARIANTS_INVALID_RESPONSE");
+  return {
+    supported: body.supported === true,
+    bestSellers: body.bestSellers.map(mapApiProduct),
+    mustTry: body.mustTry.map(mapApiProduct),
+  };
+}
+
 export async function loadCatalogData(
   fetcher: CatalogFetcher = fetch,
   onAccessRequired?: AccessRedirect,
@@ -339,7 +376,10 @@ export async function loadCatalogData(
     data?: ApiCategory[];
   };
   const brandsBody = (await brandsResponse.json()) as { data?: ApiBrand[] };
-  const tagsBody = (await tagsResponse.json()) as { data?: ApiTag[] };
+  const tagsBody = (await tagsResponse.json()) as {
+    data?: ApiTag[];
+    tagGroupsSupported?: boolean;
+  };
   if (
     !Array.isArray(productsBody.data) ||
     !Array.isArray(categoriesBody.data) ||
@@ -350,7 +390,25 @@ export async function loadCatalogData(
   const tagOptions = tagsBody.data
     .map((tag) => ({ name: tag.name, slug: tag.slug }))
     .filter((tag) => Boolean(tag.name && tag.slug));
-  // Chỉ commit toàn bộ snapshot khi bốn API đều thành công và trả đúng mảng dữ liệu.
+  let filterGroups: CatalogTagGroup[] = [];
+  let tagGroupsSupported = tagsBody.tagGroupsSupported === true;
+  if (tagsBody.tagGroupsSupported === true) {
+    const filterGroupsResponse = await fetcher("/api/tag-groups", {
+      headers: { accept: "application/json" },
+    });
+    redirectForCatalogAccess(filterGroupsResponse, onAccessRequired);
+    if (filterGroupsResponse.ok) {
+      const filterGroupsBody = (await filterGroupsResponse.json()) as {
+        supported?: boolean;
+        groups?: CatalogTagGroup[];
+      };
+      if (typeof filterGroupsBody.supported === "boolean")
+        tagGroupsSupported = filterGroupsBody.supported;
+      if (Array.isArray(filterGroupsBody.groups))
+        filterGroups = filterGroupsBody.groups;
+    }
+  }
+  // Chỉ commit toàn bộ snapshot khi các API chính đều thành công và trả đúng mảng dữ liệu.
   return {
     products: productsBody.data.map(mapApiProduct),
     categories: categoriesBody.data.map(mapApiCategory),
@@ -360,6 +418,8 @@ export async function loadCatalogData(
     })),
     tags: [...new Set(tagOptions.map((tag) => tag.name))],
     tagOptions,
+    filterGroups,
+    tagGroupsSupported,
   };
 }
 
@@ -372,6 +432,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [catalogTags, setCatalogTags] = useState<string[]>(fallbackTagNames);
   const [catalogTagOptions, setCatalogTagOptions] =
     useState<CatalogTag[]>(fallbackTagOptions);
+  const [catalogFilterGroups, setCatalogFilterGroups] = useState<CatalogTagGroup[]>([]);
+  const [catalogTagGroupsSupported, setCatalogTagGroupsSupported] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -383,6 +445,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       setCatalogBrands(catalog.brands);
       setCatalogTags(catalog.tags);
       setCatalogTagOptions(catalog.tagOptions);
+      setCatalogFilterGroups(catalog.filterGroups);
+      setCatalogTagGroupsSupported(catalog.tagGroupsSupported);
     } catch {
       // Giữ catalog tĩnh làm fallback tạm thời cho tới khi D1/product_images được backfill đầy đủ.
     } finally {
@@ -409,6 +473,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       brands: catalogBrands,
       tags: catalogTags,
       tagOptions: catalogTagOptions,
+      filterGroups: catalogFilterGroups,
+      tagGroupsSupported: catalogTagGroupsSupported,
       loading,
       refresh,
       mergeProducts,
@@ -419,6 +485,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       catalogBrands,
       catalogTags,
       catalogTagOptions,
+      catalogFilterGroups,
+      catalogTagGroupsSupported,
       loading,
       refresh,
       mergeProducts,

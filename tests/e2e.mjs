@@ -161,7 +161,7 @@ try {
     await row.locator("input").nth(1).fill(packageSize);
     await row.locator("input").nth(2).fill(sku);
     await row.locator("input").nth(3).fill(String(price));
-    await row.locator("select").selectOption(status);
+    await row.locator('select[aria-invalid]').selectOption(status);
     await row.getByLabel("Tồn kho thực tế").fill("10");
   };
   const uploadVariantImage = async (index, relativePath) => {
@@ -215,7 +215,7 @@ try {
 
   const firstEditor = await openVariantEditor(0);
   await firstEditor.locator("input").nth(3).fill("160000");
-  await firstEditor.locator("select").selectOption("SELLING");
+  await firstEditor.locator('select[aria-invalid]').selectOption("SELLING");
   adminPage.once("dialog", (dialog) => dialog.accept());
   await adminCards.nth(1).getByRole("button", { name: /Xóa phân loại Chuối/ }).click();
   await addVariant.click();
