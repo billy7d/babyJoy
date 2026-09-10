@@ -22,7 +22,10 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
-import type { CatalogTagGroup } from "../../shared/tag-groups";
+import type {
+  CatalogTag as CatalogFilterTag,
+  CatalogTagGroup,
+} from "../../shared/tag-groups";
 
 export type ApiProduct = {
   id: string;
@@ -77,6 +80,165 @@ type ApiTag = {
   isActive?: number | boolean;
 };
 export type CatalogTag = { name: string; slug: string };
+
+function normalizeFilterText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Chuẩn hóa option storefront trước khi quyết định có hiển thị section hay không. */
+export function normalizeStorefrontFilterOptions(
+  value: unknown,
+  fallbackGroupId = "",
+): CatalogFilterTag[] {
+  if (!Array.isArray(value)) return [];
+  const seenSlugs = new Set<string>();
+  const options: CatalogFilterTag[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const id = normalizeFilterText(record.id);
+    const slug = normalizeFilterText(record.slug);
+    const name = normalizeFilterText(record.name);
+    const displayName = normalizeFilterText(record.displayName) || name;
+    const rawGroupId = normalizeFilterText(record.groupId);
+    const groupId = rawGroupId || fallbackGroupId;
+    if (!id || !slug || !displayName || !groupId) continue;
+    if (fallbackGroupId && rawGroupId && rawGroupId !== fallbackGroupId) continue;
+    if (record.isActive === false || record.isActive === 0) continue;
+    const uniqueKey = slug.toLowerCase();
+    if (seenSlugs.has(uniqueKey)) continue;
+    seenSlugs.add(uniqueKey);
+    options.push({ id, name: name || displayName, displayName, slug, groupId });
+  }
+  return options;
+}
+
+/** Chuẩn hóa dữ liệu tag legacy dùng khi database chưa có bảng tag_groups. */
+export function normalizeLegacyTagOptions(value: unknown): CatalogTag[] {
+  if (!Array.isArray(value)) return [];
+  const seenSlugs = new Set<string>();
+  const options: CatalogTag[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const name = normalizeFilterText(record.name);
+    const slug = normalizeFilterText(record.slug);
+    if (!name || !slug || record.isActive === false || record.isActive === 0)
+      continue;
+    const uniqueKey = slug.toLowerCase();
+    if (seenSlugs.has(uniqueKey)) continue;
+    seenSlugs.add(uniqueKey);
+    options.push({ name, slug });
+  }
+  return options;
+}
+
+function normalizeStorefrontFilterGroup(value: unknown): CatalogTagGroup | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const id = normalizeFilterText(record.id);
+  const slug = normalizeFilterText(record.slug);
+  const name = normalizeFilterText(record.name);
+  const displayName = normalizeFilterText(record.displayName) || name;
+  if (!id || !slug || !displayName) return null;
+  if (
+    record.isActive === false ||
+    record.isActive === 0 ||
+    record.isFilterable === false ||
+    record.isFilterable === 0
+  )
+    return null;
+  const assignmentMode = record.assignmentMode === "SINGLE" ? "SINGLE" : "MULTI";
+  const sortOrder =
+    typeof record.sortOrder === "number" && Number.isFinite(record.sortOrder)
+      ? record.sortOrder
+      : 0;
+  return {
+    id,
+    name: name || displayName,
+    slug,
+    systemKey: normalizeFilterText(record.systemKey) || null,
+    displayName,
+    isActive: true,
+    isFilterable: true,
+    assignmentMode,
+    selectionMode: "MULTI_OR",
+    sortOrder,
+    tags: normalizeStorefrontFilterOptions(record.tags, id),
+  };
+}
+
+export function selectStorefrontFilterGroups(value: unknown) {
+  const groups = Array.isArray(value)
+    ? value
+        .map(normalizeStorefrontFilterGroup)
+        .filter((group): group is CatalogTagGroup => Boolean(group))
+    : [];
+  const ageGroup =
+    groups.find(
+      (group) =>
+        group.systemKey === "age" ||
+        group.id === "tag-group-age" ||
+        group.slug === "do-tuoi",
+    ) ?? null;
+  const characteristicGroup =
+    groups.find(
+      (group) =>
+        group.id === "tag-group-attributes" ||
+        group.slug === "dac-diem" ||
+        group.displayName.toLowerCase() === "đặc điểm",
+    ) ?? null;
+  return {
+    ageGroup,
+    characteristicGroup:
+      characteristicGroup && characteristicGroup.tags.length
+        ? characteristicGroup
+        : null,
+  };
+}
+
+export type ProductListParamsOptions = {
+  forcedCategory?: string;
+  filterGroupsReady?: boolean;
+  tagGroupsSupported?: boolean;
+  allowedTagIds?: ReadonlySet<string>;
+};
+
+/** Loại state filter cũ nhưng vẫn giữ category query khi đó là context điều hướng hợp lệ. */
+export function normalizeProductListParams(
+  params: URLSearchParams,
+  options: ProductListParamsOptions = {},
+) {
+  const next = new URLSearchParams();
+  const copy = (key: string) => {
+    const value = params.get(key);
+    if (value) next.set(key, value);
+  };
+  copy("page");
+  copy("q");
+  if (!options.forcedCategory) copy("category");
+  const filterGroupsReady = options.filterGroupsReady ?? true;
+  const tagGroupsSupported = options.tagGroupsSupported === true;
+  if (!filterGroupsReady) {
+    copy("age");
+    copy("tag");
+    copy("tagIds");
+  } else if (tagGroupsSupported) {
+    const allowedTagIds = options.allowedTagIds ?? new Set<string>();
+    const selectedTagIds = [...new Set(
+      (params.get("tagIds") ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value && allowedTagIds.has(value)),
+    )];
+    if (selectedTagIds.length) next.set("tagIds", selectedTagIds.join(","));
+  } else {
+    copy("age");
+    copy("tag");
+  }
+  copy("sort");
+  return next;
+}
 
 export type CuratedVariantsResult = {
   supported: boolean;
@@ -217,12 +379,9 @@ function mapApiCategory(row: ApiCategory): Category {
 const productQueryKeys = [
   "q",
   "category",
-  "brand",
   "age",
-  "bestSeller",
   "tag",
   "tagIds",
-  "available",
   "sort",
 ] as const;
 

@@ -207,6 +207,16 @@ describe("CatalogProvider API boundary", () => {
     expect(result.pagination).toMatchObject({ page: 2, totalItems: 25 });
   });
 
+  it("không gửi brand, availability hoặc Best seller từ state filter cũ", () => {
+    expect(
+      buildProductListUrl(
+        new URLSearchParams(
+          "q=Gerber&brand=heinz&available=1&bestSeller=1&sort=price_asc",
+        ),
+      ),
+    ).toBe("/api/products?page=1&limit=24&q=Gerber&sort=price_asc");
+  });
+
   it("detail fetch theo slug và 404 không fallback sang product khác", async () => {
     const { fetcher } = createFetcher({
       "/api/products/product-real": { body: { data: productRow } },
