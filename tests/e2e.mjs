@@ -95,6 +95,40 @@ async function waitForFilterOptions(page, selector) {
   }, selector, { timeout: 10000 });
 }
 
+async function assertMobileFilterSheet(page, viewportWidth) {
+  const sheet = page.locator("#mobile-filter-sheet");
+  if (await sheet.count() !== 1) throw new Error("Mobile filter sheet không render đúng role dialog");
+  if (await sheet.getAttribute("aria-modal") !== "true") throw new Error("Mobile filter sheet thiếu aria-modal");
+  if (await sheet.getByRole("heading", { name: "Độ tuổi cho bé" }).count() !== 1)
+    throw new Error("Mobile sheet thiếu section Độ tuổi cho bé");
+  if (await sheet.getByRole("heading", { name: "Đặc tính & Dinh dưỡng" }).count() !== 1)
+    throw new Error("Mobile sheet thiếu section Đặc tính & Dinh dưỡng");
+  const metrics = await page.evaluate((width) => {
+    const panel = document.querySelector("#mobile-filter-sheet");
+    const body = panel?.querySelector(".mobile-filter-body");
+    const buttons = [...(panel?.querySelectorAll(".mobile-filter-chip") ?? [])];
+    return {
+      bodyLocked: document.body.style.overflow === "hidden",
+      overflow: document.documentElement.scrollWidth > width + 1,
+      panelWidth: panel?.getBoundingClientRect().width ?? 0,
+      viewportWidth: window.innerWidth,
+      minButtonHeight: Math.min(...buttons.map((button) => button.getBoundingClientRect().height)),
+      bodyScroll: body ? body.scrollHeight >= body.clientHeight : false,
+    };
+  }, viewportWidth);
+  if (!metrics.bodyLocked) throw new Error("Mở sheet nhưng background vẫn scroll được");
+  if (metrics.overflow) throw new Error(`Mobile sheet gây tràn ngang ở viewport ${viewportWidth}`);
+  if (metrics.panelWidth !== metrics.viewportWidth) throw new Error("Sheet không phủ đủ chiều rộng viewport");
+  if (metrics.minButtonHeight < 44) throw new Error("Chip mobile nhỏ hơn touch target 44px");
+}
+
+async function closeSheetWithEscape(page) {
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(350);
+  if (await page.locator("#mobile-filter-sheet").count() !== 0)
+    throw new Error("Escape không đóng mobile filter sheet");
+}
+
 async function selectAgeAndCharacteristic(page, selector) {
   const ageButton = page.locator(`${selector} .age-filter-options button`).first();
   const characteristicButton = page.locator(`${selector} .characteristic-filter-options button`).first();
@@ -143,24 +177,78 @@ async function assertStorefrontFilters() {
     }
   }
 
-  // Drawer mobile phải dùng cùng filter fragment và đạt touch target tối thiểu.
+  // Bottom sheet mobile giữ draft local cho tới Apply và đạt touch target tối thiểu.
   for (const width of [390, 375]) {
     const context = await browser.newContext({ viewport: { width, height: 844 }, locale: "vi-VN" });
     const page = await context.newPage();
     try {
-      await page.goto(`${baseUrl}/shop?brand=heinz&available=1&bestSeller=1`, { waitUntil: "domcontentloaded" });
+      await page.goto(`${baseUrl}/shop?category=bot-an-dam&q=Gerber&sort=price_asc&page=1`, { waitUntil: "domcontentloaded" });
       await waitForFilterOptions(page, ".filter-sidebar");
       await page.waitForFunction(() => {
         const search = new URL(location.href).searchParams;
-        return !search.has("brand") && !search.has("available") && !search.has("bestSeller");
+        return search.get("category") === "bot-an-dam" && search.get("q") === "Gerber" && search.get("sort") === "price_asc";
       }, undefined, { timeout: 10000 });
       await page.waitForTimeout(200);
-      await page.getByRole("button", { name: "Bộ lọc", exact: true }).click();
-      await page.locator(".filter-sheet").waitFor({ state: "visible" });
-      await waitForFilterOptions(page, ".filter-sheet");
-      await assertFilterSurface(page, ".filter-sheet", width, true);
-      await selectAgeAndCharacteristic(page, ".filter-sheet");
-      await page.locator(".filter-sheet .sheet-close").click();
+      if (await page.locator(".mobile-bottom button").count() !== 0)
+        throw new Error("Bottom nav mobile vẫn còn button Search cũ");
+      if (await page.getByText("Tìm kiếm", { exact: true }).count() !== 0)
+        throw new Error("Bottom nav mobile vẫn còn label Tìm kiếm");
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      await page.waitForTimeout(350);
+      await assertMobileFilterSheet(page, width);
+      await page.screenshot({ path: fileURLToPath(new URL(`shop-filter-sheet-${width}.png`, outputDir)), fullPage: true });
+
+      const initialUrl = page.url();
+      const ageOptions = page.locator("#mobile-filter-sheet .age-filter-options .mobile-filter-chip");
+      const firstAge = ageOptions.nth(1);
+      const secondAge = ageOptions.nth(2);
+      await firstAge.click();
+      if (page.url() !== initialUrl) throw new Error(`Chạm chip age làm đổi URL trước Apply: trước=${initialUrl} sau=${page.url()}`);
+      await secondAge.click();
+      const characteristic = page.locator("#mobile-filter-sheet .characteristic-filter-options .mobile-filter-chip").first();
+      await characteristic.click();
+      if (page.url() !== initialUrl) throw new Error("Chạm chip characteristic làm đổi URL trước Apply");
+      await page.locator("#mobile-filter-sheet .mobile-filter-close").click();
+      await page.waitForTimeout(350);
+      if (await page.locator("#mobile-filter-sheet").count() !== 0) throw new Error("Nút X không đóng sheet");
+      if (page.url() !== initialUrl) throw new Error("Đóng sheet tự ý Apply draft");
+
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      if (await page.locator("#mobile-filter-sheet .mobile-filter-chip.selected").count() !== 1)
+        throw new Error("Mở lại sheet không restore active state từ URL");
+      await closeSheetWithEscape(page);
+
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      const backdropUrl = page.url();
+      await page.locator(".mobile-filter-backdrop").click({ position: { x: 6, y: 6 } });
+      await page.waitForTimeout(350);
+      if (await page.locator("#mobile-filter-sheet").count() !== 0) throw new Error("Backdrop không đóng sheet");
+      if (page.url() !== backdropUrl) throw new Error("Backdrop tự ý Apply draft");
+
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      await page.locator("#mobile-filter-sheet .age-filter-options .mobile-filter-chip").nth(1).click();
+      await page.locator("#mobile-filter-sheet .characteristic-filter-options .mobile-filter-chip").first().click();
+      await page.locator("#mobile-filter-sheet .mobile-filter-apply").click();
+      await page.waitForFunction(() => {
+        const search = new URL(location.href).searchParams;
+        return Boolean(search.get("tagIds")) && search.get("page") === "1" && search.get("category") === "bot-an-dam" && search.get("q") === "Gerber" && search.get("sort") === "price_asc";
+      }, undefined, { timeout: 10000 });
+      await page.screenshot({ path: fileURLToPath(new URL(`shop-filter-selected-${width}.png`, outputDir)), fullPage: true });
+
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      const clearUrl = page.url();
+      await page.locator("#mobile-filter-sheet .mobile-filter-clear").click();
+      if (page.url() !== clearUrl) throw new Error("Xóa bộ lọc làm đổi URL trước Apply");
+      await page.locator("#mobile-filter-sheet .mobile-filter-apply").click();
+      await page.waitForFunction(() => {
+        const search = new URL(location.href).searchParams;
+        return !search.get("tagIds") && search.get("page") === "1" && search.get("category") === "bot-an-dam" && search.get("q") === "Gerber" && search.get("sort") === "price_asc";
+      }, undefined, { timeout: 10000 });
     } finally {
       await context.close();
     }
@@ -170,7 +258,11 @@ async function assertStorefrontFilters() {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "vi-VN" });
   const page = await context.newPage();
   try {
-    await page.goto(`${baseUrl}/categories`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${baseUrl}/shop`, { waitUntil: "domcontentloaded" });
+    await page.locator(".mobile-bottom a").filter({ hasText: "Danh mục" }).click();
+    await page.waitForURL(/\/categories$/);
+    if (!(await page.locator("body").innerText()).includes("Danh mục dinh dưỡng"))
+      throw new Error("Bottom nav Danh mục không mở CategoriesPage");
     await page.getByRole("link", { name: /Bột ăn dặm/ }).first().click();
     await page.waitForURL(/\/category\/bot-an-dam/);
     await page.waitForTimeout(600);
@@ -272,6 +364,7 @@ await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForTimeout(100);
 if (!(await page.locator("body").innerText()).includes("Little Sprouts")) throw new Error("Cart không tồn tại sau refresh");
 await page.goto(`${baseUrl}/shop?category=bot-an-dam&sort=price_asc`, { waitUntil: "domcontentloaded" });
+await page.waitForFunction(() => document.body.innerText.includes("Bột ăn dặm"), undefined, { timeout: 10000 });
 if (!(await page.locator("body").innerText()).includes("Bột ăn dặm")) throw new Error("URL filter không hoạt động");
 await context.close();
 
