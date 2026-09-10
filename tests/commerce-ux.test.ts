@@ -288,14 +288,12 @@ describe("post-checkout clipboard guide", () => {
     expect(pages).toContain("if (!allowed) setClickGuardStale(true);");
   });
 
-  it("keeps the mobile search modal and shared card control wired together", () => {
+  it("dùng Danh mục trong bottom nav và giữ desktop search độc lập", () => {
     const ui = readFileSync("app/components/ui.tsx", "utf8");
-    const css = readFileSync("app/app.css", "utf8");
-    expect(ui).toContain("MobileSearchModal");
-    expect(ui).toContain("<InlineCartControl product={product} />");
-    expect(ui).toContain('aria-modal="true"');
-    expect(ui).toContain('document.body.style.overflow = "hidden"');
-    expect(css).toContain(".mobile-search-modal");
-    expect(css).toMatch(/\.inline-cart-quantity button\{[^}]*width:44px[^}]*height:44px/);
+    expect(ui).toContain('["/categories", "category", "Danh mục"]');
+    expect(ui).not.toContain("onSearch");
+    expect(ui).not.toContain('aria-label="Mở tìm kiếm"');
+    expect(ui).toContain('className="header-search"');
+    expect(ui).toContain("<InlineCartControl product={product}");
   });
 });

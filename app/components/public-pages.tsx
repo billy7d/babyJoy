@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import {
   findVariantInProducts,
@@ -42,6 +42,20 @@ export function resolveGallerySelection(
     variantId: images[imageIndex]?.variantId ?? currentVariantId,
   };
 }
+
+type ProductFilterOption = {
+  id: string;
+  label: string;
+};
+
+type MobileFilterSelection = {
+  tagIds: string[];
+  age: string;
+  tag: string;
+};
+
+// Đây là tập giá trị legacy đã có trong contract age cũ, chỉ dùng khi tag group chưa được hỗ trợ.
+const legacyAgeFilterOptions = ["6", "7", "10", "12"];
 import {
   loadProductBySlug,
   loadProductPage,
@@ -347,6 +361,7 @@ export function ProductListPage({
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const [mobileFilters, setMobileFilters] = useState(false);
+  const mobileFilterTriggerRef = useRef<HTMLButtonElement>(null);
   const [listing, setListing] = useState<ProductPageResult | null>(null);
   const [loadError, setLoadError] = useState("");
   const { ageGroup, characteristicGroup } = useMemo(
@@ -356,6 +371,32 @@ export function ProductListPage({
   const legacyCharacteristicOptions = useMemo(
     () => normalizeLegacyTagOptions(tagOptions),
     [tagOptions],
+  );
+  const ageFilterOptions = useMemo<ProductFilterOption[]>(
+    () =>
+      tagGroupsSupported
+        ? (ageGroup?.tags ?? []).map((tag) => ({
+            id: tag.id,
+            label: tag.displayName ?? tag.name,
+          }))
+        : legacyAgeFilterOptions.map((value) => ({
+            id: value,
+            label: `${value}m+`,
+          })),
+    [ageGroup, tagGroupsSupported],
+  );
+  const characteristicFilterOptions = useMemo<ProductFilterOption[]>(
+    () =>
+      tagGroupsSupported
+        ? (characteristicGroup?.tags ?? []).map((tag) => ({
+            id: tag.id,
+            label: tag.displayName ?? tag.name,
+          }))
+        : legacyCharacteristicOptions.map((item) => ({
+            id: item.slug,
+            label: item.name,
+          })),
+    [characteristicGroup, legacyCharacteristicOptions, tagGroupsSupported],
   );
   const allowedTagIds = useMemo(
     () =>
@@ -476,54 +517,54 @@ export function ProductListPage({
       normalizedParams.get("tag") ||
       normalizedParams.get("tagIds"),
   );
-  const selectedTagIds = new Set(
-    (normalizedParams.get("tagIds") ?? "").split(",").filter(Boolean),
+  const selectedTagIds = useMemo(
+    () =>
+      new Set(
+        (normalizedParams.get("tagIds") ?? "").split(",").filter(Boolean),
+      ),
+    [normalizedParams],
   );
   const filters = (
     <div className="filters-inner">
       {tagGroupsSupported ? (
         <>
-          {ageGroup && ageGroup.tags.length > 0 && (
+          {ageFilterOptions.length > 0 && (
             <section className="filter-section age-filter-section">
               <h3>Độ tuổi</h3>
               <div
                 className="filter-tags age-filter-options"
                 aria-label="Lọc theo độ tuổi"
               >
-                {ageGroup.tags.map((tag) => (
+                {ageFilterOptions.map((option) => (
                   <button
                     type="button"
-                    className={
-                      selectedTagIds.has(tag.id) ? "active" : ""
-                    }
-                    key={tag.id}
-                    aria-pressed={selectedTagIds.has(tag.id)}
-                    onClick={() => toggleTagFilter(tag.id)}
+                    className={selectedTagIds.has(option.id) ? "active" : ""}
+                    key={option.id}
+                    aria-pressed={selectedTagIds.has(option.id)}
+                    onClick={() => toggleTagFilter(option.id)}
                   >
-                    {tag.displayName ?? tag.name}
+                    {option.label}
                   </button>
                 ))}
               </div>
             </section>
           )}
-          {characteristicGroup && (
+          {characteristicFilterOptions.length > 0 && (
             <section className="filter-section characteristic-filter-section">
               <h3>Đặc điểm</h3>
               <div
                 className="filter-tags characteristic-filter-options"
                 aria-label="Lọc theo đặc điểm"
               >
-                {characteristicGroup.tags.map((tag) => (
+                {characteristicFilterOptions.map((option) => (
                   <button
                     type="button"
-                    className={
-                      selectedTagIds.has(tag.id) ? "active" : ""
-                    }
-                    key={tag.id}
-                    aria-pressed={selectedTagIds.has(tag.id)}
-                    onClick={() => toggleTagFilter(tag.id)}
+                    className={selectedTagIds.has(option.id) ? "active" : ""}
+                    key={option.id}
+                    aria-pressed={selectedTagIds.has(option.id)}
+                    onClick={() => toggleTagFilter(option.id)}
                   >
-                    {tag.displayName ?? tag.name}
+                    {option.label}
                   </button>
                 ))}
               </div>
@@ -532,46 +573,57 @@ export function ProductListPage({
         </>
       ) : (
         <>
-          <section className="filter-section age-filter-section">
-            <h3>Độ tuổi</h3>
-            <div
-              className="filter-tags age-filter-options"
-              aria-label="Lọc theo độ tuổi"
-            >
-              {["6", "7", "10", "12"].map((item) => (
-                <button
-                  type="button"
-                  className={params.get("age") === item ? "active" : ""}
-                  key={item}
-                  aria-pressed={params.get("age") === item}
-                  onClick={() => setFilter("age", item)}
-                >
-                  {item}m+
-                </button>
-              ))}
-            </div>
-          </section>
-          {legacyCharacteristicOptions.length > 0 && (
+          {ageFilterOptions.length > 0 && (
+            <section className="filter-section age-filter-section">
+              <h3>Độ tuổi</h3>
+              <div
+                className="filter-tags age-filter-options"
+                aria-label="Lọc theo độ tuổi"
+              >
+                {ageFilterOptions.map((option) => (
+                  <button
+                    type="button"
+                    className={
+                      normalizedParams.get("age") === option.id ? "active" : ""
+                    }
+                    key={option.id}
+                    aria-pressed={normalizedParams.get("age") === option.id}
+                    onClick={() =>
+                      setFilter(
+                        "age",
+                        normalizedParams.get("age") === option.id ? "" : option.id,
+                      )
+                    }
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          {characteristicFilterOptions.length > 0 && (
             <section className="filter-section characteristic-filter-section">
               <h3>Đặc điểm</h3>
               <div
                 className="filter-tags characteristic-filter-options"
                 aria-label="Lọc theo đặc điểm"
               >
-                {legacyCharacteristicOptions.map((item) => (
+                {characteristicFilterOptions.map((option) => (
                   <button
                     type="button"
-                    className={params.get("tag") === item.slug ? "active" : ""}
-                    key={item.slug}
-                    aria-pressed={params.get("tag") === item.slug}
+                    className={
+                      normalizedParams.get("tag") === option.id ? "active" : ""
+                    }
+                    key={option.id}
+                    aria-pressed={normalizedParams.get("tag") === option.id}
                     onClick={() =>
                       setFilter(
                         "tag",
-                        params.get("tag") === item.slug ? "" : item.slug,
+                        normalizedParams.get("tag") === option.id ? "" : option.id,
                       )
                     }
                   >
-                    {item.name}
+                    {option.label}
                   </button>
                 ))}
               </div>
@@ -587,8 +639,42 @@ export function ProductListPage({
       </button>
     </div>
   );
+  const applyMobileFilters = ({ tagIds, age, tag }: MobileFilterSelection) => {
+    const next = normalizeProductListParams(params, filterParamsOptions);
+    if (tagGroupsSupported) {
+      if (tagIds.length) next.set("tagIds", tagIds.join(","));
+      else next.delete("tagIds");
+      next.delete("age");
+      next.delete("tag");
+    } else {
+      next.delete("tagIds");
+      if (age) next.set("age", age);
+      else next.delete("age");
+      if (tag) next.set("tag", tag);
+      else next.delete("tag");
+    }
+    // Apply luôn quay về trang đầu nhưng giữ nguyên query, category và sort hiện hành.
+    next.set("page", "1");
+    setParams(next);
+    setMobileFilters(false);
+  };
   return (
-    <PublicShell>
+    <PublicShell
+      mobileHeaderAction={
+        <button
+          ref={mobileFilterTriggerRef}
+          className="mobile-filter-trigger"
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={mobileFilters}
+          aria-controls="mobile-filter-sheet"
+          onClick={() => setMobileFilters(true)}
+        >
+          <Icon>child_care</Icon>
+          <span>Lọc độ tuổi</span>
+        </button>
+      }
+    >
       <div className="listing-shell">
         <div className="breadcrumbs">
           Trang chủ <Icon>chevron_right</Icon> Sản phẩm
@@ -598,12 +684,6 @@ export function ProductListPage({
             <h1>{title}</h1>
             <p>{listing ? `${totalItems} sản phẩm dinh dưỡng cho bé` : "Đang tải sản phẩm…"}</p>
           </div>
-          <button
-            className="mobile-filter-btn"
-            onClick={() => setMobileFilters(true)}
-          >
-            <Icon>tune</Icon> Bộ lọc
-          </button>
           <label className="sort">
             Sắp xếp theo:{" "}
             <select
@@ -712,30 +792,298 @@ export function ProductListPage({
           </div>
         </div>
       </div>
-      {mobileFilters && (
-        <div
-          className="filter-sheet"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Bộ lọc"
-        >
+      <MobileFilterSheet
+        open={mobileFilters}
+        onRequestClose={() => setMobileFilters(false)}
+        onApply={applyMobileFilters}
+        ageOptions={ageFilterOptions}
+        characteristicOptions={characteristicFilterOptions}
+        tagGroupsSupported={tagGroupsSupported}
+        activeTagIds={selectedTagIds}
+        activeAge={normalizedParams.get("age") ?? ""}
+        activeTag={normalizedParams.get("tag") ?? ""}
+        returnFocusRef={mobileFilterTriggerRef}
+      />
+    </PublicShell>
+  );
+}
+
+function MobileFilterSheet({
+  open,
+  onRequestClose,
+  onApply,
+  ageOptions,
+  characteristicOptions,
+  tagGroupsSupported,
+  activeTagIds,
+  activeAge,
+  activeTag,
+  returnFocusRef,
+}: {
+  open: boolean;
+  onRequestClose: () => void;
+  onApply: (selection: MobileFilterSelection) => void;
+  ageOptions: ProductFilterOption[];
+  characteristicOptions: ProductFilterOption[];
+  tagGroupsSupported: boolean;
+  activeTagIds: ReadonlySet<string>;
+  activeAge: string;
+  activeTag: string;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const [mounted, setMounted] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [draftTagIds, setDraftTagIds] = useState<string[]>([]);
+  const [draftAge, setDraftAge] = useState("");
+  const [draftTag, setDraftTag] = useState("");
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasOpenRef = useRef(false);
+
+  useEffect(() => {
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    if (open) {
+      if (!wasOpen) {
+        setMounted(true);
+        setClosing(false);
+        setDraftTagIds([...activeTagIds]);
+        setDraftAge(activeAge);
+        setDraftTag(activeTag);
+      }
+      return;
+    }
+    if (!wasOpen || !mounted) return;
+    setClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      setMounted(false);
+      setClosing(false);
+      returnFocusRef.current?.focus();
+    }, 300);
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, [mounted, open, returnFocusRef]);
+
+  useEffect(() => {
+    if (!mounted || !open) return;
+    const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [mounted, open]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onRequestClose();
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled])',
+        ),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mounted, onRequestClose]);
+
+  if (!mounted) return null;
+
+  const ageIds = new Set(ageOptions.map((option) => option.id));
+  const isAgeSelected = (id: string) =>
+    tagGroupsSupported ? draftTagIds.includes(id) : draftAge === id;
+  const isAllAges = tagGroupsSupported
+    ? draftTagIds.every((id) => !ageIds.has(id))
+    : !draftAge;
+  const selectedCount = tagGroupsSupported
+    ? draftTagIds.length
+    : Number(Boolean(draftAge)) + Number(Boolean(draftTag));
+
+  const toggleAge = (option: ProductFilterOption) => {
+    if (!tagGroupsSupported) {
+      setDraftAge((current) => (current === option.id ? "" : option.id));
+      return;
+    }
+    setDraftTagIds((current) =>
+      current.includes(option.id)
+        ? current.filter((id) => id !== option.id)
+        : [...current, option.id],
+    );
+  };
+
+  const clearAge = () => {
+    if (tagGroupsSupported) {
+      setDraftTagIds((current) => current.filter((id) => !ageIds.has(id)));
+    } else {
+      setDraftAge("");
+    }
+  };
+
+  const clearDraft = () => {
+    setDraftTagIds([]);
+    setDraftAge("");
+    setDraftTag("");
+  };
+
+  return (
+    <div className={`mobile-filter-sheet ${closing ? "is-closing" : "is-open"}`}>
+      <div
+        className="mobile-filter-backdrop"
+        aria-hidden="true"
+        onClick={onRequestClose}
+      />
+      <div
+        ref={panelRef}
+        id="mobile-filter-sheet"
+        className="mobile-filter-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mobile-filter-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mobile-filter-handle" aria-hidden="true" />
+        <header className="mobile-filter-header">
+          <div>
+            <h2 id="mobile-filter-title">Bộ lọc</h2>
+            <p>Tùy chỉnh sản phẩm phù hợp cho bé yêu</p>
+          </div>
           <button
-            className="sheet-close"
-            onClick={() => setMobileFilters(false)}
+            ref={closeButtonRef}
+            type="button"
+            className="mobile-filter-close"
+            aria-label="Đóng bộ lọc"
+            onClick={onRequestClose}
           >
             <Icon>close</Icon>
           </button>
-          <h2>Bộ lọc</h2>
-          {filters}
-          <button
-            className="btn primary sheet-apply"
-            onClick={() => setMobileFilters(false)}
-          >
-            Áp dụng
-          </button>
+        </header>
+        <div className="mobile-filter-body">
+          {ageOptions.length > 0 && (
+            <section className="mobile-filter-section age-filter-section">
+              <div className="mobile-filter-section-heading">
+                <h3>Độ tuổi cho bé</h3>
+                <p>Chọn giai đoạn phát triển của bé</p>
+              </div>
+              <div
+                className="filter-tags age-filter-options"
+                aria-label="Lọc theo độ tuổi"
+              >
+                <button
+                  type="button"
+                  className={`mobile-filter-chip${isAllAges ? " selected" : ""}`}
+                  aria-pressed={isAllAges}
+                  onClick={clearAge}
+                >
+                  {isAllAges && <Icon>check</Icon>}
+                  <span>Tất cả</span>
+                </button>
+                {ageOptions.map((option) => (
+                  <button
+                    type="button"
+                    className={`mobile-filter-chip${isAgeSelected(option.id) ? " selected" : ""}`}
+                    key={option.id}
+                    aria-pressed={isAgeSelected(option.id)}
+                    onClick={() => toggleAge(option)}
+                  >
+                    {isAgeSelected(option.id) && <Icon>check</Icon>}
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          {characteristicOptions.length > 0 && (
+            <section className="mobile-filter-section characteristic-filter-section">
+              <div className="mobile-filter-section-heading">
+                <h3>Đặc tính &amp; Dinh dưỡng</h3>
+                <p>Tiêu chuẩn an toàn và dinh dưỡng cho bé</p>
+              </div>
+              <div
+                className="filter-tags characteristic-filter-options"
+                aria-label="Lọc theo đặc tính và dinh dưỡng"
+              >
+                {characteristicOptions.map((option) => {
+                  const selected = tagGroupsSupported
+                    ? draftTagIds.includes(option.id)
+                    : draftTag === option.id;
+                  return (
+                    <button
+                      type="button"
+                      className={`mobile-filter-chip${selected ? " selected" : ""}`}
+                      key={option.id}
+                      aria-pressed={selected}
+                      onClick={() => {
+                        if (tagGroupsSupported) {
+                          setDraftTagIds((current) =>
+                            current.includes(option.id)
+                              ? current.filter((id) => id !== option.id)
+                              : [...current, option.id],
+                          );
+                        } else {
+                          setDraftTag((current) =>
+                            current === option.id ? "" : option.id,
+                          );
+                        }
+                      }}
+                    >
+                      {selected && <Icon>check</Icon>}
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
         </div>
-      )}
-    </PublicShell>
+        <footer className="mobile-filter-actions">
+          <button
+            type="button"
+            className="mobile-filter-clear"
+            onClick={clearDraft}
+          >
+            Xóa bộ lọc
+          </button>
+          <button
+            type="button"
+            className="mobile-filter-apply"
+            onClick={() =>
+              onApply({
+                tagIds: [...draftTagIds],
+                age: draftAge,
+                tag: draftTag,
+              })
+            }
+          >
+            <span>Áp dụng</span>
+            <span className="mobile-filter-count">{selectedCount} bộ lọc</span>
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
