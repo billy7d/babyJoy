@@ -69,7 +69,7 @@ describe("D1 catalog flow", () => {
 
   it("recomputes ProductGrid when CatalogProvider replaces fallback state", () => {
     const source = readFileSync("app/components/public-pages.tsx", "utf8");
-    expect(source).toContain("loadProductPage(new URLSearchParams(queryKey), categorySlug)");
+    expect(source).toContain("loadProductPage(new URLSearchParams(normalizedQueryKey), categorySlug)");
     expect(source).not.toContain("applyFilters(products, categories, params, categorySlug)");
   });
 });

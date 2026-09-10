@@ -12,7 +12,8 @@ const checks = [
   ["/", ["Chưa có sản phẩm"]],
   ["/shop", ["Chưa có sản phẩm"]],
   ["/category/trai-cay-nghien", ["Không tìm thấy sản phẩm phù hợp"]],
-  [`/shop?tag=${encodeURIComponent("Hữu cơ")}`, ["Không tìm thấy sản phẩm phù hợp"]],
+  // Dùng query ID của filter Đặc điểm mới thay cho query tag legacy đã bị loại khỏi storefront.
+  ["/shop?tagIds=tag-organic", ["Không tìm thấy sản phẩm phù hợp"]],
   ["/product/missing-product", ["Không tìm thấy sản phẩm"]],
   ["/categories", ["Danh mục dinh dưỡng", "Trái cây nghiền"]],
   ["/admin/products", ["Chưa có sản phẩm"]],

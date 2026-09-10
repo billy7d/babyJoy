@@ -47,6 +47,9 @@ import {
   loadProductPage,
   loadCuratedVariants,
   ProductNotFoundError,
+  normalizeLegacyTagOptions,
+  normalizeProductListParams,
+  selectStorefrontFilterGroups,
   type ProductPageResult,
   useCatalog,
 } from "../lib/catalog-context";
@@ -334,10 +337,10 @@ export function ProductListPage({
 }) {
   const {
     categories,
-    brands,
     tagOptions,
     filterGroups,
     tagGroupsSupported,
+    loading: catalogLoading,
     mergeProducts,
   } = useCatalog();
   const { displayName } = useStoreSettings();
@@ -346,23 +349,61 @@ export function ProductListPage({
   const [mobileFilters, setMobileFilters] = useState(false);
   const [listing, setListing] = useState<ProductPageResult | null>(null);
   const [loadError, setLoadError] = useState("");
+  const { ageGroup, characteristicGroup } = useMemo(
+    () => selectStorefrontFilterGroups(filterGroups),
+    [filterGroups],
+  );
+  const legacyCharacteristicOptions = useMemo(
+    () => normalizeLegacyTagOptions(tagOptions),
+    [tagOptions],
+  );
+  const allowedTagIds = useMemo(
+    () =>
+      new Set(
+        [...(ageGroup?.tags ?? []), ...(characteristicGroup?.tags ?? [])].map(
+          (tag) => tag.id,
+        ),
+      ),
+    [ageGroup, characteristicGroup],
+  );
+  const filterParamsOptions = useMemo(
+    () => ({
+      forcedCategory: categorySlug,
+      filterGroupsReady: !catalogLoading,
+      tagGroupsSupported,
+      allowedTagIds,
+    }),
+    [allowedTagIds, catalogLoading, categorySlug, tagGroupsSupported],
+  );
   const queryKey = params.toString();
+  const normalizedParams = useMemo(
+    () => normalizeProductListParams(new URLSearchParams(queryKey), filterParamsOptions),
+    [filterParamsOptions, queryKey],
+  );
+  const normalizedQueryKey = normalizedParams.toString();
   useEffect(() => {
+    if (catalogLoading) return;
+    if (normalizedQueryKey !== queryKey) {
+      setParams(normalizedParams, { replace: true });
+      return;
+    }
     let cancelled = false;
     setListing(null);
     setLoadError("");
-    void loadProductPage(new URLSearchParams(queryKey), categorySlug)
+    void loadProductPage(new URLSearchParams(normalizedQueryKey), categorySlug)
       .then((result) => {
         if (cancelled) return;
         mergeProducts(result.products);
         setListing(result);
-        const requestedPage = Number(new URLSearchParams(queryKey).get("page"));
+        const requestedPage = Number(
+          new URLSearchParams(normalizedQueryKey).get("page"),
+        );
         const normalizedRequestedPage =
           Number.isSafeInteger(requestedPage) && requestedPage >= 1
             ? requestedPage
             : 1;
         if (result.pagination.page !== normalizedRequestedPage) {
-          const canonicalParams = new URLSearchParams(queryKey);
+          const canonicalParams = new URLSearchParams(normalizedQueryKey);
           canonicalParams.set("page", String(result.pagination.page));
           setParams(canonicalParams, { replace: true });
         }
@@ -373,10 +414,21 @@ export function ProductListPage({
     return () => {
       cancelled = true;
     };
-  }, [categorySlug, mergeProducts, queryKey, setParams]);
+  }, [
+    catalogLoading,
+    categorySlug,
+    mergeProducts,
+    normalizedParams,
+    normalizedQueryKey,
+    queryKey,
+    setParams,
+  ]);
 
-  const setFilter = (key: string, value: string) => {
-    const next = new URLSearchParams(params);
+  const setFilter = (
+    key: "age" | "tag" | "tagIds" | "sort" | "q",
+    value: string,
+  ) => {
+    const next = normalizeProductListParams(params, filterParamsOptions);
     if (value) next.set(key, value);
     else next.delete(key);
     // Mọi thay đổi bộ lọc/sort phải quay về trang đầu của tập kết quả mới.
@@ -384,18 +436,14 @@ export function ProductListPage({
     setParams(next);
   };
   const setPage = (page: number) => {
-    const next = new URLSearchParams(params);
+    const next = normalizeProductListParams(params, filterParamsOptions);
     next.set("page", String(page));
     setParams(next);
   };
-  const toggleCsvFilter = (key: "category" | "brand", value: string) => {
-    const selected = new Set((params.get(key) ?? "").split(",").filter(Boolean));
-    if (selected.has(value)) selected.delete(value);
-    else selected.add(value);
-    setFilter(key, [...selected].join(","));
-  };
   const toggleTagFilter = (tagId: string) => {
-    const selected = new Set((params.get("tagIds") ?? "").split(",").filter(Boolean));
+    const selected = new Set(
+      (normalizedParams.get("tagIds") ?? "").split(",").filter(Boolean),
+    );
     if (selected.has(tagId)) selected.delete(tagId);
     else selected.add(tagId);
     setFilter("tagIds", [...selected].join(","));
@@ -422,57 +470,34 @@ export function ProductListPage({
   const totalItems = listing?.pagination.totalItems ?? 0;
   const hasFilters = Boolean(
     categorySlug ||
-      params.get("q") ||
-      params.get("category") ||
-      params.get("brand") ||
-      (!tagGroupsSupported &&
-        (params.get("age") || params.get("bestSeller") || params.get("tag"))) ||
-      params.get("tagIds") ||
-      params.get("available"),
+      normalizedParams.get("q") ||
+      normalizedParams.get("category") ||
+      normalizedParams.get("age") ||
+      normalizedParams.get("tag") ||
+      normalizedParams.get("tagIds"),
+  );
+  const selectedTagIds = new Set(
+    (normalizedParams.get("tagIds") ?? "").split(",").filter(Boolean),
   );
   const filters = (
     <div className="filters-inner">
-      <h3>Danh mục</h3>
-      {categories.map((item) => (
-        <label key={item.id}>
-          <input
-            type="checkbox"
-            name="category"
-            checked={(categorySlug
-              ? [categorySlug]
-              : (params.get("category") ?? "").split(",")
-            ).includes(item.slug)}
-            disabled={Boolean(categorySlug)}
-            onChange={() => toggleCsvFilter("category", item.slug)}
-          />
-          {item.name}
-        </label>
-      ))}
-      <h3>Thương hiệu</h3>
-      {brands.map((item) => (
-        <label key={item.id}>
-          <input
-            type="checkbox"
-            name="brand"
-            checked={(params.get("brand") ?? "").split(",").includes(item.slug)}
-            onChange={() => toggleCsvFilter("brand", item.slug)}
-          />
-          {item.name}
-        </label>
-      ))}
       {tagGroupsSupported ? (
-        filterGroups.map((group) => {
-          const selected = new Set((params.get("tagIds") ?? "").split(",").filter(Boolean));
-          return (
-            <section className="dynamic-filter-group" key={group.id}>
-              <h3>{group.displayName}</h3>
-              <div className="filter-tags">
-                {group.tags.map((tag) => (
+        <>
+          {ageGroup && ageGroup.tags.length > 0 && (
+            <section className="filter-section age-filter-section">
+              <h3>Độ tuổi</h3>
+              <div
+                className="filter-tags age-filter-options"
+                aria-label="Lọc theo độ tuổi"
+              >
+                {ageGroup.tags.map((tag) => (
                   <button
                     type="button"
-                    className={selected.has(tag.id) ? "active" : ""}
+                    className={
+                      selectedTagIds.has(tag.id) ? "active" : ""
+                    }
                     key={tag.id}
-                    aria-pressed={selected.has(tag.id)}
+                    aria-pressed={selectedTagIds.has(tag.id)}
                     onClick={() => toggleTagFilter(tag.id)}
                   >
                     {tag.displayName ?? tag.name}
@@ -480,61 +505,80 @@ export function ProductListPage({
                 ))}
               </div>
             </section>
-          );
-        })
+          )}
+          {characteristicGroup && (
+            <section className="filter-section characteristic-filter-section">
+              <h3>Đặc điểm</h3>
+              <div
+                className="filter-tags characteristic-filter-options"
+                aria-label="Lọc theo đặc điểm"
+              >
+                {characteristicGroup.tags.map((tag) => (
+                  <button
+                    type="button"
+                    className={
+                      selectedTagIds.has(tag.id) ? "active" : ""
+                    }
+                    key={tag.id}
+                    aria-pressed={selectedTagIds.has(tag.id)}
+                    onClick={() => toggleTagFilter(tag.id)}
+                  >
+                    {tag.displayName ?? tag.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
       ) : (
         <>
-          <h3>Độ tuổi</h3>
-          {["6", "7", "10", "12"].map((item) => (
-            <label key={item}>
-              <input
-                type="radio"
-                name="age"
-                checked={params.get("age") === item}
-                onChange={() => setFilter("age", item)}
-              />
-              {item}m+
-            </label>
-          ))}
-          <h3>Best seller</h3>
-          <label>
-            <input
-              type="checkbox"
-              checked={params.get("bestSeller") === "1"}
-              onChange={(event) =>
-                setFilter("bestSeller", event.target.checked ? "1" : "")
-              }
-            />
-            Chỉ xem Best seller
-          </label>
-          <h3>Đặc tính</h3>
-          <div className="filter-tags">
-            {tagOptions.map((item) => (
-              <button
-                type="button"
-                className={params.get("tag") === item.slug ? "active" : ""}
-                key={item.slug}
-                onClick={() =>
-                  setFilter("tag", params.get("tag") === item.slug ? "" : item.slug)
-                }
+          <section className="filter-section age-filter-section">
+            <h3>Độ tuổi</h3>
+            <div
+              className="filter-tags age-filter-options"
+              aria-label="Lọc theo độ tuổi"
+            >
+              {["6", "7", "10", "12"].map((item) => (
+                <button
+                  type="button"
+                  className={params.get("age") === item ? "active" : ""}
+                  key={item}
+                  aria-pressed={params.get("age") === item}
+                  onClick={() => setFilter("age", item)}
+                >
+                  {item}m+
+                </button>
+              ))}
+            </div>
+          </section>
+          {legacyCharacteristicOptions.length > 0 && (
+            <section className="filter-section characteristic-filter-section">
+              <h3>Đặc điểm</h3>
+              <div
+                className="filter-tags characteristic-filter-options"
+                aria-label="Lọc theo đặc điểm"
               >
-                {item.name}
-              </button>
-            ))}
-          </div>
+                {legacyCharacteristicOptions.map((item) => (
+                  <button
+                    type="button"
+                    className={params.get("tag") === item.slug ? "active" : ""}
+                    key={item.slug}
+                    aria-pressed={params.get("tag") === item.slug}
+                    onClick={() =>
+                      setFilter(
+                        "tag",
+                        params.get("tag") === item.slug ? "" : item.slug,
+                      )
+                    }
+                  >
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
         </>
       )}
-      <h3>Tình trạng</h3>
-      <label>
-        <input
-          type="checkbox"
-          checked={params.get("available") === "1"}
-          onChange={(event) =>
-            setFilter("available", event.target.checked ? "1" : "")
-          }
-        />
-        Còn hàng
-      </label>
       <button
         className="clear-filter"
         onClick={clearProductFilters}
@@ -573,27 +617,6 @@ export function ProductListPage({
               <option value="best_seller">Best seller</option>
             </select>
           </label>
-        </div>
-        <div className="mobile-category-chips">
-          <button
-            className={!categorySlug && !params.get("category") ? "active" : ""}
-            onClick={clearProductFilters}
-          >
-            Tất cả
-          </button>
-          {categories.map((item) => (
-            <button
-              key={item.id}
-              className={(categorySlug
-                ? categorySlug === item.slug
-                : (params.get("category") ?? "").split(",").includes(item.slug))
-                ? "active"
-                : ""}
-              onClick={() => toggleCsvFilter("category", item.slug)}
-            >
-              {item.name}
-            </button>
-          ))}
         </div>
         <div className="mobile-list-status">
           <span>

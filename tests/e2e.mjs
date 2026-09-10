@@ -20,14 +20,6 @@ if (catalogIsEmpty) {
   // Smoke catalog rỗng phải chạy trước fixture category vì fixture có product ẩn trong Admin.
   await import("./empty-catalog.e2e.mjs");
 }
-await import("./admin-category-reactivation.e2e.mjs");
-if (catalogIsEmpty) {
-  // Sau cleanup, dùng các smoke chuyên biệt thay vì tạo lại seed/test product.
-  await import("./admin-product-stock.e2e.mjs");
-  await import("./inventory-reservation.e2e.mjs");
-  await import("./product-rich-description.e2e.mjs");
-  process.exit(0);
-}
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
 await mkdir(outputDir, { recursive: true });
 
@@ -50,6 +42,158 @@ async function openPage(path, viewport, fileName) {
   if (!response || response.status() >= 500 || body.trim().length < 20 || /Oops|unexpected error|Đã có lỗi máy chủ/.test(body)) throw new Error(`Trang ${path} hiển thị lỗi hoặc trống`);
   await context.close();
 }
+
+// Kiểm tra surface filter thực tế, gồm query state, accessibility và kích thước responsive.
+async function assertFilterSurface(page, selector, viewportWidth, mobile = false) {
+  const root = page.locator(`${selector} .filters-inner`);
+  const headings = await root.locator("h3").allTextContents();
+  if (!headings.includes("Độ tuổi")) throw new Error(`Thiếu filter Độ tuổi ở ${selector}`);
+  if (!headings.includes("Đặc điểm")) throw new Error(`Thiếu filter Đặc điểm ở ${selector}`);
+  if (headings.some((heading) => !["Độ tuổi", "Đặc điểm"].includes(heading.trim())))
+    throw new Error(`Storefront còn filter ngoài phạm vi ở ${selector}: ${headings.join(", ")}`);
+  if (await root.locator(".category-filter-section, .brand-filter-section, .availability-filter-section").count())
+    throw new Error(`Storefront còn wrapper filter cũ ở ${selector}`);
+  const filterText = await root.innerText();
+  if (["Danh mục", "Thương hiệu", "Tình trạng", "Best seller"].some((label) => filterText.includes(label)))
+    throw new Error(`Storefront còn text filter cũ ở ${selector}`);
+  const buttons = root.locator(".filter-tags button");
+  if (await buttons.count() === 0) throw new Error(`Storefront không có filter option ở ${selector}`);
+  const ariaValues = await buttons.evaluateAll((items) => items.map((item) => item.getAttribute("aria-pressed")));
+  if (ariaValues.some((value) => value !== "true" && value !== "false"))
+    throw new Error(`Filter button thiếu aria-pressed ở ${selector}`);
+  const metrics = await page.evaluate(({ selector, viewportWidth, mobile }) => {
+    const root = document.querySelector(`${selector} .filters-inner`);
+    const ageOptions = root?.querySelector(".age-filter-options");
+    const ageSection = root?.querySelector(".age-filter-section");
+    const characteristicSection = root?.querySelector(".characteristic-filter-section");
+    const filterButtons = [...(root?.querySelectorAll(".filter-tags button") ?? [])];
+    const buttonHeights = filterButtons.map((button) => button.getBoundingClientRect().height);
+    const ageStyle = ageOptions ? getComputedStyle(ageOptions) : null;
+    const ageRect = ageSection?.getBoundingClientRect();
+    const characteristicRect = characteristicSection?.getBoundingClientRect();
+    return {
+      overflow: document.documentElement.scrollWidth > viewportWidth + 1,
+      flexWrap: ageStyle?.flexWrap ?? "",
+      gap: Number.parseFloat(ageStyle?.columnGap ?? "0"),
+      verticalGap: ageRect && characteristicRect ? characteristicRect.top - ageRect.bottom : 0,
+      minButtonHeight: Math.min(...buttonHeights),
+      mobile,
+    };
+  }, { selector, viewportWidth, mobile });
+  if (metrics.overflow) throw new Error(`Filter gây tràn ngang ở viewport ${viewportWidth}`);
+  if (metrics.flexWrap !== "wrap") throw new Error(`Age chip không wrap ở viewport ${viewportWidth}`);
+  if (metrics.gap < 7) throw new Error(`Khoảng cách chip quá nhỏ ở viewport ${viewportWidth}`);
+  if (metrics.verticalGap < 16) throw new Error(`Khoảng cách giữa hai section quá nhỏ ở viewport ${viewportWidth}`);
+  if (mobile && metrics.minButtonHeight < 44)
+    throw new Error(`Touch target filter mobile nhỏ hơn 44px ở viewport ${viewportWidth}`);
+}
+
+async function waitForFilterOptions(page, selector) {
+  await page.waitForFunction((surface) => {
+    const root = document.querySelector(`${surface} .filters-inner`);
+    return Boolean(root?.querySelector(".age-filter-options button") && root?.querySelector(".characteristic-filter-options button"));
+  }, selector, { timeout: 10000 });
+}
+
+async function selectAgeAndCharacteristic(page, selector) {
+  const ageButton = page.locator(`${selector} .age-filter-options button`).first();
+  const characteristicButton = page.locator(`${selector} .characteristic-filter-options button`).first();
+  await ageButton.focus();
+  if (await ageButton.getAttribute("aria-pressed") !== "false")
+    throw new Error(`Age filter không khởi tạo ở trạng thái chưa chọn: ${selector}`);
+  await ageButton.click();
+  await page.waitForFunction(() => (new URL(location.href).searchParams.get("tagIds") ?? "").split(",").filter(Boolean).length === 1);
+  await page.waitForFunction((surface) => document.querySelector(`${surface} .age-filter-options button`)?.getAttribute("aria-pressed") === "true", selector);
+  if (await ageButton.getAttribute("aria-pressed") !== "true")
+    throw new Error(`Age filter không giữ trạng thái selected: ${selector}`);
+  await characteristicButton.click();
+  await page.waitForFunction(() => (new URL(location.href).searchParams.get("tagIds") ?? "").split(",").filter(Boolean).length === 2);
+  await page.waitForFunction((surface) => document.querySelector(`${surface} .characteristic-filter-options button`)?.getAttribute("aria-pressed") === "true", selector);
+  if (await characteristicButton.getAttribute("aria-pressed") !== "true")
+    throw new Error(`Characteristic filter không giữ trạng thái selected: ${selector}`);
+}
+
+async function assertStorefrontFilters() {
+  // Desktop và tablet phải loại state cũ sau khi catalog metadata đã hydrate.
+  for (const [viewport, label] of [
+    [{ width: 1440, height: 1000 }, "desktop"],
+    [{ width: 1024, height: 768 }, "tablet"],
+  ]) {
+    const context = await browser.newContext({ viewport, locale: "vi-VN" });
+    const page = await context.newPage();
+    try {
+      await page.goto(`${baseUrl}/shop?brand=heinz&available=1&bestSeller=1&q=Gerber&sort=price_asc`, { waitUntil: "domcontentloaded" });
+      await waitForFilterOptions(page, ".filter-sidebar");
+      await page.waitForFunction(() => {
+        const search = new URL(location.href).searchParams;
+        return !search.has("brand") && !search.has("available") && !search.has("bestSeller");
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(200);
+      await assertFilterSurface(page, ".filter-sidebar", viewport.width, false);
+      if (await page.locator(".mobile-category-chips").count() !== 0)
+        throw new Error(`Mobile category chips vẫn tồn tại trong DOM ở ${label}`);
+      await selectAgeAndCharacteristic(page, ".filter-sidebar");
+      const combinedUrl = new URL(page.url());
+      if (combinedUrl.searchParams.get("q") !== "Gerber" || combinedUrl.searchParams.get("sort") !== "price_asc")
+        throw new Error(`Age/Đặc điểm làm mất search hoặc sort ở ${label}`);
+      await page.locator(".filter-sidebar .clear-filter").click();
+      await page.waitForFunction(() => !(new URL(location.href).searchParams.get("tagIds")));
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Drawer mobile phải dùng cùng filter fragment và đạt touch target tối thiểu.
+  for (const width of [390, 375]) {
+    const context = await browser.newContext({ viewport: { width, height: 844 }, locale: "vi-VN" });
+    const page = await context.newPage();
+    try {
+      await page.goto(`${baseUrl}/shop?brand=heinz&available=1&bestSeller=1`, { waitUntil: "domcontentloaded" });
+      await waitForFilterOptions(page, ".filter-sidebar");
+      await page.waitForFunction(() => {
+        const search = new URL(location.href).searchParams;
+        return !search.has("brand") && !search.has("available") && !search.has("bestSeller");
+      }, undefined, { timeout: 10000 });
+      await page.waitForTimeout(200);
+      await page.getByRole("button", { name: "Bộ lọc", exact: true }).click();
+      await page.locator(".filter-sheet").waitFor({ state: "visible" });
+      await waitForFilterOptions(page, ".filter-sheet");
+      await assertFilterSurface(page, ".filter-sheet", width, true);
+      await selectAgeAndCharacteristic(page, ".filter-sheet");
+      await page.locator(".filter-sheet .sheet-close").click();
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Category navigation phải còn hoạt động dù category không còn là filter sidebar.
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "vi-VN" });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${baseUrl}/categories`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("link", { name: /Bột ăn dặm/ }).first().click();
+    await page.waitForURL(/\/category\/bot-an-dam/);
+    await page.waitForTimeout(600);
+    if (!(await page.locator("body").innerText()).includes("Bột ăn dặm"))
+      throw new Error("Category navigation không mở đúng listing");
+  } finally {
+    await context.close();
+  }
+}
+
+if (catalogIsEmpty) {
+  // Catalog local rỗng vẫn phải kiểm chứng filter metadata và drawer responsive.
+  await assertStorefrontFilters();
+  await browser.close();
+  await import("./admin-category-reactivation.e2e.mjs");
+  // Sau cleanup, dùng các smoke chuyên biệt thay vì tạo lại seed/test product.
+  await import("./admin-product-stock.e2e.mjs");
+  await import("./inventory-reservation.e2e.mjs");
+  await import("./product-rich-description.e2e.mjs");
+  process.exit(0);
+}
+
+await import("./admin-category-reactivation.e2e.mjs");
 
 async function assertAdminHardNavigation(path) {
   const assertPage = async (page, label, navigate) => {
@@ -97,6 +241,8 @@ const visualRoutes = [
   ["/cart", "cart"], ["/cart/success/GH-260825-X7K2", "success"],
 ];
 
+await assertStorefrontFilters();
+
 for (const [path, name] of visualRoutes) {
   await openPage(path, { width: 1440, height: 1000 }, `${name}-desktop.png`);
   await openPage(path, { width: 390, height: 844 }, `${name}-mobile.png`);
@@ -104,6 +250,7 @@ for (const [path, name] of visualRoutes) {
 
 await openPage("/", { width: 768, height: 1024 }, "home-tablet.png");
 await openPage("/shop", { width: 1024, height: 768 }, "shop-1024.png");
+await openPage("/shop", { width: 375, height: 844 }, "shop-375.png");
 await openPage("/admin/products", { width: 1440, height: 1000 }, "admin-products.png");
 await openPage("/admin/products/new", { width: 1440, height: 1000 }, "admin-product-new.png");
 await openPage("/admin/cart-requests", { width: 1440, height: 1000 }, "admin-cart-requests.png");
@@ -319,4 +466,4 @@ await import("./admin-product-stock.e2e.mjs");
 await import("./inventory-reservation.e2e.mjs");
 await import("./product-rich-description.e2e.mjs");
 await browser.close();
-console.log(`E2E_OK routes=${visualRoutes.length * 2 + 6} viewports=390,768,1024,1440 cart-persistence=pass filter-url=pass admin-hard-navigation=pass multi-variant-admin-cart=pass`);
+console.log(`E2E_OK routes=${visualRoutes.length * 2 + 7} viewports=375,390,768,1024,1440 storefront-filters=pass cart-persistence=pass filter-url=pass admin-hard-navigation=pass multi-variant-admin-cart=pass`);
