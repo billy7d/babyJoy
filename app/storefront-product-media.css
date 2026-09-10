@@ -1,0 +1,90 @@
+/*
+ * Hợp đồng trình bày ảnh sản phẩm cho các surface commerce public.
+ * Class này chỉ được gắn có chủ đích ở ProductCard, Cart và cart-share summary;
+ * ProductImage vẫn giữ default để không ảnh hưởng ảnh admin hoặc nội dung khác.
+ */
+.storefront-product-media {
+  box-sizing: border-box;
+  padding: clamp(3px, 3.6%, 10px);
+  object-fit: contain;
+  object-position: center;
+  background: var(--surface-lowest);
+}
+
+/* Khoảng trống do contain thuộc về media box trắng, cùng reference Product Detail. */
+.product-image {
+  background: var(--surface-lowest);
+}
+
+/* Giữ nguyên kích thước media box của ProductCard, chỉ đổi cách ảnh nằm bên trong. */
+.product-image > .storefront-product-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  transition: none;
+}
+
+/* Card vẫn có hover lift/shadow, nhưng ảnh không được zoom làm mất cạnh. */
+.product-card:hover .product-image > .storefront-product-media {
+  transform: none;
+}
+
+/* Placeholder giữ inset và nền riêng, không bị contract ảnh thật ghi đè. */
+.storefront-product-media.product-image-placeholder {
+  padding: 16%;
+  object-fit: contain !important;
+  background: var(--surface-container);
+}
+
+/* Kích thước cart giữ nguyên 150px, 100px và 96px theo các breakpoint hiện tại. */
+.cart-item > .storefront-product-media {
+  width: 150px;
+  height: 150px;
+  border-radius: 14px;
+  object-fit: contain;
+  object-position: center;
+}
+
+@media (max-width: 1023px) {
+  .cart-item > .storefront-product-media {
+    width: 100px;
+    height: 100px;
+  }
+}
+
+@media (max-width: 639px) {
+  .cart-item > .storefront-product-media {
+    width: 96px;
+    height: 96px;
+  }
+}
+
+/* Quà tặng dùng cùng fit contract nhưng giữ nền surface riêng của gift card. */
+.promotion-gift-cart-item > .storefront-product-media {
+  background: var(--surface-low);
+}
+
+/* Cart-share và summary thumbnail cũng phải hiển thị trọn ảnh variant. */
+.public-share-items .storefront-product-media {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  object-fit: contain;
+  object-position: center;
+}
+
+.summary-lines .storefront-product-media {
+  width: 54px;
+  height: 54px;
+  border-radius: 8px;
+  object-fit: contain;
+  object-position: center;
+}
+
+@media (max-width: 639px) {
+  .public-share-items .storefront-product-media {
+    width: 64px;
+    height: 64px;
+  }
+}
