@@ -265,6 +265,7 @@ export function ProductCard({
     >
       <Link to={productLink} className="product-image">
         <ProductImage
+          className="storefront-product-media"
           product={product}
           image={cardVariant ? getVariantPrimaryImage(cardVariant) : undefined}
           loading="lazy"

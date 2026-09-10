@@ -1503,6 +1503,7 @@ export function CartPage() {
                     key={variant.id}
                   >
                     <ProductImage
+                      className="storefront-product-media"
                       product={product}
                       image={getVariantPrimaryImage(variant)}
                       r2Key={imageKey}
@@ -1548,7 +1549,11 @@ export function CartPage() {
               })}
               {promotion.data?.gifts.map((gift) => (
                 <article className="cart-item promotion-gift-cart-item" key={`${gift.promotionId}-${gift.variantId}`}>
-                  <ProductImage r2Key={gift.imageKey} alt={gift.productName} />
+                  <ProductImage
+                    className="storefront-product-media"
+                    r2Key={gift.imageKey}
+                    alt={gift.productName}
+                  />
                   <div className="cart-item-info">
                     <h2>{gift.productName}</h2>
                     <Tag tone="primary">Quà tặng khuyến mãi</Tag>
@@ -2174,7 +2179,7 @@ export function PublicCartSharePage() {
                 className={item.isPromotionGift ? "promotion-gift-share-item" : ""}
                 key={`${item.productName}-${item.variantName}-${index}`}
               >
-                <img src={item.imageUrl} alt="" />
+                <img className="storefront-product-media" src={item.imageUrl} alt="" />
                 <p>
                   <b>{item.productName}</b>
                   <span>{item.variantName}</span>
