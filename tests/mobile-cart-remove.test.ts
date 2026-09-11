@@ -25,27 +25,24 @@ describe("mobile cart remove control", () => {
 
   it("shows a touch-sized remove action on mobile without changing desktop styles", () => {
     expect(mobileCss).toContain("@media (max-width: 639px)");
-    expect(mobileCss).toContain(".cart-item .remove-line");
+    expect(mobileCss).toContain(".cart-page .cart-item .remove-line");
     expect(mobileCss).toMatch(/min-width:\s*44px/);
     expect(mobileCss).toMatch(/min-height:\s*44px/);
     expect(mobileCss).toMatch(/display:\s*inline-flex/);
-    expect(mobileCss).toContain("grid-template-columns: 96px minmax(0, 1fr)");
+    expect(mobileCss).toContain("grid-template-columns: 80px minmax(0, 1fr)");
   });
 
   it("keeps variant and remove action adjacent on the same aligned row", () => {
-    expect(mobileCss).toContain(
-      "grid-template-columns: max-content max-content minmax(0, 1fr)",
-    );
-    expect(mobileCss).toContain('"variant remove ."');
+    expect(mobileCss).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(mobileCss).toContain('"title remove"');
     expect(mobileCss).toContain("grid-area: variant");
     expect(mobileCss).toContain("grid-area: remove");
-    expect(mobileCss).toContain("column-gap: 6px");
-    expect(mobileCss).toContain("align-self: center");
-    expect(mobileCss).toContain("justify-self: start");
+    expect(mobileCss).toContain("column-gap: 8px");
+    expect(mobileCss).toContain("justify-self: end");
   });
 
   it("keeps quantity controls in the mobile card after the layout override", () => {
-    expect(mobileCss).toContain(".cart-item .quantity-stepper");
+    expect(mobileCss).toContain(".cart-page .cart-item > .quantity-stepper");
     expect(mobileCss).toContain("grid-column: 2");
     expect(mobileCss).toContain("grid-row: 2");
   });
