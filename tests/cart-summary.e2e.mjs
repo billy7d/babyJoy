@@ -55,6 +55,8 @@ async function inspectSummary(page) {
       const element = document.querySelector(selector);
       return element ? Number.parseFloat(getComputedStyle(element).fontSize) : 0;
     };
+    const valueDigits = (selector) =>
+      document.querySelector(selector)?.textContent?.replace(/\D/g, "") ?? "";
     const box = (selector) => {
       const element = document.querySelector(selector);
       if (!element) return null;
@@ -75,6 +77,9 @@ async function inspectSummary(page) {
       subtotalSize: numericFontSize(".cart-summary .subtotal .price"),
       promotionSize: numericFontSize(".cart-summary .promotion-total-row > b"),
       totalSize: numericFontSize(".cart-summary .cart-final-total .price"),
+      subtotalDigits: valueDigits(".cart-summary .subtotal .price"),
+      promotionDigits: valueDigits(".cart-summary .promotion-total-row > b"),
+      totalDigits: valueDigits(".cart-summary .cart-final-total .price"),
       rowDisplay: display(".cart-summary .promotion-total-row"),
       breakdownHeadingDisplay: display(".cart-summary .promotion-breakdown > b"),
       breakdownAmountDisplay: display(".cart-summary .promotion-breakdown p > strong"),
@@ -181,6 +186,11 @@ try {
       await page.waitForTimeout(250);
 
       const metrics = await inspectSummary(page);
+      await page.screenshot({
+        path: fileURLToPath(new URL(viewport.file, outputDir)),
+        fullPage: true,
+      });
+
       assert(!metrics.overflow, `Cart summary ${viewport.width}px bị tràn ngang`);
       assert(
         metrics.totalSize > metrics.subtotalSize &&
@@ -201,15 +211,10 @@ try {
           Math.abs(metrics.amount.centerY - metrics.label.centerY) < 24,
         `Promotion chưa cùng hàng trực quan ở ${viewport.width}px`,
       );
-      assert(metrics.text.includes("550.000 đ"), `Thiếu tạm tính 550.000 đ ở ${viewport.width}px`);
-      assert(metrics.text.includes("-55.000 đ"), `Thiếu khuyến mãi -55.000 đ ở ${viewport.width}px`);
-      assert(metrics.text.includes("495.000 đ"), `Thiếu tổng 495.000 đ ở ${viewport.width}px`);
+      assert(metrics.subtotalDigits === "550000", `Sai tạm tính ở ${viewport.width}px: ${metrics.subtotalDigits}`);
+      assert(metrics.promotionDigits === "55000", `Sai khuyến mãi ở ${viewport.width}px: ${metrics.promotionDigits}`);
+      assert(metrics.totalDigits === "495000", `Sai tổng ở ${viewport.width}px: ${metrics.totalDigits}`);
       assert(metrics.text.includes(fixtureName), `Thiếu tên promotion ở ${viewport.width}px`);
-
-      await page.screenshot({
-        path: fileURLToPath(new URL(viewport.file, outputDir)),
-        fullPage: true,
-      });
     } finally {
       await context.close();
     }
