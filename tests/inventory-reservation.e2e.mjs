@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chromium, request } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
+const e2eRateLimitIp = "e2e-inventory-" + randomUUID();
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_EXECUTABLE_PATH
@@ -19,6 +20,8 @@ let requestAId = "";
 let requestAPrepareRetryId = "";
 let requestARetryId = "";
 let requestBId = "";
+const inventoryPromotionName = "E2E Reservation Promotion";
+const inventoryPromotionDescription = "Promotion dùng để kiểm tra reservation.";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -71,11 +74,44 @@ async function assertInventory(stockOnHand, reservedQuantity, message) {
   );
 }
 
+async function cleanupStaleInventoryPromotions() {
+  const body = await jsonRequest(
+    "GET",
+    "/api/admin/promotions?status=ACTIVE&q=" + encodeURIComponent(inventoryPromotionName),
+  );
+  const stalePromotions = (body.data ?? []).filter(
+    (promotion) =>
+      promotion.name === inventoryPromotionName &&
+      promotion.description === inventoryPromotionDescription,
+  );
+  for (const promotion of stalePromotions) {
+    const result = await jsonRequest("DELETE", "/api/admin/promotions/" + promotion.id);
+    assert(
+      result.archived === true || result.deleted === true,
+      "Không thể dọn promotion fixture cũ " + promotion.id,
+    );
+  }
+  const remaining = await jsonRequest(
+    "GET",
+    "/api/admin/promotions?status=ACTIVE&q=" + encodeURIComponent(inventoryPromotionName),
+  );
+  assert(
+    !(remaining.data ?? []).some(
+      (promotion) =>
+        promotion.name === inventoryPromotionName &&
+        promotion.description === inventoryPromotionDescription,
+    ),
+    "Promotion fixture cũ vẫn ACTIVE sau cleanup",
+  );
+}
+
 async function openCustomer(label) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     locale: "vi-VN",
     permissions: ["clipboard-read", "clipboard-write"],
+    // Mỗi lần chạy dùng một bucket IP local riêng, không tái sử dụng rate-limit state cũ.
+    extraHTTPHeaders: { "cf-connecting-ip": e2eRateLimitIp },
   });
   customerContexts.push(context);
   await context.addInitScript((id) => {
@@ -132,167 +168,223 @@ async function openCustomer(label) {
   };
 }
 
-async function activateCustomer(customer, label) {
-  const activationResponse = new Promise((resolve, reject) => {
-    const onResponse = (response) => {
-      const url = new URL(response.url());
-      if (
-        response.request().method() !== "POST" ||
-        url.pathname !== "/api/cart/share/activate"
-      )
-        return;
-      customer.page.off("response", onResponse);
-      void response
-        .body()
-        .then((buffer) =>
-          resolve({ response, body: JSON.parse(buffer.toString("utf8")) }),
-        )
-        .catch(reject);
-    };
-    customer.page.on("response", onResponse);
-  });
-  const button = customer.page
-    .locator(".cart-guide-actions button.btn.primary:visible")
-    .first();
-  await button.waitFor({ state: "visible" });
-  // Đọc body ngay tại response event trước khi navigation sang Messenger.
-  const { response, body } = await Promise.all([activationResponse, button.click()]).then(
-    ([result]) => result,
-  );
-  assert(response.status() < 500, label + " activation trả lỗi server " + response.status());
-  return { response, body };
-}
-
-function requestSubmissionToken(response) {
+function requestSubmissionToken(request) {
   try {
-    return JSON.parse(response.request().postData() ?? "{}").submissionToken ?? "";
+    return JSON.parse(request.postData() ?? "{}").submissionToken ?? "";
   } catch {
     return "";
   }
 }
 
-async function prepareCancelledCustomer(customer, oldToken, label) {
-  const responses = [];
-  const onResponse = (response) => {
-    const pathname = new URL(response.url()).pathname;
-    if (
-      response.request().method() === "POST" &&
-      pathname === "/api/cart/share/prepare"
-    )
-      responses.push({
-        response,
-        bodyPromise: response.body().then((buffer) => JSON.parse(buffer.toString("utf8"))),
-      });
-  };
-  customer.page.on("response", onResponse);
-  const button = customer.page.locator("button.direct-prepare:visible").first();
-  try {
-    await button.waitFor({ state: "visible", timeout: 10000 });
-    // Chờ catalog hydrate xong để trạng thái khả dụng của nút phản ánh dữ liệu thật.
-    await customer.page.waitForFunction(
-      () => {
-        const element = document.querySelector("button.direct-prepare");
-        return element instanceof HTMLButtonElement && !element.disabled;
-      },
-      undefined,
-      { timeout: 10000 },
-    );
-    assert(!(await button.isDisabled()), label + " nút prepare đang bị disabled");
-    await Promise.all([
-      customer.page.waitForURL(/\/cart\/guide\/GH-/),
-      button.click(),
-    ]);
-    await customer.page.waitForTimeout(100);
-  } finally {
-    customer.page.off("response", onResponse);
-  }
-  const events = await Promise.all(
-    responses.map(async ({ response, bodyPromise }) => ({
-      response,
-      body: await bodyPromise,
-      token: requestSubmissionToken(response),
-    })),
-  );
-  const stale = events.find(
-    (event) => event.token === oldToken,
-  );
-  const fresh = events.find(
-    (event) => event.token !== oldToken && event.response.status() === 201,
-  );
-  assert(
-    stale?.response.status() === 409 && stale.body.error?.code === "ORDER_CANCELLED",
-    label + " không recovery từ prepare CANCELLED: " +
-      JSON.stringify(events.map((event) => ({ status: event.response.status(), token: event.token }))),
-  );
-  assert(fresh, label + " không tạo prepared request mới");
-  return {
-    response: fresh.response,
-    body: fresh.body,
-    token: fresh.token,
-  };
+function describeCartShareEvents(events) {
+  return events.map((event) => ({
+    path: event.path,
+    status: event.status,
+    token: event.token,
+    code: event.body?.error?.code ?? event.body?.cartRequest?.checkoutState ?? "",
+  }));
 }
 
-async function activateCancelledCustomer(customer, oldToken, label) {
-  const responses = [];
-  const onResponse = (response) => {
-    const pathname = new URL(response.url()).pathname;
-    if (
-      response.request().method() === "POST" &&
-      (pathname === "/api/cart/share/prepare" || pathname === "/api/cart/share/activate")
-    )
-      responses.push({
-        response,
-        bodyPromise: response.body().then((buffer) => JSON.parse(buffer.toString("utf8"))),
-      });
+async function captureCartShareResponses(page, paths, action) {
+  const events = [];
+  const waiters = [];
+  const routePattern = "**/api/cart/share/**";
+  const notifyWaiters = () => {
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = waiters[index];
+      const event = events.find(waiter.predicate);
+      if (!event) continue;
+      waiters.splice(index, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(event);
+    }
   };
-  customer.page.on("response", onResponse);
+  const waitForEvent = (predicate, timeout = 10000) => {
+    const existing = events.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = waiters.findIndex((waiter) => waiter.resolve === resolve);
+        if (index >= 0) waiters.splice(index, 1);
+        reject(new Error("Timeout chờ cart-share response: " + JSON.stringify(describeCartShareEvents(events))));
+      }, timeout);
+      waiters.push({ predicate, resolve, reject, timer });
+    });
+  };
+  const routeHandler = async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() !== "POST" || !paths.includes(pathname)) {
+      await route.continue();
+      return;
+    }
+    // Đọc response ở lớp route trước khi page có thể điều hướng sang Messenger.
+    const upstream = await route.fetch();
+    const buffer = await upstream.body();
+    let body;
+    try {
+      body = JSON.parse(buffer.toString("utf8"));
+    } catch {
+      throw new Error("Cart-share response không phải JSON: " + pathname);
+    }
+    events.push({
+      path: pathname,
+      status: upstream.status(),
+      token: requestSubmissionToken(request),
+      body,
+    });
+    notifyWaiters();
+    await route.fulfill({
+      status: upstream.status(),
+      headers: upstream.headers(),
+      body: buffer,
+    });
+  };
+  await page.route(routePattern, routeHandler);
+  try {
+    await action({ events, waitForEvent });
+  } finally {
+    for (const waiter of waiters) clearTimeout(waiter.timer);
+    waiters.length = 0;
+    await page.unroute(routePattern, routeHandler);
+  }
+  return events;
+}
+
+async function activateCustomer(customer, label) {
   const button = customer.page
     .locator(".cart-guide-actions button.btn.primary:visible")
     .first();
-  try {
-    await button.waitFor({ state: "visible", timeout: 5000 });
-  } catch {
-    throw new Error(
-      label +
-        " không hiển thị nút recovery; URL=" +
-        customer.page.url() +
-        "; body=" +
-        (await customer.page.locator("body").innerText()).slice(-1600) +
-        "; storage=" +
-        JSON.stringify(
-          await customer.page.evaluate(() => ({
-            cart: localStorage.getItem("babyjoy.cart.v1"),
-            prepared: sessionStorage.getItem("babyjoy.preparedCartShare.v1"),
-            token: localStorage.getItem("babyjoy.cartShareSubmission.v1"),
-          })),
-        ),
-    );
-  }
-  assert(!(await button.isDisabled()), label + " nút recovery đang bị disabled");
-  try {
-    await Promise.all([
-      customer.page.waitForURL(/m\.me\//),
-      button.click(),
-    ]);
-    await customer.page.waitForTimeout(100);
-  } finally {
-    customer.page.off("response", onResponse);
-  }
-  const events = await Promise.all(
-    responses.map(async ({ response, bodyPromise }) => ({
-      response,
-      body: await bodyPromise,
-      token: requestSubmissionToken(response),
-      path: new URL(response.url()).pathname,
-    })),
+  const events = await captureCartShareResponses(
+    customer.page,
+    ["/api/cart/share/activate"],
+    async ({ waitForEvent }) => {
+      await button.waitFor({ state: "visible" });
+      await button.click({ noWaitAfter: true });
+      const activation = await waitForEvent(
+        (event) => event.path === "/api/cart/share/activate",
+      );
+      if (activation.status >= 200 && activation.status < 300)
+        await customer.page.waitForURL(/m\.me\//, { timeout: 10000 });
+    },
+  );
+  const activation = events.find((event) => event.path === "/api/cart/share/activate");
+  assert(activation, label + " không nhận response activation: " + JSON.stringify(describeCartShareEvents(events)));
+  assert(activation.status < 500, label + " activation trả lỗi server " + activation.status);
+  return { status: activation.status, body: activation.body };
+}
+
+async function prepareCancelledCustomer(customer, oldToken, label) {
+  const button = customer.page.locator("button.direct-prepare:visible").first();
+  const events = await captureCartShareResponses(
+    customer.page,
+    ["/api/cart/share/prepare"],
+    async ({ waitForEvent }) => {
+      await button.waitFor({ state: "visible", timeout: 10000 });
+      // Chờ catalog hydrate xong để trạng thái khả dụng của nút phản ánh dữ liệu thật.
+      await customer.page.waitForFunction(
+        () => {
+          const element = document.querySelector("button.direct-prepare");
+          return element instanceof HTMLButtonElement && !element.disabled;
+        },
+        undefined,
+        { timeout: 10000 },
+      );
+      assert(!(await button.isDisabled()), label + " nút prepare đang bị disabled");
+      await button.click({ noWaitAfter: true });
+      await waitForEvent(
+        (event) =>
+          event.path === "/api/cart/share/prepare" &&
+          event.token !== oldToken &&
+          event.status === 201,
+      );
+      await customer.page.waitForURL(/\/cart\/guide\/GH-/, { timeout: 10000 });
+      await customer.page.waitForTimeout(100);
+    },
+  );
+  const stale = events.find((event) => event.token === oldToken);
+  const fresh = events.find(
+    (event) => event.token !== oldToken && event.status === 201,
+  );
+  assert(
+    stale?.status === 409 && stale.body.error?.code === "ORDER_CANCELLED",
+    label + " không recovery từ prepare CANCELLED: " + JSON.stringify(describeCartShareEvents(events)),
+  );
+  assert(fresh, label + " không tạo prepared request mới");
+  return { status: fresh.status, body: fresh.body, token: fresh.token };
+}
+
+async function activateCancelledCustomer(customer, oldToken, label) {
+  const button = customer.page
+    .locator(".cart-guide-actions button.btn.primary:visible")
+    .first();
+  const events = await captureCartShareResponses(
+    customer.page,
+    ["/api/cart/share/prepare", "/api/cart/share/activate"],
+    async ({ waitForEvent }) => {
+      try {
+        await button.waitFor({ state: "visible", timeout: 5000 });
+      } catch {
+        throw new Error(
+          label +
+            " không hiển thị nút recovery; URL=" +
+            customer.page.url() +
+            "; body=" +
+            (await customer.page.locator("body").innerText()).slice(-1600) +
+            "; storage=" +
+            JSON.stringify(
+              await customer.page.evaluate(() => ({
+                cart: localStorage.getItem("babyjoy.cart.v1"),
+                prepared: sessionStorage.getItem("babyjoy.preparedCartShare.v1"),
+                token: localStorage.getItem("babyjoy.cartShareSubmission.v1"),
+              })),
+            ),
+        );
+      }
+      assert(!(await button.isDisabled()), label + " nút recovery đang bị disabled");
+      await button.click({ noWaitAfter: true });
+      await waitForEvent(
+        (event) =>
+          event.path === "/api/cart/share/activate" &&
+          event.token === oldToken &&
+          event.status === 409,
+      );
+      await waitForEvent(
+        (event) =>
+          event.path === "/api/cart/share/prepare" &&
+          event.token !== oldToken &&
+          event.status === 201,
+      );
+      const activation = await waitForEvent(
+        (event) =>
+          event.path === "/api/cart/share/activate" &&
+          event.token !== oldToken &&
+          event.status === 200,
+      );
+      assert(
+        activation.body.cartRequest?.checkoutState === "WAITING_SELLER_CONFIRM",
+        label + " recovery activation sai state: " + JSON.stringify(activation.body),
+      );
+      try {
+        await customer.page.waitForURL(/m\.me\//, { timeout: 10000 });
+      } catch (caught) {
+        throw new Error(
+          label +
+            " không điều hướng Messenger sau activation; lỗi=" +
+            (caught instanceof Error ? caught.message : String(caught)) +
+            "; events=" +
+            JSON.stringify(describeCartShareEvents(events)),
+        );
+      }
+    },
   );
   const first = events.find((event) => event.path === "/api/cart/share/activate" && event.token === oldToken);
   const prepared = events.find((event) => event.path === "/api/cart/share/prepare" && event.token !== oldToken);
   const activation = events.find((event) => event.path === "/api/cart/share/activate" && event.token !== oldToken);
-  assert(first?.response.status() === 409 && first.body.error?.code === "ORDER_CANCELLED", label + " không chạm đúng stale CANCELLED attempt: " + JSON.stringify(events.map((event) => ({ path: event.path, status: event.response.status(), token: event.token }))));
-  assert(prepared?.response.status() === 201, label + " recovery không tạo prepared request mới");
-  assert(activation?.response.status() === 200 && activation.body.cartRequest?.checkoutState === "WAITING_SELLER_CONFIRM", label + " recovery không activate request mới");
-  return { firstResponse: first.response, firstBody: first.body, prepareResponse: prepared.response, preparedBody: prepared.body, activationResponse: activation.response, activationBody: activation.body };
+  assert(first?.status === 409 && first.body.error?.code === "ORDER_CANCELLED", label + " không chạm đúng stale CANCELLED attempt: " + JSON.stringify(describeCartShareEvents(events)));
+  assert(prepared?.status === 201, label + " recovery không tạo prepared request mới");
+  assert(activation?.status === 200 && activation.body.cartRequest?.checkoutState === "WAITING_SELLER_CONFIRM", label + " recovery không activate request mới");
+  return { firstBody: first.body, preparedBody: prepared.body, activationBody: activation.body };
 }
 
 try {
@@ -302,6 +394,7 @@ try {
     messengerUrl: "https://m.me/babyjoy-e2e",
     avatarKey: "",
   });
+  await cleanupStaleInventoryPromotions();
   const suffix = String(Date.now()) + "-" + randomUUID().slice(0, 8);
   const productBody = {
     name: "E2E Inventory Reservation",
@@ -330,8 +423,8 @@ try {
   productId = productBodyResponse.id;
   variantId = productBodyResponse.product.variants[0].id;
   const promotionBody = await jsonRequest("POST", "/api/admin/promotions", {
-    name: "E2E Reservation Promotion",
-    description: "Promotion dùng để kiểm tra reservation.",
+    name: inventoryPromotionName,
+    description: inventoryPromotionDescription,
     type: "ORDER_FIXED_DISCOUNT",
     status: "ACTIVE",
     priority: 1000,
@@ -369,7 +462,7 @@ try {
 
   const activationA = await activateCustomer(customerA, "A");
   assert(
-    activationA.response.status() === 200 &&
+    activationA.status === 200 &&
       activationA.body.cartRequest.checkoutState === "WAITING_SELLER_CONFIRM",
     "A không chuyển sang WAITING_SELLER_CONFIRM: " +
       JSON.stringify(activationA.body),
@@ -411,7 +504,7 @@ try {
 
   const activationBFailure = await activateCustomer(customerB, "B");
   assert(
-    activationBFailure.response.status() === 409 &&
+    activationBFailure.status === 409 &&
       activationBFailure.body.error?.code === "INSUFFICIENT_STOCK",
     "B phải nhận 409 INSUFFICIENT_STOCK",
   );
@@ -460,7 +553,7 @@ try {
 
   const activatedRetryA = await activateCustomer(customerA, "A retry prepared");
   assert(
-    activatedRetryA.response.status() === 200 &&
+    activatedRetryA.status === 200 &&
       activatedRetryA.body.cartRequest.checkoutState === "WAITING_SELLER_CONFIRM",
     "A prepared retry không activate được",
   );
@@ -509,7 +602,7 @@ try {
 
   const activationB = await activateCustomer(customerB, "B retry");
   assert(
-    activationB.response.status() === 200 &&
+    activationB.status === 200 &&
       activationB.body.cartRequest.checkoutState === "WAITING_SELLER_CONFIRM",
     "B retry không reserve được sau khi A release",
   );

@@ -1571,6 +1571,7 @@ export function ProductDetailPage() {
 export function CartPage() {
   const cart = useCart();
   const { products } = useCatalog();
+  const { displayName } = useStoreSettings();
   const lines = cartDetails(cart.items, products);
   const promotion = useCartPromotionEvaluation(cart.items, cart.hydrated);
   const evaluatedByVariant = new Map(
@@ -1578,7 +1579,7 @@ export function CartPage() {
   );
   const giftCount = promotion.data?.gifts.length ?? 0;
   return (
-    <PublicShell>
+    <PublicShell hideMobileNav>
       <section className="cart-page">
         <div className="cart-heading">
           <div>
@@ -1626,6 +1627,8 @@ export function CartPage() {
                       )}
                       <button
                         className="remove-line"
+                        type="button"
+                        aria-label={`Xóa ${product.name} khỏi giỏ hàng`}
                         onClick={() => cart.removeItem(variant.id)}
                       >
                         <Icon>delete</Icon>
@@ -1634,10 +1637,17 @@ export function CartPage() {
                       <div className="unit-price">
                         <span>Đơn giá</span>
                         <Price value={evaluated?.priceVnd ?? variant.priceVnd} />
+                        <span className="mobile-only unit-price-suffix">/ sản phẩm</span>
                       </div>
                       {evaluated && evaluated.discountAmountVnd > 0 && (
                         <small className="cart-line-discount">
-                          Tiết kiệm {formatVnd(evaluated.discountAmountVnd)}
+                          <span className="cart-line-discount-desktop">
+                            Tiết kiệm {formatVnd(evaluated.discountAmountVnd)}
+                          </span>
+                          <span className="mobile-only cart-line-discount-mobile">
+                            <span>TIẾT KIỆM ĐƯỢC</span>
+                            <b>-{formatVnd(evaluated.discountAmountVnd)}</b>
+                          </span>
                         </small>
                       )}
                     </div>
@@ -1682,6 +1692,13 @@ export function CartPage() {
             />
           </div>
         )}
+        <footer className="mobile-cart-footer" aria-label="Thông tin cửa hàng">
+          <div className="mobile-cart-footer-brand">
+            <span aria-hidden="true">👶</span>
+            <span>{displayName}</span>
+          </div>
+          <p>Đồng hành cùng mẹ trong hành trình ăn dặm hạnh phúc của bé yêu.</p>
+        </footer>
       </section>
     </PublicShell>
   );
@@ -1705,7 +1722,7 @@ function CartSummary({
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
-      <div>
+      <div className="cart-total-quantity-row">
         <span>Tổng số lượng</span>
         <b>{cart.totalQuantity}</b>
       </div>
@@ -1919,8 +1936,12 @@ function DirectSellerShareControls({
     return (
       <div className="direct-share-checkout">
         <p className="direct-share-help">
-          Sản phẩm và ưu đãi chưa được giữ ở bước này. Sau khi gửi giỏ hàng qua Messenger,
-          sản phẩm và ưu đãi sẽ được giữ tối đa {formatReservationDuration(reservationMinutes)} để shop xác nhận.
+          {/* Biểu tượng chỉ bổ sung cho policy box mobile; thời lượng vẫn lấy từ runtime. */}
+          <span className="mobile-only cart-policy-icon"><Icon>info</Icon></span>
+          <span>
+            Sản phẩm và ưu đãi chưa được giữ ở bước này. Sau khi gửi giỏ hàng qua Messenger,
+            sản phẩm và ưu đãi sẽ được giữ tối đa {formatReservationDuration(reservationMinutes)} để shop xác nhận.
+          </span>
         </p>
         {stale && (
           <p className="share-warning" role="alert">
@@ -1957,13 +1978,17 @@ function DirectSellerShareControls({
             </button>
           </div>
         )}
-        <button
-          className="btn primary direct-prepare"
-          disabled={busy || hasUnavailable}
-          onClick={() => void prepare(false, stale)}
-        >
-          {busy ? "ĐANG KIỂM TRA..." : "CHỐT GIỎ HÀNG"}
-        </button>
+        <div className="mobile-cart-checkout-dock">
+          <button
+            className="btn primary direct-prepare"
+            type="button"
+            disabled={busy || hasUnavailable}
+            onClick={() => void prepare(false, stale)}
+          >
+            {busy ? "ĐANG KIỂM TRA..." : "CHỐT GIỎ HÀNG"}
+            <Icon className="mobile-only cart-checkout-arrow">arrow_forward</Icon>
+          </button>
+        </div>
       </div>
     );
   }
@@ -1976,9 +2001,11 @@ function DirectSellerShareControls({
           ? ` Hàng và ưu đãi đang được giữ đến ${prepared.cartRequest.reservationExpiresAt ? new Date(prepared.cartRequest.reservationExpiresAt).toLocaleString("vi-VN") : "khi shop xác nhận"}.`
           : " Sản phẩm và ưu đãi chưa được giữ ở bước này; sau khi gửi, thời gian giữ sẽ theo cấu hình hiện tại của shop."}
       </p>
-      <button className="btn primary messenger-primary" disabled={busy} onClick={() => void showGuide(prepared)}>
-        <Icon>arrow_forward</Icon> TIẾP TỤC GỬI GIỎ HÀNG
-      </button>
+      <div className="mobile-cart-checkout-dock">
+        <button className="btn primary messenger-primary" type="button" disabled={busy} onClick={() => void showGuide(prepared)}>
+          <Icon>arrow_forward</Icon> TIẾP TỤC GỬI GIỎ HÀNG
+        </button>
+      </div>
     </div>
   );
 }
@@ -2187,9 +2214,11 @@ function MessengerCheckoutControls({
           Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng trước khi gửi.
         </p>
       )}
-      <button className="btn primary" disabled={busy || hasUnavailable} onClick={() => void start()}>
-        {busy ? "ĐANG TẠO PHIÊN..." : "XÁC NHẬN QUA MESSENGER"} <Icon>send</Icon>
-      </button>
+      <div className="mobile-cart-checkout-dock">
+        <button className="btn primary" type="button" disabled={busy || hasUnavailable} onClick={() => void start()}>
+          {busy ? "ĐANG TẠO PHIÊN..." : "XÁC NHẬN QUA MESSENGER"} <Icon>send</Icon>
+        </button>
+      </div>
     </div>
   );
 }
