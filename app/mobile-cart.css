@@ -105,6 +105,21 @@
     gap: 0;
   }
 
+  /* Tất cả card con phải co theo đúng bề rộng khả dụng của cart, kể cả khi nội dung dài. */
+  .cart-page .cart-layout,
+  .cart-page .cart-items,
+  .cart-page .cart-item,
+  .cart-page .cart-summary {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .cart-page .cart-layout {
+    align-items: stretch;
+  }
+
   .cart-items {
     gap: 12px;
   }

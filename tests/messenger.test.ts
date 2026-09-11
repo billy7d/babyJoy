@@ -13,6 +13,7 @@ import {
 } from "../workers/messenger";
 import { cartFingerprint } from "../app/lib/messenger-checkout";
 import { STORE_BRAND } from "../shared/branding";
+import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 
 describe("Messenger checkout input", () => {
   it("chỉ nhận variant và quantity, không tin giá từ browser", () => {
@@ -243,6 +244,29 @@ describe("Messenger message và public status", () => {
     expect(text).toContain("227g × 2");
     expect(text).toContain("250.000 ₫");
     expect(text).not.toContain("psid");
+  });
+
+  it("giữ miễn phí vận chuyển trong Messenger summary mà không hiển thị -0 ₫", () => {
+    const text = composeMessengerCartSummary({
+      code: "GH-FREE-SHIP",
+      subtotalVnd: 125000,
+      finalTotalVnd: 125000,
+      freeShipping: true,
+      items: [{
+        productId: "p1",
+        variantId: "v1",
+        productName: "Bột ăn dặm",
+        variantName: "227g",
+        sku: "SKU-1",
+        imageKey: null,
+        priceVnd: 125000,
+        quantity: 1,
+        lineTotalVnd: 125000,
+      }],
+      promotions: [{ promotionName: "Ship tháng 9", discountAmountVnd: 0, freeShipping: true }],
+    });
+    expect(text).toContain(FREE_SHIPPING_LABEL);
+    expect(text).not.toContain("-0 ₫");
   });
 
   it("chỉ SENT mới là hoàn tất delivery", () => {

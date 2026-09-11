@@ -20,7 +20,9 @@ describe("cart summary presentation", () => {
       "const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd",
     );
     expect(cartSource).toContain("promotion.discountTotalVnd");
-    expect(cartSource).toContain("promotion.appliedPromotions.map");
+    expect(cartSource).toContain("appliedPromotions.map");
+    expect(cartSource).toContain("promotion.freeShipping");
+    expect(cartSource).toContain("FREE_SHIPPING_LABEL");
   });
 
   it("enforces Total > Subtotal > Promotion amount hierarchy", () => {
@@ -44,6 +46,8 @@ describe("cart summary presentation", () => {
       "> .promotion-breakdown > p > strong {\n  display: none;",
     );
     expect(summaryCss).toContain("grid-column: 2");
+    expect(summaryCss).toContain("promotion-free-shipping-value");
+    expect(summaryCss).toContain("white-space: normal");
   });
 
   it("keeps the responsive hierarchy on mobile", () => {

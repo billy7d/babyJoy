@@ -12,6 +12,8 @@ export const promotionTypes = [
 
 export type PromotionType = (typeof promotionTypes)[number];
 
+export const FREE_SHIPPING_LABEL = "Miễn phí vận chuyển - Free Shipping";
+
 export const promotionStatuses = [
   "DRAFT",
   "ACTIVE",
@@ -26,12 +28,20 @@ export type PromotionScope =
   | "SELECTED_PRODUCTS"
   | "SELECTED_CATEGORIES";
 
-type BaseReward = {
-  kind: DiscountKind;
-  amount?: number;
-  percentage?: number;
-  maximumDiscount?: number | null;
-};
+export type PromotionReward =
+  | {
+      kind: "FIXED";
+      amount: number;
+      maximumDiscount?: number | null;
+    }
+  | {
+      kind: "PERCENTAGE";
+      percentage: number;
+      maximumDiscount?: number | null;
+    }
+  | {
+      kind: "FREE_SHIPPING";
+    };
 
 export type PromotionConfig =
   | {
@@ -62,12 +72,12 @@ export type PromotionConfig =
   | {
       type: "PRODUCT_DISCOUNT";
       productIds: string[];
-      reward: BaseReward;
+      reward: PromotionReward;
     }
   | {
       type: "CATEGORY_DISCOUNT";
       categoryIds: string[];
-      reward: BaseReward;
+      reward: PromotionReward;
     }
   | {
       type: "QUANTITY_DISCOUNT";
@@ -75,19 +85,37 @@ export type PromotionConfig =
       scope: PromotionScope;
       productIds?: string[];
       categoryIds?: string[];
-      reward: BaseReward;
+      reward: PromotionReward;
       allowRepeatedApplications?: boolean;
     }
   | {
       type: "COMBO_DISCOUNT";
       items: Array<{ productId: string; quantity: number }>;
-      reward: BaseReward;
+      reward: PromotionReward;
       allowRepeatedApplications?: boolean;
     }
   | {
       type: "TIERED_DISCOUNT";
-      tiers: Array<{ threshold: number; reward: BaseReward }>;
+      tiers: Array<{ threshold: number; reward: PromotionReward }>;
     };
+
+export function promotionConfigProvidesFreeShipping(
+  config: PromotionConfig,
+  subtotalVnd?: number,
+) {
+  if (
+    config.type === "PRODUCT_DISCOUNT" ||
+    config.type === "CATEGORY_DISCOUNT" ||
+    config.type === "QUANTITY_DISCOUNT" ||
+    config.type === "COMBO_DISCOUNT"
+  )
+    return config.reward.kind === "FREE_SHIPPING";
+  if (config.type !== "TIERED_DISCOUNT") return false;
+  const tier = subtotalVnd === undefined
+    ? config.tiers.find((item) => item.reward.kind === "FREE_SHIPPING")
+    : [...config.tiers].reverse().find((item) => item.threshold <= subtotalVnd);
+  return tier?.reward.kind === "FREE_SHIPPING";
+}
 
 export type PromotionDefinition = {
   id: string;
@@ -179,6 +207,7 @@ export type AppliedPromotion = {
   promotionName: string;
   type: PromotionType;
   discountAmountVnd: number;
+  freeShipping: boolean;
   giftItems: PromotionGiftItem[];
   giftUnavailable: boolean;
 };
@@ -205,6 +234,7 @@ export type PromotionEvaluationResult = {
   subtotalVnd: number;
   discountTotalVnd: number;
   finalTotalVnd: number;
+  freeShipping: boolean;
   totalQuantity: number;
   items: PromotionCartLineResult[];
   gifts: PromotionGiftItem[];
@@ -298,13 +328,14 @@ function optionalMaximumDiscount(value: unknown, field: string) {
   return positiveInteger(value, field, "Mức giảm tối đa phải lớn hơn 0.");
 }
 
-function reward(value: unknown, field: string): BaseReward {
+function reward(value: unknown, field: string): PromotionReward {
   if (!value || typeof value !== "object")
     invalid(field, "Cấu hình mức ưu đãi không hợp lệ.");
   const source = value as Record<string, unknown>;
   const kind = source.kind;
-  if (kind !== "FIXED" && kind !== "PERCENTAGE")
+  if (kind !== "FIXED" && kind !== "PERCENTAGE" && kind !== "FREE_SHIPPING")
     invalid(`${field}.kind`, "Loại ưu đãi không hợp lệ.");
+  if (kind === "FREE_SHIPPING") return { kind };
   if (kind === "FIXED") {
     return {
       kind,
@@ -698,11 +729,12 @@ export function roundPercentage(value: number, rate: number) {
   return rounded > BigInt(maxSafeInteger) ? maxSafeInteger : Number(rounded);
 }
 
-function rewardAmount(rewardValue: BaseReward, base: number, multiplier = 1) {
+function rewardAmount(rewardValue: PromotionReward, base: number, multiplier = 1) {
+  if (rewardValue.kind === "FREE_SHIPPING") return 0;
   const raw =
     rewardValue.kind === "FIXED"
-      ? moneyProduct(rewardValue.amount ?? 0, multiplier)
-      : roundPercentage(base, rewardValue.percentage ?? 0);
+      ? moneyProduct(rewardValue.amount, multiplier)
+      : roundPercentage(base, rewardValue.percentage);
   const capped =
     rewardValue.maximumDiscount === null || rewardValue.maximumDiscount === undefined
       ? raw
@@ -710,12 +742,13 @@ function rewardAmount(rewardValue: BaseReward, base: number, multiplier = 1) {
   return Math.min(safeMoney(base), safeMoney(capped));
 }
 
-function describeReward(rewardValue: BaseReward) {
-  if (rewardValue.kind === "FIXED") return `giảm ${formatVnd(rewardValue.amount ?? 0)}`;
+function describeReward(rewardValue: PromotionReward) {
+  if (rewardValue.kind === "FREE_SHIPPING") return "miễn phí vận chuyển";
+  if (rewardValue.kind === "FIXED") return `giảm ${formatVnd(rewardValue.amount)}`;
   const maximum = rewardValue.maximumDiscount
     ? `, tối đa ${formatVnd(rewardValue.maximumDiscount)}`
     : "";
-  return `giảm ${rewardValue.percentage ?? 0}%${maximum}`;
+  return `giảm ${rewardValue.percentage}%${maximum}`;
 }
 
 function formatVnd(value: number) {
@@ -796,7 +829,7 @@ function evaluateCandidate(promotion: PromotionDefinition, lines: PromotionCartL
     const estimate = target.reduce((sum, index) => {
       const line = lines[index];
       return sum + (config.reward.kind === "FIXED"
-        ? moneyProduct(Math.min(line.priceVnd, config.reward.amount ?? 0), line.quantity)
+        ? moneyProduct(Math.min(line.priceVnd, config.reward.amount), line.quantity)
         : rewardAmount(config.reward, moneyProduct(line.priceVnd, line.quantity)));
     }, 0);
     return { promotion, scope: "LINE", eligible: target.length > 0, estimate };
@@ -806,7 +839,7 @@ function evaluateCandidate(promotion: PromotionDefinition, lines: PromotionCartL
     const estimate = target.reduce((sum, index) => {
       const line = lines[index];
       return sum + (config.reward.kind === "FIXED"
-        ? moneyProduct(Math.min(line.priceVnd, config.reward.amount ?? 0), line.quantity)
+        ? moneyProduct(Math.min(line.priceVnd, config.reward.amount), line.quantity)
         : rewardAmount(config.reward, moneyProduct(line.priceVnd, line.quantity)));
     }, 0);
     return { promotion, scope: "LINE", eligible: target.length > 0, estimate };
@@ -1008,13 +1041,15 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
     let giftItems: PromotionGiftItem[] = [];
     let giftUnavailable = false;
     if (config.type === "PRODUCT_DISCOUNT" || config.type === "CATEGORY_DISCOUNT") {
-      let maximum = config.reward.maximumDiscount ?? maxSafeInteger;
+      let maximum = config.reward.kind === "FREE_SHIPPING"
+        ? 0
+        : config.reward.maximumDiscount ?? maxSafeInteger;
       target.forEach((index) => {
         if (!maximum) return;
         const line = lines[index];
         const base = currentLines[index].currentTotal;
         const raw = config.reward.kind === "FIXED"
-          ? Math.min(base, moneyProduct(config.reward.amount ?? 0, line.quantity))
+          ? Math.min(base, moneyProduct(config.reward.amount, line.quantity))
           : rewardAmount(config.reward, base);
         const amount = Math.min(raw, maximum);
         discount = safeMoney(discount + allocateDiscount(currentLines, [index], amount));
@@ -1061,6 +1096,7 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
       promotionName: candidate.promotion.name,
       type: candidate.promotion.type,
       discountAmountVnd: discount,
+      freeShipping: promotionConfigProvidesFreeShipping(config, subtotalVnd),
       giftItems,
       giftUnavailable,
     });
@@ -1083,6 +1119,7 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
     subtotalVnd,
     discountTotalVnd,
     finalTotalVnd: Math.max(0, subtotalVnd - discountTotalVnd),
+    freeShipping: appliedPromotions.some((promotion) => promotion.freeShipping),
     totalQuantity: lines.reduce((sum, line) => sum + line.quantity, 0),
     items,
     gifts,

@@ -16,6 +16,7 @@ export type PendingMessengerCart = {
     subtotalVnd: number;
     promotionDiscountVnd?: number;
     finalTotalVnd?: number;
+    freeShipping?: boolean;
     createdAt: string;
   };
 };

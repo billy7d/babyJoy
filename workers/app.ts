@@ -68,6 +68,8 @@ import {
 } from "./scheduled-inventory-cleanup";
 import {
   evaluateAuthoritativeCart,
+  hasPromotionSchema,
+  loadPromotionHistory,
   PromotionCartError,
 } from "./promotions";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
@@ -268,6 +270,7 @@ async function evaluateCart(
       subtotalVnd: result.evaluation.subtotalVnd,
       discountTotalVnd: result.evaluation.discountTotalVnd,
       finalTotalVnd: result.evaluation.finalTotalVnd,
+      freeShipping: result.evaluation.freeShipping,
       totalQuantity: result.evaluation.totalQuantity,
       items: result.evaluation.items.map(({ categoryIds: _categoryIds, ...item }) => item),
       gifts: result.evaluation.gifts,
@@ -1492,13 +1495,23 @@ async function getAdminRequest(id: string, env: Env) {
   )
     .bind(id)
     .all<CartItemSnapshotRow>();
-  const [reservations, promotionReservations] = await Promise.all([
+  const [reservations, promotionReservations, promotionSchema, promotionHistory] = await Promise.all([
     listActiveReservations(id, env),
     listPromotionReservations(id, env),
+    hasPromotionSchema(env),
+    loadPromotionHistory(id, env),
   ]);
   return json({
     data: {
       ...cartRequest,
+      promotionDiscountVnd: promotionSchema ? promotionHistory.discountAmountVnd : 0,
+      finalTotalVnd: promotionSchema
+        ? promotionHistory.finalTotalVnd
+        : Number(cartRequest.subtotalVnd ?? 0),
+      freeShipping: promotionSchema ? promotionHistory.freeShipping : false,
+      promotions: promotionSchema
+        ? promotionHistory.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion)
+        : [],
       serverNow: new Date().toISOString(),
       reservations,
       promotionReservations,

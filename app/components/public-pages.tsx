@@ -107,6 +107,7 @@ import {
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
   formatReservationDuration,
 } from "../../shared/reservation";
+import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
 import { ProductImage } from "./product-image";
 import { ProductRichDescription } from "./product-rich-description";
 import {
@@ -1787,6 +1788,13 @@ function CartSummary({
   const checkoutConfig = useCheckoutConfig();
   const subtotalVnd = promotion?.subtotalVnd ?? cart.subtotalVnd;
   const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd;
+  const showPromotion = Boolean(
+    promotion && (promotion.discountTotalVnd > 0 || promotion.freeShipping),
+  );
+  const appliedPromotions = promotion?.appliedPromotions.filter(
+    (item, index, all) =>
+      !item.freeShipping || all.findIndex((candidate) => candidate.freeShipping) === index,
+  ) ?? [];
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
@@ -1798,10 +1806,17 @@ function CartSummary({
         <span>Tạm tính</span>
         <Price value={subtotalVnd} />
       </div>
-      {promotion && promotion.discountTotalVnd > 0 && (
+      {showPromotion && promotion && (
         <div className="promotion-total-row">
           <span>Khuyến mãi</span>
-          <b>-{formatVnd(promotion.discountTotalVnd)}</b>
+          <b>
+            {promotion.discountTotalVnd > 0 && (
+              <span className="promotion-discount-value">-{formatVnd(promotion.discountTotalVnd)}</span>
+            )}
+            {promotion.freeShipping && (
+              <span className="promotion-free-shipping-value">{FREE_SHIPPING_LABEL}</span>
+            )}
+          </b>
         </div>
       )}
       <div className="cart-final-total">
@@ -1818,13 +1833,14 @@ function CartSummary({
           <Icon>info</Icon> Chưa thể tải ưu đãi mới nhất. Khi chốt giỏ hàng, hệ thống sẽ kiểm tra lại.
         </p>
       )}
-      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable) && (
+      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.freeShipping || item.giftUnavailable) && (
         <div className="promotion-breakdown">
           <b>Ưu đãi đang áp dụng</b>
-          {promotion.appliedPromotions.map((item) => (
+          {appliedPromotions.map((item) => (
             <p key={item.promotionId}>
               <span>{item.promotionName}</span>
               {item.discountAmountVnd > 0 && <strong>-{formatVnd(item.discountAmountVnd)}</strong>}
+              {item.freeShipping && <small className="promotion-breakdown-benefit">{FREE_SHIPPING_LABEL}</small>}
               {item.giftUnavailable && <small>Quà hiện tạm hết hàng</small>}
             </p>
           ))}
@@ -2299,6 +2315,7 @@ type PublicCartShareDto = {
   subtotalVnd: number;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
+  freeShipping?: boolean;
   checkoutState?: string;
   reservationStartedAt?: string | null;
   reservationExpiresAt?: string | null;
@@ -2308,6 +2325,7 @@ type PublicCartShareDto = {
   promotions?: Array<{
     promotionName: string;
     discountAmountVnd: number;
+    freeShipping?: boolean;
   }>;
   items: Array<{
     productName: string;
@@ -2329,6 +2347,11 @@ export function PublicCartSharePage() {
   const token = pathname.split("/").filter(Boolean).at(-1) ?? "";
   const [data, setData] = useState<PublicCartShareDto | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const publicPromotions = data?.promotions?.filter(
+    (promotion, index, all) =>
+      (promotion.discountAmountVnd > 0 || promotion.freeShipping === true) &&
+      (!promotion.freeShipping || all.findIndex((candidate) => candidate.freeShipping === true) === index),
+  ) ?? [];
   useEffect(() => {
     let cancelled = false;
     void fetch(`/api/cart/share/${encodeURIComponent(token)}`)
@@ -2400,12 +2423,19 @@ export function PublicCartSharePage() {
           <footer>
             <p><span>Tổng số lượng</span><b>{data.totalQuantity}</b></p>
             <p><span>Tạm tính</span><Price value={data.subtotalVnd} /></p>
-            {data.promotions?.map((promotion) => (
+            {publicPromotions.map((promotion) => (
               <p key={promotion.promotionName}>
                 <span>{promotion.promotionName}</span>
-                <b className="promotion-value">-{formatVnd(promotion.discountAmountVnd)}</b>
+                <b className="promotion-value">
+                  {promotion.discountAmountVnd > 0
+                    ? `-${formatVnd(promotion.discountAmountVnd)}`
+                    : FREE_SHIPPING_LABEL}
+                </b>
               </p>
             ))}
+            {data.freeShipping && !publicPromotions.some((promotion) => promotion.freeShipping) && (
+              <p><span>Khuyến mãi</span><b className="promotion-value">{FREE_SHIPPING_LABEL}</b></p>
+            )}
             {(data.promotionDiscountVnd ?? 0) > 0 && (
               <p><span>Khuyến mãi</span><b className="promotion-value">-{formatVnd(data.promotionDiscountVnd ?? 0)}</b></p>
             )}
@@ -2786,10 +2816,16 @@ function GuideActions({
               <span>{formatVnd(change.displayedPrice)} → {formatVnd(change.currentPrice)}</span>
             </p>
           ))}
-          {issue?.discountTotalVnd !== undefined && (
+          {issue?.discountTotalVnd !== undefined && issue.discountTotalVnd > 0 && (
             <p>
               <span>Khuyến mãi hiện tại</span>
               <span>-{formatVnd(issue.discountTotalVnd)}</span>
+            </p>
+          )}
+          {issue?.freeShipping && (
+            <p>
+              <span>Ưu đãi hiện tại</span>
+              <span>{FREE_SHIPPING_LABEL}</span>
             </p>
           )}
           {issue?.finalTotalVnd !== undefined && (
@@ -2885,6 +2921,7 @@ export function SuccessPage() {
     subtotalVnd: 367000,
     promotionDiscountVnd: 0,
     finalTotalVnd: 367000,
+    freeShipping: false,
     createdAt: "2026-08-25T15:12:00+07:00",
     contactChannel: "LEGACY",
   });
@@ -2948,6 +2985,12 @@ export function SuccessPage() {
                 <div className="meta-promotion">
                   <span>Khuyến mãi</span>
                   <b>-{formatVnd(data.promotionDiscountVnd)}</b>
+                </div>
+              )}
+              {data.freeShipping && (
+                <div className="meta-promotion">
+                  <span>Ưu đãi vận chuyển</span>
+                  <b>{FREE_SHIPPING_LABEL}</b>
                 </div>
               )}
               {data.finalTotalVnd !== undefined && data.finalTotalVnd !== data.subtotalVnd && (
