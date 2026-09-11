@@ -524,7 +524,112 @@ export function ProductListPage({
       ),
     [normalizedParams],
   );
-  const filters = (
+  const isShopListingPage = !searchMode && !categorySlug;
+
+  // Desktop /shop chỉ thay presentation theo Stitch; state và handler filter vẫn là canonical.
+  const isDesktopFilterSelected = (
+    option: ProductFilterOption,
+    key: "age" | "tag",
+  ) =>
+    tagGroupsSupported
+      ? selectedTagIds.has(option.id)
+      : normalizedParams.get(key) === option.id;
+  const toggleDesktopFilter = (
+    option: ProductFilterOption,
+    key: "age" | "tag",
+  ) => {
+    if (tagGroupsSupported) {
+      toggleTagFilter(option.id);
+      return;
+    }
+    const currentValue = normalizedParams.get(key);
+    setFilter(key, currentValue === option.id ? "" : option.id);
+  };
+  const renderDesktopFilterOptions = (
+    options: ProductFilterOption[],
+    key: "age" | "tag",
+  ) =>
+    options.map((option) => {
+      const selected = isDesktopFilterSelected(option, key);
+      return (
+        <button
+          type="button"
+          className={`shop-filter-option${selected ? " active" : ""}`}
+          key={option.id}
+          aria-pressed={selected}
+          onClick={() => toggleDesktopFilter(option, key)}
+        >
+          <span>{option.label}</span>
+          {selected && <Icon>check</Icon>}
+        </button>
+      );
+    });
+  const filters = isShopListingPage ? (
+    <div className="filters-inner shop-desktop-filter">
+      {ageFilterOptions.length > 0 && (
+        <section className="shop-filter-card shop-age-filter-card filter-section age-filter-section">
+          <div className="shop-filter-card-content">
+            <div className="shop-filter-heading">
+              <h3>
+                <Icon>child_care</Icon>
+                <span>Độ tuổi cho bé</span>
+              </h3>
+            </div>
+            <p className="shop-filter-description">
+              Chọn giai đoạn phát triển của bé
+            </p>
+            <div
+              className="filter-tags shop-filter-options age-filter-options"
+              aria-label="Lọc theo độ tuổi"
+            >
+              {renderDesktopFilterOptions(ageFilterOptions, "age")}
+            </div>
+            <div className="shop-filter-clear-wrap">
+              <button
+                type="button"
+                className="clear-filter shop-filter-clear"
+                onClick={clearProductFilters}
+              >
+                <Icon>restart_alt</Icon>
+                <span>Xóa bộ lọc</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+      {characteristicFilterOptions.length > 0 && (
+        <section className="shop-filter-card shop-characteristic-filter-card filter-section characteristic-filter-section">
+          <div className="shop-filter-card-content">
+            <div className="shop-filter-heading">
+              <h3>
+                <Icon>verified</Icon>
+                <span>Đặc tính</span>
+              </h3>
+            </div>
+            <p className="shop-filter-description">
+              Tiêu chuẩn dinh dưỡng &amp; an toàn
+            </p>
+            <div
+              className="filter-tags shop-filter-options characteristic-filter-options"
+              aria-label="Lọc theo đặc điểm"
+            >
+              {renderDesktopFilterOptions(characteristicFilterOptions, "tag")}
+            </div>
+          </div>
+        </section>
+      )}
+      {ageFilterOptions.length === 0 && (
+        <button
+          type="button"
+          className="clear-filter shop-filter-clear shop-filter-clear-standalone"
+          onClick={clearProductFilters}
+        >
+          <Icon>restart_alt</Icon>
+          <span>Xóa bộ lọc</span>
+        </button>
+      )}
+    </div>
+  ) : (
     <div className="filters-inner">
       {tagGroupsSupported ? (
         <>
@@ -675,7 +780,9 @@ export function ProductListPage({
         </button>
       }
     >
-      <div className="listing-shell">
+      <div
+        className={`listing-shell${isShopListingPage ? " shop-listing-page" : ""}`}
+      >
         <div className="breadcrumbs">
           Trang chủ <Icon>chevron_right</Icon> Sản phẩm
         </div>

@@ -46,10 +46,13 @@ async function openPage(path, viewport, fileName) {
 // Kiểm tra surface filter thực tế, gồm query state, accessibility và kích thước responsive.
 async function assertFilterSurface(page, selector, viewportWidth, mobile = false) {
   const root = page.locator(`${selector} .filters-inner`);
-  const headings = await root.locator("h3").allTextContents();
-  if (!headings.includes("Độ tuổi")) throw new Error(`Thiếu filter Độ tuổi ở ${selector}`);
-  if (!headings.includes("Đặc điểm")) throw new Error(`Thiếu filter Đặc điểm ở ${selector}`);
-  if (headings.some((heading) => !["Độ tuổi", "Đặc điểm"].includes(heading.trim())))
+  // Bỏ tên icon aria-hidden để so sánh đúng nhãn heading hiển thị theo Stitch.
+  const headings = await root.locator("h3").evaluateAll((items) =>
+    items.map((item) => item.querySelector("span:last-child")?.textContent?.trim() ?? ""),
+  );
+  if (!headings.includes("Độ tuổi cho bé")) throw new Error(`Thiếu filter Độ tuổi ở ${selector}`);
+  if (!headings.includes("Đặc tính")) throw new Error(`Thiếu filter Đặc điểm ở ${selector}`);
+  if (headings.some((heading) => !["Độ tuổi cho bé", "Đặc tính"].includes(heading)))
     throw new Error(`Storefront còn filter ngoài phạm vi ở ${selector}: ${headings.join(", ")}`);
   if (await root.locator(".category-filter-section, .brand-filter-section, .availability-filter-section").count())
     throw new Error(`Storefront còn wrapper filter cũ ở ${selector}`);
@@ -82,7 +85,8 @@ async function assertFilterSurface(page, selector, viewportWidth, mobile = false
   }, { selector, viewportWidth, mobile });
   if (metrics.overflow) throw new Error(`Filter gây tràn ngang ở viewport ${viewportWidth}`);
   if (metrics.flexWrap !== "wrap") throw new Error(`Age chip không wrap ở viewport ${viewportWidth}`);
-  if (metrics.gap < 7) throw new Error(`Khoảng cách chip quá nhỏ ở viewport ${viewportWidth}`);
+  // Stitch dùng spacing xs = 4px cho chip desktop; mobile vẫn có gap riêng.
+  if (metrics.gap < 4) throw new Error(`Khoảng cách chip quá nhỏ ở viewport ${viewportWidth}`);
   if (metrics.verticalGap < 16) throw new Error(`Khoảng cách giữa hai section quá nhỏ ở viewport ${viewportWidth}`);
   if (mobile && metrics.minButtonHeight < 44)
     throw new Error(`Touch target filter mobile nhỏ hơn 44px ở viewport ${viewportWidth}`);
