@@ -1,0 +1,185 @@
+/* Cart summary hierarchy and promotion-row consolidation.
+ * Presentation only: totals still come from the existing cart/promotion authorities.
+ */
+.cart-page .cart-summary .subtotal > span {
+  color: var(--on-surface);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.cart-page .cart-summary .subtotal .price {
+  color: var(--primary);
+  font-family: "Quicksand", sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.cart-page .cart-summary .promotion-total-row > span {
+  color: var(--secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cart-page .cart-summary .promotion-total-row > b {
+  color: var(--secondary);
+  font-family: "Quicksand", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.cart-page .cart-summary .cart-final-total > span {
+  color: var(--on-surface);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.cart-page .cart-summary .cart-final-total .price {
+  color: var(--primary);
+  font-family: "Quicksand", sans-serif;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+/*
+ * Khi có discount, promotion-total-row cung cấp label + tổng discount.
+ * promotion-breakdown được đặt vào khoảng giữa của cùng grid row để tên ưu đãi
+ * không còn tạo thành một khối “Ưu đãi đang áp dụng” lặp lại bên dưới.
+ */
+.cart-page .cart-summary:has(> .promotion-total-row) {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  grid-auto-flow: row dense;
+  column-gap: 12px;
+  align-items: center;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > * {
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+
+.cart-page .cart-summary > .promotion-total-row {
+  display: contents !important;
+}
+
+.cart-page .cart-summary > .promotion-total-row > span {
+  grid-column: 1;
+  align-self: center;
+  padding-block: 12px;
+}
+
+.cart-page .cart-summary > .promotion-total-row > b {
+  grid-column: 3;
+  align-self: center;
+  justify-self: end;
+  padding-block: 12px;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown {
+  min-width: 0;
+  margin: 0;
+  padding: 8px 0;
+  grid-column: 2;
+  align-self: center;
+  display: flex !important;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  color: var(--on-variant);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown > b {
+  display: none;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown > p {
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 6px;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown > p > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Tổng discount authoritative đã nằm ở cột phải, không lặp lại từng amount. */
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown > p > strong {
+  display: none;
+}
+
+.cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown > p > small {
+  width: 100%;
+  color: var(--error);
+  font-size: 11px;
+}
+
+@media (max-width: 1023px) {
+  .cart-page .cart-summary:has(> .promotion-total-row) {
+    column-gap: 8px;
+  }
+
+  .cart-page .cart-summary .subtotal .price {
+    font-size: 22px;
+  }
+
+  .cart-page .cart-summary .promotion-total-row > b {
+    font-size: 15px;
+  }
+
+  .cart-page .cart-summary .cart-final-total .price {
+    font-size: 27px;
+  }
+}
+
+@media (max-width: 639px) {
+  .cart-page .cart-summary:has(> .promotion-total-row) {
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    column-gap: 7px;
+  }
+
+  .cart-page .cart-summary .subtotal > span {
+    font-size: 13px;
+  }
+
+  .cart-page .cart-summary .subtotal .price {
+    font-size: 20px;
+  }
+
+  .cart-page .cart-summary .promotion-total-row > span {
+    font-size: 12px;
+  }
+
+  .cart-page .cart-summary .promotion-total-row > b {
+    font-size: 14px;
+  }
+
+  .cart-page .cart-summary .cart-final-total > span {
+    font-size: 14px;
+  }
+
+  .cart-page .cart-summary .cart-final-total .price {
+    font-size: 24px;
+  }
+
+  .cart-page .cart-summary > .promotion-total-row > span,
+  .cart-page .cart-summary > .promotion-total-row > b {
+    padding-block: 9px;
+  }
+
+  .cart-page .cart-summary:has(> .promotion-total-row) > .promotion-breakdown {
+    padding-block: 6px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+}
