@@ -25,7 +25,9 @@ async function selectorMetrics(page, selector = ".promotion-selector") {
     const input = search?.querySelector("input");
     const list = scope?.querySelector(".promotion-option-list");
     const firstRow = list?.querySelector(":scope > button");
-    const firstText = firstRow?.children[0];
+    const firstText = firstRow
+      ? [...firstRow.children].find((child) => child.querySelector("b"))
+      : null;
     const box = (node) => {
       if (!node) return null;
       const rect = node.getBoundingClientRect();
@@ -201,6 +203,44 @@ async function runCategoryPersistenceRegression(page) {
   }
 }
 
+async function runFreeShippingPersistenceRegression(page) {
+  let createdId = "";
+  try {
+    await page.goto(`${baseUrl}/admin/promotions/new`, { waitUntil: "domcontentloaded" });
+    await page.locator("select").first().waitFor({ state: "visible", timeout: 5000 });
+    await page.waitForTimeout(600);
+    await selectPromotionType(page, "PRODUCT_DISCOUNT");
+    const picker = page.locator(".promotion-selector").first();
+    const productRows = picker.locator(".promotion-option-list > button");
+    await productRows.first().waitFor({ state: "visible", timeout: 5000 });
+    const name = `[E2E] Free shipping ${Date.now()}`;
+    await page.getByPlaceholder("Ví dụ: Ưu đãi tháng 9").fill(name);
+    await productRows.first().click();
+    const rewardFields = page.locator(".promotion-reward-fields");
+    await rewardFields.locator("select").selectOption("FREE_SHIPPING");
+    assert(await rewardFields.locator('option[value="FREE_SHIPPING"]').count() === 1, "Selector không có option FREE_SHIPPING");
+    assert(await rewardFields.locator('input[type="number"]').count() === 0, "Free shipping vẫn hiện input tiền");
+    assert((await page.locator(".promotion-preview-copy").innerText()).toLowerCase().includes("miễn phí vận chuyển"), "Preview không mô tả miễn phí vận chuyển");
+
+    await page.getByRole("button", { name: "LƯU CHƯƠNG TRÌNH" }).click();
+    await page.waitForURL(/\/admin\/promotions\/[^/]+\/edit$/);
+    createdId = new URL(page.url()).pathname.split("/").at(-2) ?? "";
+    assert(createdId, "Save FREE_SHIPPING không trả về id");
+    assert(await rewardFields.locator("select").inputValue() === "FREE_SHIPPING", "Sau Save mất FREE_SHIPPING");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(500);
+    const reloadedRewardFields = page.locator(".promotion-reward-fields");
+    assert(await reloadedRewardFields.locator("select").inputValue() === "FREE_SHIPPING", "Reload editor không khôi phục FREE_SHIPPING");
+    assert(await reloadedRewardFields.locator('input[type="number"]').count() === 0, "Reload vẫn hiện input tiền cho free shipping");
+  } finally {
+    if (createdId) {
+      const cleanup = await page.request.delete(`${baseUrl}/api/admin/promotions/${encodeURIComponent(createdId)}`);
+      if (!cleanup.ok()) throw new Error(`Cleanup FREE_SHIPPING E2E thất bại: HTTP ${cleanup.status()}`);
+    }
+  }
+}
+
 try {
   for (const [name, viewport] of viewports) {
     const context = await browser.newContext({ viewport, locale: "vi-VN" });
@@ -223,7 +263,10 @@ try {
       await assertNoHorizontalOverflow(page, name);
       await runCategoryInteractionRegression(page);
       await runProductSearchRegression(page);
-      if (name === "desktop") await runCategoryPersistenceRegression(page);
+      if (name === "desktop") {
+        await runCategoryPersistenceRegression(page);
+        await runFreeShippingPersistenceRegression(page);
+      }
       if (browserErrors.length) throw new Error(`${name}: browser error: ${browserErrors.join(" | ")}`);
     } finally {
       await context.close();
@@ -233,4 +276,4 @@ try {
   await browser.close();
 }
 
-console.log("PROMOTION_SELECTOR_E2E_OK viewports=desktop,tablet,mobile category=multi-select quantity=selected-categories product-search=checked");
+console.log("PROMOTION_SELECTOR_E2E_OK viewports=desktop,tablet,mobile category=multi-select quantity=selected-categories product-search=checked free-shipping=persisted");

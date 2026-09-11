@@ -41,8 +41,8 @@ async function cleanupStalePromotions() {
   );
   for (const promotion of result.data ?? []) {
     if (
-      promotion.name === fixtureName &&
-      promotion.description === fixtureDescription
+      promotion.name.startsWith(fixtureName) &&
+      promotion.description.startsWith(fixtureDescription)
     ) {
       await jsonRequest("DELETE", `/api/admin/promotions/${promotion.id}`);
     }
@@ -85,6 +85,7 @@ async function inspectSummary(page) {
       breakdownAmountDisplay: display(".cart-summary .promotion-breakdown p > strong"),
       label: box(".cart-summary .promotion-total-row > span"),
       promotionName: box(".cart-summary .promotion-breakdown p > span"),
+      promotionBreakdown: box(".cart-summary .promotion-breakdown"),
       amount: box(".cart-summary .promotion-total-row > b"),
       overflow: document.documentElement.scrollWidth > window.innerWidth + 1,
       text: document.querySelector(".cart-summary")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
@@ -136,6 +137,20 @@ const promotionBody = await jsonRequest("POST", "/api/admin/promotions", {
   },
 });
 const promotionId = promotionBody.id;
+const freeShippingPromotionBody = await jsonRequest("POST", "/api/admin/promotions", {
+  name: `${fixtureName} Free Shipping`,
+  description: `${fixtureDescription} Free Shipping`,
+  type: "PRODUCT_DISCOUNT",
+  status: "ACTIVE",
+  priority: 100,
+  stackable: true,
+  config: {
+    type: "PRODUCT_DISCOUNT",
+    productIds: [productId],
+    reward: { kind: "FREE_SHIPPING" },
+  },
+});
+const freeShippingPromotionId = freeShippingPromotionBody.id;
 
 await jsonRequest("PUT", "/api/admin/settings/seller", {
   displayName: "Đồ ăn dặm UK 🍼Trà Phương🍼",
@@ -207,7 +222,8 @@ try {
         `Tên promotion chưa nằm giữa label và amount ở ${viewport.width}px`,
       );
       assert(
-        Math.abs(metrics.promotionName.centerY - metrics.label.centerY) < 24 &&
+        metrics.promotionBreakdown &&
+        Math.abs(metrics.promotionBreakdown.centerY - metrics.label.centerY) < 24 &&
           Math.abs(metrics.amount.centerY - metrics.label.centerY) < 24,
         `Promotion chưa cùng hàng trực quan ở ${viewport.width}px`,
       );
@@ -215,6 +231,8 @@ try {
       assert(metrics.promotionDigits === "55000", `Sai khuyến mãi ở ${viewport.width}px: ${metrics.promotionDigits}`);
       assert(metrics.totalDigits === "495000", `Sai tổng ở ${viewport.width}px: ${metrics.totalDigits}`);
       assert(metrics.text.includes(fixtureName), `Thiếu tên promotion ở ${viewport.width}px`);
+      assert(metrics.text.includes("Miễn phí vận chuyển - Free Shipping"), `Thiếu free shipping row ở ${viewport.width}px`);
+      assert(!metrics.text.includes("-0 ₫"), `Free shipping hiển thị -0 ₫ ở ${viewport.width}px`);
     } finally {
       await context.close();
     }

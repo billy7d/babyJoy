@@ -2,6 +2,7 @@ import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
+import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 import { loadStoreSettings } from "./store-settings";
 import {
   buildPromotionPersistenceStatements,
@@ -313,7 +314,8 @@ export function composeCartShareText(input: {
   url: string;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
-  promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
+  freeShipping?: boolean;
+  promotions?: Array<{ promotionName: string; discountAmountVnd: number; freeShipping?: boolean }>;
   gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
   reservationExpiresAt?: string | null;
 }) {
@@ -346,6 +348,10 @@ export function composeCartShareText(input: {
           lines.push(
             `Khuyến mãi ${promotion.promotionName}: -${formatVnd(promotion.discountAmountVnd)}`,
           );
+        if (promotion.freeShipping)
+          lines.push(
+            `Khuyến mãi ${promotion.promotionName}: ${FREE_SHIPPING_LABEL}`,
+          );
       });
       lines.push("");
     }
@@ -353,6 +359,9 @@ export function composeCartShareText(input: {
       `Tạm tính: ${formatVnd(input.subtotalVnd)}`,
       ...(input.promotionDiscountVnd
         ? [`Khuyến mãi: -${formatVnd(input.promotionDiscountVnd)}`]
+        : []),
+      ...(input.freeShipping && !input.promotions?.some((promotion) => promotion.freeShipping)
+        ? [FREE_SHIPPING_LABEL]
         : []),
       ...(input.finalTotalVnd !== undefined
         ? [`Tổng thanh toán: ${formatVnd(input.finalTotalVnd)}`]
@@ -497,9 +506,11 @@ async function buildPreparedResponse(
     url,
     promotionDiscountVnd,
     finalTotalVnd,
+    freeShipping: history.freeShipping,
     promotions: history.promotions.map((promotion) => ({
       promotionName: promotion.promotionName,
       discountAmountVnd: promotion.discountAmountVnd,
+      freeShipping: promotion.freeShipping,
     })),
     gifts: history.gifts,
     reservationExpiresAt: row.reservationExpiresAt,
@@ -513,6 +524,7 @@ async function buildPreparedResponse(
       subtotalVnd: row.subtotalVnd,
       promotionDiscountVnd,
       finalTotalVnd,
+      freeShipping: history.freeShipping,
       createdAt: row.createdAt,
       checkoutState: row.checkoutState ?? "LEGACY",
       reservationStartedAt: row.reservationStartedAt ?? null,
@@ -526,6 +538,7 @@ async function buildPreparedResponse(
       copyText: text,
       expiresAt: link.expiresAt,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
+      freeShipping: history.freeShipping,
       gifts: history.gifts,
     },
     seller,
@@ -832,10 +845,10 @@ function promotionEvaluationChanged(
   loaded: AuthoritativeCartEvaluation,
 ) {
   const currentPromotions = loaded.evaluation.appliedPromotions
-    .map((promotion) => `${promotion.promotionId}:${promotion.discountAmountVnd}`)
+    .map((promotion) => `${promotion.promotionId}:${promotion.discountAmountVnd}:${promotion.freeShipping ? "FREE_SHIPPING" : ""}`)
     .sort();
   const previousPromotions = history.promotions
-    .map((promotion) => `${promotion.promotionId ?? ""}:${promotion.discountAmountVnd}`)
+    .map((promotion) => `${promotion.promotionId ?? ""}:${promotion.discountAmountVnd}:${promotion.freeShipping ? "FREE_SHIPPING" : ""}`)
     .sort();
   if (currentPromotions.join("|") !== previousPromotions.join("|")) return true;
   if (history.discountAmountVnd !== loaded.evaluation.discountTotalVnd) return true;
@@ -959,6 +972,7 @@ export async function activateCartShare(
         subtotalVnd: loaded.evaluation.subtotalVnd,
         discountTotalVnd: loaded.evaluation.discountTotalVnd,
         finalTotalVnd: loaded.evaluation.finalTotalVnd,
+        freeShipping: loaded.evaluation.freeShipping,
         gifts: loaded.evaluation.gifts,
       },
     );
@@ -983,6 +997,7 @@ export async function activateCartShare(
         subtotalVnd: loaded.evaluation.subtotalVnd,
         discountTotalVnd: loaded.evaluation.discountTotalVnd,
         finalTotalVnd: loaded.evaluation.finalTotalVnd,
+        freeShipping: loaded.evaluation.freeShipping,
         gifts: loaded.evaluation.gifts,
       },
     );
@@ -1253,6 +1268,7 @@ export async function getPublicCartShare(
           : undefined,
       promotionDiscountVnd: history.discountAmountVnd,
       finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
+      freeShipping: history.freeShipping,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
       items: items.map((item) => ({
         productName: item.productName,

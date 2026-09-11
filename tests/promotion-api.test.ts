@@ -227,4 +227,81 @@ describe("Promotion API và D1 snapshot", () => {
     expect((await archived.json()) as { archived: boolean }).toMatchObject({ archived: true });
     expect(database.prepare("SELECT status FROM promotions WHERE id = ?").get(created.id)).toEqual({ status: "ARCHIVED" });
   });
+
+  it("CRUD/evaluate/share/admin giữ nguyên FREE_SHIPPING với discount bằng 0", async () => {
+    const { env, database } = createEnv();
+    const createdResponse = await api(env, "/api/admin/promotions", jsonInit("POST", {
+      name: "Miễn phí vận chuyển sản phẩm test",
+      description: "Ưu đãi ship",
+      type: "PRODUCT_DISCOUNT",
+      status: "ACTIVE",
+      priority: 80,
+      stackable: false,
+      config: {
+        type: "PRODUCT_DISCOUNT",
+        productIds: ["promotion-test-product"],
+        reward: {
+          kind: "FREE_SHIPPING",
+          amount: 99999,
+          percentage: 99,
+          maximumDiscount: 999999,
+        },
+      },
+    }));
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as { id: string };
+    const read = await api(env, `/api/admin/promotions/${created.id}`);
+    expect((await read.json() as { data: { config: { reward: Record<string, unknown> } } }).data.config.reward).toEqual({ kind: "FREE_SHIPPING" });
+
+    const evaluation = await api(env, "/api/cart/evaluate", jsonInit("POST", {
+      items: [{ variantId: "promotion-test-variant", quantity: 1, discountAmountVnd: 999999 }],
+    }));
+    expect(evaluation.status).toBe(200);
+    const evaluationBody = await evaluation.json() as {
+      subtotalVnd: number;
+      discountTotalVnd: number;
+      finalTotalVnd: number;
+      freeShipping: boolean;
+      appliedPromotions: Array<{ discountAmountVnd: number; freeShipping: boolean }>;
+    };
+    expect(evaluationBody).toMatchObject({
+      subtotalVnd: 125000,
+      discountTotalVnd: 0,
+      finalTotalVnd: 125000,
+      freeShipping: true,
+      appliedPromotions: [{ discountAmountVnd: 0, freeShipping: true }],
+    });
+
+    const prepared = await api(env, "/api/cart/share/prepare", jsonInit("POST", {
+      submissionToken: "free-shipping-share-1",
+      acceptCurrentPrices: false,
+      items: [{ variantId: "promotion-test-variant", quantity: 1, displayedPrice: 125000 }],
+    }));
+    expect(prepared.status).toBe(201);
+    const preparedBody = await prepared.json() as {
+      cartRequest: { freeShipping: boolean; promotionDiscountVnd: number; finalTotalVnd: number };
+      share: { url: string; text: string; promotions: Array<{ freeShipping: boolean; discountAmountVnd: number }> };
+    };
+    expect(preparedBody.cartRequest).toMatchObject({ freeShipping: true, promotionDiscountVnd: 0, finalTotalVnd: 125000 });
+    expect(preparedBody.share.promotions).toEqual([expect.objectContaining({ freeShipping: true, discountAmountVnd: 0 })]);
+    expect(preparedBody.share.text).toContain("Miễn phí vận chuyển - Free Shipping");
+    expect(preparedBody.share.text).not.toContain("-0 ₫");
+    expect(JSON.parse(String(database.prepare("SELECT config_snapshot FROM cart_request_promotions").get()?.config_snapshot))).toEqual({
+      type: "PRODUCT_DISCOUNT",
+      productIds: ["promotion-test-product"],
+      reward: { kind: "FREE_SHIPPING" },
+    });
+
+    const cartRequestId = (database.prepare("SELECT id FROM cart_requests WHERE submission_token = 'free-shipping-share-1'").get() as { id: string }).id;
+    const adminDetail = await api(env, `/api/admin/cart-requests/${cartRequestId}`);
+    expect(adminDetail.status).toBe(200);
+    expect(await adminDetail.json()).toMatchObject({
+      data: {
+        freeShipping: true,
+        promotionDiscountVnd: 0,
+        finalTotalVnd: 125000,
+        promotions: [expect.objectContaining({ freeShipping: true, discountAmountVnd: 0 })],
+      },
+    });
+  });
 });

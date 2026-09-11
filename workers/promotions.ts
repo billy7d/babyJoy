@@ -1,6 +1,9 @@
 import {
   evaluatePromotions,
   parseStoredPromotion,
+  promotionConfigProvidesFreeShipping,
+  promotionTypes,
+  validatePromotionConfig,
   type AppliedPromotion,
   type PromotionCartLine,
   type PromotionCatalogProduct,
@@ -36,6 +39,7 @@ export type PromotionSnapshot = {
   promotionName: string;
   promotionType: string;
   discountAmountVnd: number;
+  freeShipping: boolean;
   configSnapshot?: string;
 };
 
@@ -46,6 +50,7 @@ export type PromotionGiftSnapshot = PromotionGiftItem & {
 export type PromotionHistory = {
   discountAmountVnd: number;
   finalTotalVnd: number;
+  freeShipping: boolean;
   promotions: PromotionSnapshot[];
   gifts: PromotionGiftSnapshot[];
 };
@@ -555,6 +560,28 @@ export function buildPromotionPersistenceStatements(
   return empty;
 }
 
+type StoredPromotionSnapshot = Omit<PromotionSnapshot, "freeShipping">;
+
+function snapshotProvidesFreeShipping(
+  promotion: StoredPromotionSnapshot,
+  subtotalVnd: number,
+) {
+  if (
+    !promotion.configSnapshot ||
+    !promotionTypes.includes(promotion.promotionType as (typeof promotionTypes)[number])
+  )
+    return false;
+  try {
+    const config = validatePromotionConfig(
+      promotion.promotionType as (typeof promotionTypes)[number],
+      JSON.parse(promotion.configSnapshot),
+    );
+    return promotionConfigProvidesFreeShipping(config, subtotalVnd);
+  } catch {
+    return false;
+  }
+}
+
 export async function loadPromotionHistory(
   cartRequestId: string,
   env: Env,
@@ -562,6 +589,7 @@ export async function loadPromotionHistory(
   const fallback: PromotionHistory = {
     discountAmountVnd: 0,
     finalTotalVnd: 0,
+    freeShipping: false,
     promotions: [],
     gifts: [],
   };
@@ -583,7 +611,7 @@ export async function loadPromotionHistory(
          WHERE cart_request_id = ? ORDER BY created_at, id`,
       )
         .bind(cartRequestId)
-        .all<PromotionSnapshot>(),
+        .all<StoredPromotionSnapshot>(),
       env.DB.prepare(
         `SELECT promotion_id AS promotionId, product_id AS productId,
           variant_id AS variantId, product_name_snapshot AS productName,
@@ -596,10 +624,15 @@ export async function loadPromotionHistory(
         .bind(cartRequestId)
         .all<Omit<PromotionGiftItem, "isPromotionGift">>(),
     ]);
+    const snapshotPromotions = promotions.results.map((promotion) => ({
+      ...promotion,
+      freeShipping: snapshotProvidesFreeShipping(promotion, request?.subtotalVnd ?? 0),
+    }));
     return {
       discountAmountVnd: request?.discountAmountVnd ?? 0,
       finalTotalVnd: request?.finalTotalVnd ?? request?.subtotalVnd ?? 0,
-      promotions: promotions.results,
+      freeShipping: snapshotPromotions.some((promotion) => promotion.freeShipping),
+      promotions: snapshotPromotions,
       gifts: gifts.results.map((gift) => ({
         ...gift,
         unitPriceVnd: 0,
@@ -616,12 +649,13 @@ export async function loadPromotionHistory(
 
 export function appliedPromotionSummary(
   applied: AppliedPromotion[],
-): Array<Pick<AppliedPromotion, "promotionId" | "promotionName" | "type" | "discountAmountVnd">> {
-  return applied.map(({ promotionId, promotionName, type, discountAmountVnd }) => ({
+): Array<Pick<AppliedPromotion, "promotionId" | "promotionName" | "type" | "discountAmountVnd" | "freeShipping">> {
+  return applied.map(({ promotionId, promotionName, type, discountAmountVnd, freeShipping }) => ({
     promotionId,
     promotionName,
     type,
     discountAmountVnd,
+    freeShipping,
   }));
 }
 

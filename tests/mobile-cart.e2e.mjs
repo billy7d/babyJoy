@@ -1,7 +1,11 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
-const variantId = "variant-little-120";
+const baseHost = new URL(baseUrl).hostname;
+if (!["127.0.0.1", "localhost", "::1"].includes(baseHost))
+  throw new Error("Mobile cart E2E chỉ được phép chạy trên local server.");
+let fixtureProductId = "";
+let variantId = "";
 const mobileViewports = [
   [320, 568],
   [360, 800],
@@ -19,6 +23,40 @@ const desktopViewports = [
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function createFixtureProduct() {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const response = await fetch(`${baseUrl}/api/admin/products`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "E2E Mobile Cart",
+      slug: `e2e-mobile-cart-${suffix}`,
+      status: "AVAILABLE",
+      featured: false,
+      sortOrder: -997,
+      categoryIds: [],
+      tagIds: [],
+      images: [],
+      variants: [{
+        clientId: `e2e-mobile-cart-variant-${suffix}`,
+        name: "Hũ 120g",
+        sku: `E2E-MOBILE-CART-${suffix}`,
+        priceVnd: 89000,
+        compareAtPriceVnd: null,
+        availability: "AVAILABLE",
+        trackInventory: true,
+        stockOnHand: 99,
+        sortOrder: 0,
+      }],
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok || !body.id || !body.product?.variants?.[0]?.id)
+    throw new Error(`Không tạo được mobile cart fixture: HTTP ${response.status}`);
+  fixtureProductId = body.id;
+  variantId = body.product.variants[0].id;
 }
 
 async function seedCart(page, quantity = 1) {
@@ -66,11 +104,18 @@ async function inspectCart(page, width) {
     const mobileSuffix = document.querySelector(".unit-price-suffix");
     const item = document.querySelector(".cart-item");
     const itemBox = item?.getBoundingClientRect();
+    const cartBoxes = Object.fromEntries(
+      [".cart-page .cart-layout", ".cart-page .cart-items", ".cart-page .cart-item", ".cart-page .cart-summary"].map((selector) => {
+        const box = document.querySelector(selector)?.getBoundingClientRect();
+        return [selector, box ? { left: box.left, right: box.right, width: box.width } : null];
+      }),
+    );
     return {
       viewportWidth,
       overflow: document.documentElement.scrollWidth > viewportWidth + 1,
       headerHeight: document.querySelector(".public-header")?.getBoundingClientRect().height ?? 0,
       item: itemBox ? { width: itemBox.width, height: itemBox.height } : null,
+      cartBoxes,
       image: rect(".cart-item > .storefront-product-media"),
       remove: rect(".cart-item .remove-line"),
       quantity: rect(".cart-item > .quantity-stepper"),
@@ -99,6 +144,8 @@ const browser = await chromium.launch({
     : {}),
 });
 
+await createFixtureProduct();
+
 try {
   for (const [width, height] of mobileViewports) {
     const context = await browser.newContext({
@@ -116,6 +163,9 @@ try {
       await seedCart(page);
       const metrics = await inspectCart(page, width);
       assert(!metrics.overflow, `Cart ${width} gây horizontal overflow`);
+      for (const [selector, box] of Object.entries(metrics.cartBoxes)) {
+        assert(box && box.width <= width + 1 && box.left >= -1 && box.right <= width + 1, `${selector} ở ${width}px vượt viewport: ${JSON.stringify(box)}`);
+      }
       assert(metrics.headerHeight === 58, `Header cart ${width} không cao 58px`);
       assert(metrics.image?.width === 80 && metrics.image.height === 80, `Ảnh cart ${width} không là 80x80`);
       assert((metrics.remove?.width ?? 0) >= 44 && (metrics.remove?.height ?? 0) >= 44, `Nút Xóa cart ${width} nhỏ`);
@@ -174,4 +224,9 @@ try {
   console.log("MOBILE_CART_E2E_OK mobile=320,360,375,390,412,430 desktop=768,1024,1280,1440 empty=pass quantity=pass remove=pass scoped=pass");
 } finally {
   await browser.close();
+  if (fixtureProductId) {
+    await fetch(`${baseUrl}/api/admin/products/${encodeURIComponent(fixtureProductId)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
+  }
 }

@@ -24,6 +24,7 @@ import {
 } from "../app/lib/cart-share";
 import { consumeRateLimit } from "../workers/rate-limit";
 import { STORE_BRAND } from "../shared/branding";
+import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 
 function migration(name: string) {
   return readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8");
@@ -336,6 +337,22 @@ describe("Direct Seller Cart Share domain", () => {
     expect(text.length).toBeLessThanOrEqual(1500);
     expect(text).toContain("sản phẩm khác");
     expect(text).toContain("https://metraphuong.com/c/opaque");
+  });
+
+  it("giữ ưu đãi miễn phí vận chuyển trong text seller-facing mà không tạo -0 ₫", () => {
+    const text = composeCartShareText({
+      code: "GH-FREE-SHIP",
+      items: [{ productName: "Bột ăn dặm", variantName: "227g", quantity: 1, lineTotalVnd: 125000 }],
+      subtotalVnd: 125000,
+      promotionDiscountVnd: 0,
+      finalTotalVnd: 125000,
+      freeShipping: true,
+      promotions: [{ promotionName: "Ship tháng 9", discountAmountVnd: 0, freeShipping: true }],
+      url: "https://metraphuong.com/c/opaque-free-ship",
+    });
+    expect(text).toContain(FREE_SHIPPING_LABEL);
+    expect(text).toContain("Khuyến mãi Ship tháng 9");
+    expect(text).not.toContain("-0 ₫");
   });
 
   it("giới hạn Direct Share theo IP hash trước khi tạo snapshot", async () => {

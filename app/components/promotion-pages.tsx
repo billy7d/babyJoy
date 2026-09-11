@@ -39,7 +39,7 @@ type PromotionOptions = {
 };
 
 type RewardDraft = {
-  kind: "FIXED" | "PERCENTAGE";
+  kind: "FIXED" | "PERCENTAGE" | "FREE_SHIPPING";
   amount?: number | string;
   percentage?: number | string;
   maximumDiscount?: number | string;
@@ -154,6 +154,12 @@ function rewardValue(config: Record<string, unknown>): RewardDraft {
     : { kind: "FIXED", amount: 0 };
 }
 
+function emptyReward(kind: RewardDraft["kind"]): RewardDraft {
+  if (kind === "FREE_SHIPPING") return { kind };
+  if (kind === "PERCENTAGE") return { kind, percentage: "", maximumDiscount: "" };
+  return { kind, amount: "" };
+}
+
 function toLocalDateTime(value: string | null) {
   if (!value) return "";
   const date = new Date(value);
@@ -208,10 +214,18 @@ function promotionPreview(form: PromotionForm) {
     return `Đơn hàng từ ${min} → tặng ${numberValue(config, "giftQuantity", 1)} sản phẩm đã chọn.`;
   if (form.type === "BUY_X_GET_Y")
     return `Mua ${numberValue(config, "requiredQuantity", 1)} sản phẩm kích hoạt → tặng ${numberValue(config, "rewardQuantity", 1)} sản phẩm.`;
-  if (form.type === "PRODUCT_DISCOUNT")
-    return `Giảm ${rewardDescription(rewardValue(config))} cho ${Array.isArray(config.productIds) ? config.productIds.length : 0} sản phẩm.`;
-  if (form.type === "CATEGORY_DISCOUNT")
-    return `Giảm ${rewardDescription(rewardValue(config))} cho ${Array.isArray(config.categoryIds) ? config.categoryIds.length : 0} danh mục.`;
+  if (form.type === "PRODUCT_DISCOUNT") {
+    const reward = rewardValue(config);
+    return reward.kind === "FREE_SHIPPING"
+      ? `Miễn phí vận chuyển cho ${Array.isArray(config.productIds) ? config.productIds.length : 0} sản phẩm.`
+      : `Giảm ${rewardDescription(reward)} cho ${Array.isArray(config.productIds) ? config.productIds.length : 0} sản phẩm.`;
+  }
+  if (form.type === "CATEGORY_DISCOUNT") {
+    const reward = rewardValue(config);
+    return reward.kind === "FREE_SHIPPING"
+      ? `Miễn phí vận chuyển cho ${Array.isArray(config.categoryIds) ? config.categoryIds.length : 0} danh mục.`
+      : `Giảm ${rewardDescription(reward)} cho ${Array.isArray(config.categoryIds) ? config.categoryIds.length : 0} danh mục.`;
+  }
   if (form.type === "QUANTITY_DISCOUNT")
     return `Mua từ ${numberValue(config, "requiredQuantity", 1)} sản phẩm trong phạm vi đã chọn → ${rewardDescription(rewardValue(config))}.`;
   if (form.type === "COMBO_DISCOUNT")
@@ -226,9 +240,55 @@ function promotionPreview(form: PromotionForm) {
 }
 
 function rewardDescription(reward: RewardDraft) {
+  if (reward.kind === "FREE_SHIPPING") return "miễn phí vận chuyển";
   if (reward.kind === "PERCENTAGE")
     return `giảm ${reward.percentage ?? 0}%${reward.maximumDiscount ? ` tối đa ${formatVnd(Number(reward.maximumDiscount))}` : ""}`;
   return `giảm ${formatVnd(Number(reward.amount) || 0)}`;
+}
+
+function sanitizeRewardDraft(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  if (source.kind === "FREE_SHIPPING") return { kind: "FREE_SHIPPING" };
+  if (source.kind === "FIXED") {
+    return {
+      kind: "FIXED",
+      amount: source.amount,
+      ...(source.maximumDiscount !== undefined && source.maximumDiscount !== ""
+        ? { maximumDiscount: source.maximumDiscount }
+        : {}),
+    };
+  }
+  if (source.kind === "PERCENTAGE") {
+    return {
+      kind: "PERCENTAGE",
+      percentage: source.percentage,
+      ...(source.maximumDiscount !== undefined && source.maximumDiscount !== ""
+        ? { maximumDiscount: source.maximumDiscount }
+        : {}),
+    };
+  }
+  return source;
+}
+
+function sanitizePromotionConfigForSave(form: PromotionForm) {
+  const config: Record<string, unknown> = { ...form.config, type: form.type };
+  if (
+    form.type === "PRODUCT_DISCOUNT" ||
+    form.type === "CATEGORY_DISCOUNT" ||
+    form.type === "QUANTITY_DISCOUNT" ||
+    form.type === "COMBO_DISCOUNT"
+  ) {
+    config.reward = sanitizeRewardDraft(config.reward);
+  } else if (form.type === "TIERED_DISCOUNT") {
+    const tiers = Array.isArray(config.tiers) ? config.tiers : [];
+    config.tiers = tiers.map((tier) => {
+      if (!tier || typeof tier !== "object") return tier;
+      const row = tier as Record<string, unknown>;
+      return { ...row, reward: sanitizeRewardDraft(row.reward) };
+    });
+  }
+  return config;
 }
 
 function extractIssue(body: unknown) {
@@ -516,15 +576,15 @@ function RewardFields({
 }) {
   return (
     <div className="promotion-reward-fields">
-      <label>Kiểu ưu đãi<select value={reward.kind} onChange={(event) => onChange({ kind: event.target.value as RewardDraft["kind"], amount: "", percentage: "", maximumDiscount: "" })}><option value="FIXED">Giảm số tiền</option><option value="PERCENTAGE">Giảm phần trăm</option></select></label>
+      <label>Kiểu ưu đãi<select value={reward.kind} onChange={(event) => onChange(emptyReward(event.target.value as RewardDraft["kind"]))}><option value="FIXED">Giảm số tiền</option><option value="PERCENTAGE">Giảm phần trăm</option><option value="FREE_SHIPPING">Miễn phí vận chuyển</option></select></label>
       {reward.kind === "FIXED" ? (
         <label>Số tiền giảm<input type="number" min="1" step="1" value={reward.amount ?? ""} onChange={(event) => onChange({ ...reward, amount: event.target.value })} /></label>
-      ) : (
+      ) : reward.kind === "PERCENTAGE" ? (
         <>
           <label>Phần trăm<input type="number" min="1" max="100" step="1" value={reward.percentage ?? ""} onChange={(event) => onChange({ ...reward, percentage: event.target.value })} /></label>
           <label>Tối đa (không bắt buộc)<input type="number" min="1" step="1" value={reward.maximumDiscount ?? ""} onChange={(event) => onChange({ ...reward, maximumDiscount: event.target.value })} /></label>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -666,7 +726,7 @@ export function PromotionEditorPage() {
       stackable: form.stackable,
       usageLimitTotal: form.usageLimitTotal || null,
       usageLimitPerCustomer: null,
-      config: { ...form.config, type: form.type },
+      config: sanitizePromotionConfigForSave(form),
     };
     try {
       const response = await fetch(id ? `/api/admin/promotions/${encodeURIComponent(id)}` : "/api/admin/promotions", {
