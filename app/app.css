@@ -272,3 +272,9 @@
   .shop-listing-page .shop-filter-clear>.material-symbols-outlined{font-size:16px}
   .shop-listing-page .shop-filter-clear-standalone{align-self:stretch;margin-top:0}
 }
+
+/* Featured collection badges float above the existing variant control. */
+.featured .section-heading{align-items:flex-start}.featured .section-heading>div{min-width:0}
+.variant-buttons{align-items:flex-start;overflow:visible}.variant-option{position:relative;min-width:0;display:inline-flex;overflow:visible}.variant-option.has-variant-badges{padding-top:7px}.variant-badge-cluster{position:absolute;top:0;right:0;max-width:calc(100% + 64px);display:flex;align-items:center;gap:3px;pointer-events:none;transform:translate(25%,-35%);z-index:10;white-space:nowrap}.variant-badge{min-height:17px;padding:3px 8px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:700;letter-spacing:.02em;line-height:1;box-shadow:0 2px 5px rgba(0,0,0,.18);white-space:nowrap}.variant-badge-best-seller{background:#e65100}.variant-badge-must-try{background:#059669}
+
+@media(max-width:639px){.featured .section-heading{align-items:flex-start;gap:10px}.featured .section-heading>div{min-width:0;flex:1 1 auto}.featured .section-heading>a{display:inline-flex;flex:0 0 auto;white-space:nowrap;font-size:13px}.variant-option{width:100%}.variant-option.has-multiple-variant-badges{grid-column:1/-1}.variant-badge-cluster{transform:translate(0,-35%)}.variant-buttons{row-gap:14px}}

@@ -120,3 +120,81 @@ jobs:
           path: screenshots/actual/
           if-no-files-found: ignore
           retention-days: 7
+
+  e2e-webkit:
+    name: E2E (WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright WebKit
+        shell: bash
+        run: |
+          for apt_source in /etc/apt/sources.list.d/*; do
+            if [ -f "$apt_source" ] && grep -q "dl.google.com" "$apt_source"; then
+              sudo mv "$apt_source" "$apt_source.disabled"
+            fi
+          done
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          npx playwright install --with-deps webkit
+
+      - name: Create CI local secrets
+        shell: bash
+        run: |
+          cat > .dev.vars <<'EOF'
+          META_PAGE_ACCESS_TOKEN=ci-page-token
+          META_APP_SECRET=ci-meta-app-secret
+          META_WEBHOOK_VERIFY_TOKEN=ci-webhook-token
+          CART_SHARE_SECRET=ci-cart-share-secret-0123456789abcdef
+          STOREFRONT_ACCESS_SECRET=ci-storefront-access-secret-0123456789abcdef
+          EOF
+
+      - name: Apply local D1 migrations
+        run: npm run db:migrate:local
+
+      - name: Start development server
+        shell: bash
+        run: |
+          npm run dev -- --host 127.0.0.1 > /tmp/babyjoy-dev-webkit.log 2>&1 &
+          echo $! > /tmp/babyjoy-dev-webkit.pid
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5173/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Development server did not become ready"
+          cat /tmp/babyjoy-dev-webkit.log
+          exit 1
+
+      - name: Featured and upload WebKit E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: webkit
+        run: npm run test:e2e:featured-cross-browser
+
+      - name: Show WebKit server log on failure
+        if: failure()
+        run: cat /tmp/babyjoy-dev-webkit.log || true
+
+      - name: Upload WebKit screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-webkit-screenshots
+          path: screenshots/actual/
+          if-no-files-found: ignore
+          retention-days: 7

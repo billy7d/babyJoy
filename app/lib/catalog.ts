@@ -2,7 +2,11 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
-import type { CatalogTag } from "../../shared/tag-groups";
+import {
+  FEATURED_COLLECTIONS,
+  type CatalogTag,
+  type FeaturedCollection,
+} from "../../shared/tag-groups";
 
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
@@ -29,6 +33,11 @@ export type Variant = {
   inventoryAvailability?: InventoryAvailability;
   images?: VariantImageRecord[];
   tags?: CatalogTag[];
+};
+
+export type VariantFeaturedFlags = {
+  bestSeller: boolean;
+  mustTry: boolean;
 };
 
 export type ProductImageRecord = {
@@ -271,6 +280,34 @@ export function getVariantStatus(variant: Pick<Variant, "status" | "availability
 /** Ảnh riêng của variant được ưu tiên; sản phẩm cũ tiếp tục dùng gallery Product. */
 export function getVariantPrimaryImage(variant: Variant) {
   return variant.images?.find((image) => image.isPrimary) ?? variant.images?.[0];
+}
+
+/** Đọc trạng thái merchandising từ tag của chính variant, không suy ra từ Product. */
+export function getVariantFeaturedFlags(
+  variant: Pick<Variant, "tags">,
+): VariantFeaturedFlags {
+  const systemKeys = new Set(
+    (variant.tags ?? []).flatMap((tag) =>
+      [tag.systemKey, tag.featuredSectionKey].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  );
+  return {
+    bestSeller: systemKeys.has(FEATURED_COLLECTIONS["best-seller"]),
+    mustTry: systemKeys.has(FEATURED_COLLECTIONS["must-try"]),
+  };
+}
+
+export function isVariantInFeaturedCollection(
+  variant: Pick<Variant, "tags">,
+  collection: FeaturedCollection,
+) {
+  const systemKey = FEATURED_COLLECTIONS[collection];
+  return (variant.tags ?? []).some(
+    (tag) =>
+      tag.systemKey === systemKey || tag.featuredSectionKey === systemKey,
+  );
 }
 
 export function getVariantAvailableQuantity(variant: Variant) {

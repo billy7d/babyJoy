@@ -173,6 +173,19 @@ describe("Storefront product filters", () => {
     ]);
   });
 
+  it("giữ featured collection hợp lệ khi refresh listing và loại giá trị không hợp lệ", () => {
+    const normalized = normalizeProductListParams(
+      new URLSearchParams("featured=must-try&age=6&featured=ignored"),
+      { filterGroupsReady: false },
+    );
+    expect(normalized.get("featured")).toBe("must-try");
+
+    const invalid = normalizeProductListParams(
+      new URLSearchParams("featured=all&age=6"),
+    );
+    expect(invalid.has("featured")).toBe(false);
+  });
+
   it("giữ category route context nhưng loại category query khi đã có route ép", () => {
     const normalized = normalizeProductListParams(
       new URLSearchParams("category=banh-an-dam&brand=heinz"),

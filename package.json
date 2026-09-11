@@ -21,6 +21,7 @@
     "test:e2e:empty": "node tests/empty-catalog.e2e.mjs",
     "test:e2e:promotion-selector": "node tests/promotion-selector.e2e.mjs",
     "test:e2e:product-variant-media": "node tests/product-variant-media.e2e.mjs",
+    "test:e2e:featured-cross-browser": "node tests/featured-variant-cross-browser.e2e.mjs",
     "test:e2e:product-image-fit": "node tests/storefront-product-image-fit.e2e.mjs",
     "postinstall": "wrangler types"
   },

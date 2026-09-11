@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { launchSelectedBrowser } from "./playwright-browser.mjs";
 import { semanticUrlState } from "./e2e-url-state.mjs";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
@@ -24,12 +24,7 @@ if (catalogIsEmpty) {
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
 await mkdir(outputDir, { recursive: true });
 
-const browser = await chromium.launch({
-  headless: true,
-  ...(process.env.CHROME_EXECUTABLE_PATH
-    ? { executablePath: process.env.CHROME_EXECUTABLE_PATH }
-    : {}),
-});
+const browser = await launchSelectedBrowser();
 
 async function openPage(path, viewport, fileName) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, locale: "vi-VN" });

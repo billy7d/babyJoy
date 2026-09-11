@@ -393,6 +393,61 @@ describe("Variant Facet / Tag Group Engine", () => {
     });
   });
 
+  it("lọc featured theo đúng variant, hỗ trợ cả hai collection và không cascade từ product cha", async () => {
+    const { env, database } = createEnv();
+    insertProduct(database, "featured-heinz", "featured-heinz", [
+      { id: "featured-chocolate", name: "Socola 60g", sku: "FEATURED-A", priceVnd: 10000, sortOrder: 1 },
+      { id: "featured-apple", name: "Táo 60g", sku: "FEATURED-B", priceVnd: 11000, sortOrder: 2 },
+      { id: "featured-banana", name: "Chuối 60g", sku: "FEATURED-C", priceVnd: 12000, sortOrder: 3 },
+      { id: "featured-mix", name: "Dâu chuối 60g", sku: "FEATURED-D", priceVnd: 13000, sortOrder: 4 },
+    ]);
+    insertProduct(database, "legacy-best-parent", "legacy-best-parent", [
+      { id: "legacy-best-variant", name: "Legacy", sku: "LEGACY-BEST", priceVnd: 14000, sortOrder: 1 },
+    ]);
+    database
+      .prepare("UPDATE products SET is_best_seller = 1 WHERE id = 'legacy-best-parent'")
+      .run();
+    assignTags(database, "featured-chocolate", ["tag-best-seller", "tag-age-8"]);
+    assignTags(database, "featured-apple", ["tag-must-try"]);
+    assignTags(database, "featured-mix", ["tag-best-seller", "tag-must-try", "tag-age-10"]);
+
+    const bestSellerResponse = await api(env, "/api/products?featured=best-seller");
+    expect(bestSellerResponse.status).toBe(200);
+    const bestSellerBody = await jsonBody<{
+      data: Array<{
+        id: string;
+        matchedVariantId: string | null;
+        variants: Array<{ id: string; tags: Array<{ id: string }> }>;
+      }>;
+    }>(bestSellerResponse);
+    expect(bestSellerBody.data.map((product) => product.id)).toEqual(["featured-heinz"]);
+    expect(bestSellerBody.data[0]).toMatchObject({
+      matchedVariantId: "featured-chocolate",
+    });
+    expect(bestSellerBody.data.some((product) => product.id === "legacy-best-parent")).toBe(false);
+
+    const mustTryResponse = await api(env, "/api/products?featured=must-try");
+    expect(mustTryResponse.status).toBe(200);
+    const mustTryBody = await jsonBody<{
+      data: Array<{ id: string; matchedVariantId: string | null }>;
+    }>(mustTryResponse);
+    expect(mustTryBody.data.map((product) => product.id)).toEqual(["featured-heinz"]);
+    expect(mustTryBody.data[0]).toMatchObject({ matchedVariantId: "featured-apple" });
+
+    const bothCollectionBody = await jsonBody<{
+      data: Array<{ matchedVariantId: string | null }>;
+    }>(await api(env, "/api/products?featured=must-try&tagIds=tag-age-10"));
+    expect(bothCollectionBody.data.map((product) => product.matchedVariantId)).toEqual([
+      "featured-mix",
+    ]);
+
+    const invalid = await api(env, "/api/products?featured=all");
+    expect(invalid.status).toBe(422);
+    expect((await jsonBody<{ error: { code: string } }>(invalid)).error.code).toBe(
+      "INVALID_FEATURED_COLLECTION",
+    );
+  });
+
   it("Product API lưu tag theo variant và chặn nhiều tag trong group SINGLE", async () => {
     const { env, database } = createEnv();
     const conflict = await api(env, "/api/admin/products", {
