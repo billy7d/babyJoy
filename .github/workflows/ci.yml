@@ -108,15 +108,6 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
         run: npm run test:e2e
 
-      - name: Upload cart summary review screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cart-summary-review
-          path: screenshots/actual/cart-summary-review-*.png
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Show server log on failure
         if: failure()
         run: cat /tmp/babyjoy-dev.log || true
