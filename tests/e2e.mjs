@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { semanticUrlState } from "./e2e-url-state.mjs";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 await import("./content-pages.e2e.mjs");
@@ -126,11 +127,28 @@ async function assertMobileFilterSheet(page, viewportWidth) {
   if (metrics.minButtonHeight < 44) throw new Error("Chip mobile nhỏ hơn touch target 44px");
 }
 
-async function closeSheetWithEscape(page) {
+async function closeSheetWithEscape(page, expectedUrl, width) {
   await page.keyboard.press("Escape");
   await page.waitForTimeout(350);
   if (await page.locator("#mobile-filter-sheet").count() !== 0)
     throw new Error("Escape không đóng mobile filter sheet");
+  assertSemanticUrlUnchanged(
+    page.url(),
+    expectedUrl,
+    `Escape tự ý Apply draft ở viewport ${width}`,
+  );
+}
+
+function assertSemanticUrlUnchanged(actualUrl, expectedUrl, message) {
+  const actualState = semanticUrlState(actualUrl);
+  const expectedState = semanticUrlState(expectedUrl);
+  if (
+    actualState.pathname !== expectedState.pathname ||
+    JSON.stringify(actualState.search) !== JSON.stringify(expectedState.search)
+  )
+    throw new Error(
+      `${message}: trước=${expectedUrl} sau=${actualUrl}`,
+    );
 }
 
 async function selectAgeAndCharacteristic(page, selector) {
@@ -208,21 +226,33 @@ async function assertStorefrontFilters() {
       const firstAge = ageOptions.nth(1);
       const secondAge = ageOptions.nth(2);
       await firstAge.click();
-      if (page.url() !== initialUrl) throw new Error(`Chạm chip age làm đổi URL trước Apply: trước=${initialUrl} sau=${page.url()}`);
+      assertSemanticUrlUnchanged(
+        page.url(),
+        initialUrl,
+        `Chạm chip age làm đổi functional state trước Apply ở viewport ${width}`,
+      );
       await secondAge.click();
       const characteristic = page.locator("#mobile-filter-sheet .characteristic-filter-options .mobile-filter-chip").first();
       await characteristic.click();
-      if (page.url() !== initialUrl) throw new Error("Chạm chip characteristic làm đổi URL trước Apply");
+      assertSemanticUrlUnchanged(
+        page.url(),
+        initialUrl,
+        `Chạm chip characteristic làm đổi functional state trước Apply ở viewport ${width}`,
+      );
       await page.locator("#mobile-filter-sheet .mobile-filter-close").click();
       await page.waitForTimeout(350);
       if (await page.locator("#mobile-filter-sheet").count() !== 0) throw new Error("Nút X không đóng sheet");
-      if (page.url() !== initialUrl) throw new Error("Đóng sheet tự ý Apply draft");
+      assertSemanticUrlUnchanged(
+        page.url(),
+        initialUrl,
+        `Đóng sheet tự ý Apply draft ở viewport ${width}`,
+      );
 
       await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
       await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
       if (await page.locator("#mobile-filter-sheet .mobile-filter-chip.selected").count() !== 1)
         throw new Error("Mở lại sheet không restore active state từ URL");
-      await closeSheetWithEscape(page);
+      await closeSheetWithEscape(page, initialUrl, width);
 
       await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
       await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
@@ -230,7 +260,11 @@ async function assertStorefrontFilters() {
       await page.locator(".mobile-filter-backdrop").click({ position: { x: 6, y: 6 } });
       await page.waitForTimeout(350);
       if (await page.locator("#mobile-filter-sheet").count() !== 0) throw new Error("Backdrop không đóng sheet");
-      if (page.url() !== backdropUrl) throw new Error("Backdrop tự ý Apply draft");
+      assertSemanticUrlUnchanged(
+        page.url(),
+        backdropUrl,
+        `Backdrop tự ý Apply draft ở viewport ${width}`,
+      );
 
       await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
       await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
@@ -245,9 +279,27 @@ async function assertStorefrontFilters() {
 
       await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
       await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+      const activeTagIdsUrl = page.url();
+      await page.locator("#mobile-filter-sheet .mobile-filter-clear").click();
+      await page.locator("#mobile-filter-sheet .mobile-filter-close").click();
+      await page.waitForTimeout(350);
+      if (await page.locator("#mobile-filter-sheet").count() !== 0)
+        throw new Error("Nút X không đóng sheet sau khi có tagIds active");
+      assertSemanticUrlUnchanged(
+        page.url(),
+        activeTagIdsUrl,
+        `Đóng sheet làm mất tagIds active ở viewport ${width}`,
+      );
+
+      await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+      await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
       const clearUrl = page.url();
       await page.locator("#mobile-filter-sheet .mobile-filter-clear").click();
-      if (page.url() !== clearUrl) throw new Error("Xóa bộ lọc làm đổi URL trước Apply");
+      assertSemanticUrlUnchanged(
+        page.url(),
+        clearUrl,
+        `Xóa bộ lọc làm đổi functional state trước Apply ở viewport ${width}`,
+      );
       await page.locator("#mobile-filter-sheet .mobile-filter-apply").click();
       await page.waitForFunction(() => {
         const search = new URL(location.href).searchParams;
