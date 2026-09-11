@@ -1,13 +1,13 @@
 import { mkdir } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { launchSelectedBrowser } from "./playwright-browser.mjs";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 const outputDir = new URL("../screenshots/actual/", import.meta.url);
 await mkdir(outputDir, { recursive: true });
 
-const browser = await chromium.launch({ headless: true });
+const browser = await launchSelectedBrowser();
 const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
   locale: "vi-VN",

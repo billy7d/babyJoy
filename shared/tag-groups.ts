@@ -1,6 +1,22 @@
 export type TagGroupAssignmentMode = "SINGLE" | "MULTI";
 export type TagGroupSelectionMode = "MULTI_OR";
 
+/** Các collection merchandising được gắn trên chính variant, không phải product cha. */
+export const FEATURED_COLLECTIONS = {
+  "best-seller": "best_seller",
+  "must-try": "must_try",
+} as const;
+
+export type FeaturedCollection = keyof typeof FEATURED_COLLECTIONS;
+export type FeaturedCollectionSystemKey =
+  (typeof FEATURED_COLLECTIONS)[FeaturedCollection];
+
+export function isFeaturedCollection(
+  value: string,
+): value is FeaturedCollection {
+  return Object.prototype.hasOwnProperty.call(FEATURED_COLLECTIONS, value);
+}
+
 export type CatalogTag = {
   id: string;
   name: string;

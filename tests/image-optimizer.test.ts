@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   IMAGE_COMPRESSION_QUALITIES,
   IMAGE_RESIZE_EDGES,
+  MAX_OPTIMIZATION_ATTEMPTS,
   buildImageCompressionPlan,
   calculateResizedDimensions,
   optimizeProductImage,
@@ -51,6 +52,7 @@ describe("optimizer output", () => {
 
   it("đưa source 6 MiB về output WebP dưới hard cap và giữ aspect ratio", async () => {
     let closedBitmaps = 0;
+    let decodeOptions: Record<string, unknown> | undefined;
     class FakeImage {
       naturalWidth = 6000;
       naturalHeight = 4000;
@@ -85,11 +87,14 @@ describe("optimizer output", () => {
     }
     vi.stubGlobal("Image", FakeImage);
     vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
-    vi.stubGlobal("createImageBitmap", async () => ({
-      close: () => {
-        closedBitmaps += 1;
-      },
-    }));
+    vi.stubGlobal("createImageBitmap", async (_file: Blob, options: unknown) => {
+      decodeOptions = options as Record<string, unknown>;
+      return {
+        close: () => {
+          closedBitmaps += 1;
+        },
+      };
+    });
 
     const source = new File(
       [new Uint8Array(6 * 1024 * 1024)],
@@ -103,6 +108,12 @@ describe("optimizer output", () => {
     expect(result.width).toBe(1600);
     expect(result.height).toBe(1067);
     expect(closedBitmaps).toBe(1);
+    expect(decodeOptions).toMatchObject({
+      resizeWidth: 1600,
+      resizeHeight: 1067,
+      resizeQuality: "high",
+      imageOrientation: "from-image",
+    });
   });
 });
 describe("tính kích thước resize giữ aspect ratio", () => {
@@ -130,16 +141,177 @@ describe("tính kích thước resize giữ aspect ratio", () => {
 
 describe("chính sách compression adaptive", () => {
   it("thử đủ quality và fallback resolution theo thứ tự đã khóa", () => {
-    expect(IMAGE_COMPRESSION_QUALITIES).toEqual([0.82, 0.78, 0.74, 0.7]);
-    expect(IMAGE_RESIZE_EDGES).toEqual([MAX_IMAGE_LONG_EDGE, 1400, 1200]);
-    expect(buildImageCompressionPlan()).toHaveLength(12);
+    expect(IMAGE_COMPRESSION_QUALITIES).toEqual([
+      0.82,
+      0.78,
+      0.74,
+      0.7,
+      0.64,
+      0.58,
+      0.5,
+    ]);
+    expect(IMAGE_RESIZE_EDGES).toEqual([MAX_IMAGE_LONG_EDGE, 1400, 1200, 1000, 800]);
+    expect(buildImageCompressionPlan()).toHaveLength(35);
+    expect(MAX_OPTIMIZATION_ATTEMPTS).toBe(35);
     expect(buildImageCompressionPlan()[0]).toEqual({
       maxLongEdge: 1600,
       quality: 0.82,
     });
     expect(buildImageCompressionPlan().at(-1)).toEqual({
-      maxLongEdge: 1200,
-      quality: 0.7,
+      maxLongEdge: 800,
+      quality: 0.5,
     });
+  });
+
+  it("không dừng ở hard cap đầu tiên nếu vẫn còn dimension nhỏ hơn để đạt target", async () => {
+    const canvasWidths: number[] = [];
+    class FakeImage {
+      naturalWidth = 6000;
+      naturalHeight = 4000;
+      decoding = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    class FakeOffscreenCanvas {
+      constructor(
+        readonly width: number,
+        readonly height: number,
+      ) {
+        canvasWidths.push(width);
+      }
+
+      getContext() {
+        return {
+          clearRect() {},
+          drawImage() {},
+          imageSmoothingEnabled: true,
+          imageSmoothingQuality: "high",
+        };
+      }
+
+      convertToBlob({ type }: { type: string }) {
+        const bytes = this.width > 1000 ? 1200 * 1024 : 800 * 1024;
+        return Promise.resolve(new Blob([new Uint8Array(bytes)], { type }));
+      }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
+    vi.stubGlobal("createImageBitmap", async () => ({ close() {} }));
+
+    const source = new File(
+      [new Uint8Array(6 * 1024 * 1024)],
+      "large.jpg",
+      { type: "image/jpeg" },
+    );
+    const result = await optimizeProductImage(source);
+
+    expect(result.optimizedBytes).toBe(800 * 1024);
+    expect(result.width).toBe(1000);
+    expect(canvasWidths).toEqual([1600, 1400, 1200, 1000]);
+  });
+
+  it("bỏ qua MIME giả từ encoder và fallback theo Blob MIME thực tế", async () => {
+    class FakeImage {
+      naturalWidth = 2400;
+      naturalHeight = 1600;
+      decoding = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    class FakeOffscreenCanvas {
+      constructor(
+        readonly width: number,
+        readonly height: number,
+      ) {}
+
+      getContext() {
+        return {
+          clearRect() {},
+          drawImage() {},
+          imageSmoothingEnabled: true,
+          imageSmoothingQuality: "high",
+        };
+      }
+
+      convertToBlob({ type }: { type: string }) {
+        return Promise.resolve(
+          new Blob([new Uint8Array(1024)], {
+            type: type === "image/webp" ? "image/png" : type,
+          }),
+        );
+      }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
+    vi.stubGlobal("createImageBitmap", async () => ({ close() {} }));
+
+    const result = await optimizeProductImage(
+      new File([new Uint8Array(2 * 1024 * 1024)], "photo.jpg", {
+        type: "image/jpeg",
+      }),
+    );
+
+    expect(result.mimeType).toBe("image/jpeg");
+    expect(result.blob.type).toBe("image/jpeg");
+
+    const pngResult = await optimizeProductImage(
+      new File([new Uint8Array(2 * 1024 * 1024)], "alpha.png", {
+        type: "image/png",
+      }),
+    );
+    expect(pngResult.mimeType).toBe("image/png");
+    expect(pngResult.blob.type).toBe("image/png");
+  });
+
+  it("trả lỗi có kiểm soát khi không có encoder khả dụng", async () => {
+    class FakeImage {
+      naturalWidth = 2400;
+      naturalHeight = 1600;
+      decoding = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    class FakeOffscreenCanvas {
+      constructor(
+        readonly width: number,
+        readonly height: number,
+      ) {}
+
+      getContext() {
+        return {
+          clearRect() {},
+          drawImage() {},
+          imageSmoothingEnabled: true,
+          imageSmoothingQuality: "high",
+        };
+      }
+
+      convertToBlob() {
+        return Promise.resolve(null);
+      }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
+    vi.stubGlobal("createImageBitmap", async () => ({ close() {} }));
+
+    await expect(
+      optimizeProductImage(
+        new File([new Uint8Array(2 * 1024 * 1024)], "photo.jpg", {
+          type: "image/jpeg",
+        }),
+      ),
+    ).rejects.toThrow("Trình duyệt hiện tại không thể tối ưu ảnh");
   });
 });

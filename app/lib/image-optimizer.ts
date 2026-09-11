@@ -8,8 +8,24 @@ import {
 } from "../../shared/images";
 
 export const FAST_PATH_MAX_IMAGE_BYTES = 600 * 1024;
-export const IMAGE_COMPRESSION_QUALITIES = [0.82, 0.78, 0.74, 0.7] as const;
-export const IMAGE_RESIZE_EDGES = [MAX_IMAGE_LONG_EDGE, 1400, 1200] as const;
+export const IMAGE_COMPRESSION_QUALITIES = [
+  0.82,
+  0.78,
+  0.74,
+  0.7,
+  0.64,
+  0.58,
+  0.5,
+] as const;
+export const IMAGE_RESIZE_EDGES = [
+  MAX_IMAGE_LONG_EDGE,
+  1400,
+  1200,
+  1000,
+  800,
+] as const;
+export const MAX_OPTIMIZATION_ATTEMPTS =
+  IMAGE_COMPRESSION_QUALITIES.length * IMAGE_RESIZE_EDGES.length;
 
 // Giới hạn pixel cho nhánh fallback không hỗ trợ decode-resize, tránh giải mã ảnh bất thường.
 export const MAX_IMAGE_DECODE_PIXELS = 64_000_000;
@@ -51,7 +67,8 @@ const IMAGE_OPTIMIZATION_MESSAGES: Record<
   SOURCE_TOO_LARGE: "Ảnh vượt quá giới hạn 30 MB. Vui lòng chọn ảnh khác.",
   EMPTY: "Tệp ảnh đang trống.",
   INVALID_IMAGE: "Không thể đọc ảnh. Vui lòng chọn tệp ảnh khác.",
-  TOO_LARGE: "Ảnh sau tối ưu vẫn vượt quá giới hạn lưu trữ 1.5 MB.",
+  TOO_LARGE:
+    "Không thể tối ưu ảnh này để tải lên. Vui lòng thử ảnh khác hoặc giảm kích thước ảnh.",
   UNSUPPORTED_BROWSER: "Trình duyệt hiện tại không thể tối ưu ảnh.",
 };
 
@@ -149,14 +166,14 @@ type CanvasSurface = OffscreenCanvas | HTMLCanvasElement;
 type DecodedImage = ImageBitmap | HTMLImageElement;
 
 function createCanvas(width: number, height: number): CanvasSurface {
-  if (typeof globalThis.OffscreenCanvas !== "undefined")
-    return new OffscreenCanvas(width, height);
   if (typeof globalThis.document !== "undefined") {
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     return canvas;
   }
+  if (typeof globalThis.OffscreenCanvas !== "undefined")
+    return new OffscreenCanvas(width, height);
   throw new ImageOptimizationError("UNSUPPORTED_BROWSER");
 }
 
@@ -194,7 +211,13 @@ async function decodeResizedImage(
         imageOrientation: "from-image",
       });
     } catch {
-      // Một số trình duyệt có createImageBitmap nhưng chưa hỗ trợ đủ tùy chọn resize.
+      // Một số WebKit expose createImageBitmap nhưng không nhận resize*;
+      // thử lại với orientation trước khi rơi về HTMLImageElement.
+      try {
+        return await createImageBitmap(file, { imageOrientation: "from-image" });
+      } catch {
+        // HTMLImageElement là fallback tương thích cho codec/option còn thiếu.
+      }
     }
   }
 
@@ -203,7 +226,7 @@ async function decodeResizedImage(
 }
 
 function closeDecodedImage(image: DecodedImage) {
-  if ("close" in image) image.close();
+  if ("close" in image && typeof image.close === "function") image.close();
 }
 
 async function canvasToBlob(
@@ -211,11 +234,16 @@ async function canvasToBlob(
   mimeType: AllowedImageType,
   quality: number,
 ): Promise<Blob | null> {
-  if ("convertToBlob" in canvas)
+  if (
+    "convertToBlob" in canvas &&
+    typeof canvas.convertToBlob === "function"
+  )
     return canvas.convertToBlob({ type: mimeType, quality });
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, mimeType, quality);
-  });
+  if ("toBlob" in canvas && typeof canvas.toBlob === "function")
+    return new Promise((resolve) => {
+      canvas.toBlob(resolve, mimeType, quality);
+    });
+  return null;
 }
 
 async function tryEncodeCanvas(
@@ -226,7 +254,8 @@ async function tryEncodeCanvas(
   try {
     const blob = await canvasToBlob(canvas, mimeType, quality);
     if (!blob?.size) return null;
-    if (blob.type && blob.type.toLowerCase() !== mimeType) return null;
+    const actualMimeType = blob.type.split(";")[0].trim().toLowerCase();
+    if (actualMimeType !== mimeType) return null;
     return blob;
   } catch {
     return null;
@@ -278,7 +307,7 @@ export async function optimizeProductImage(
       height: originalDimensions.height,
     };
 
-  let lastWithinHardLimit:
+  let bestWithinHardLimit:
     | { blob: Blob; mimeType: AllowedImageType; width: number; height: number }
     | undefined;
 
@@ -307,22 +336,29 @@ export async function optimizeProductImage(
             originalWidth: originalDimensions.width,
             originalHeight: originalDimensions.height,
           };
-        if (encoded.blob.size <= MAX_STORED_IMAGE_BYTES)
-          lastWithinHardLimit = result;
+        if (
+          encoded.blob.size <= MAX_STORED_IMAGE_BYTES &&
+          (!bestWithinHardLimit ||
+            encoded.blob.size < bestWithinHardLimit.blob.size ||
+            (encoded.blob.size === bestWithinHardLimit.blob.size &&
+              dimensions.width * dimensions.height >
+                bestWithinHardLimit.width * bestWithinHardLimit.height))
+        )
+          bestWithinHardLimit = result;
       }
     } finally {
       closeDecodedImage(image);
     }
-
-    if (lastWithinHardLimit)
-      return {
-        ...lastWithinHardLimit,
-        originalBytes: file.size,
-        optimizedBytes: lastWithinHardLimit.blob.size,
-        originalWidth: originalDimensions.width,
-        originalHeight: originalDimensions.height,
-      };
   }
+
+  if (bestWithinHardLimit)
+    return {
+      ...bestWithinHardLimit,
+      originalBytes: file.size,
+      optimizedBytes: bestWithinHardLimit.blob.size,
+      originalWidth: originalDimensions.width,
+      originalHeight: originalDimensions.height,
+    };
 
   throw new ImageOptimizationError("TOO_LARGE");
 }
