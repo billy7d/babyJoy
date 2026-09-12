@@ -1731,26 +1731,6 @@ function CartSummary({
         <span>Tạm tính</span>
         <Price value={subtotalVnd} />
       </div>
-      {promotion && promotion.discountTotalVnd > 0 && (
-        <div className="promotion-total-row">
-          <span>Khuyến mãi</span>
-          <b>-{formatVnd(promotion.discountTotalVnd)}</b>
-        </div>
-      )}
-      <div className="cart-final-total">
-        <span>Tổng</span>
-        <Price value={finalTotalVnd} />
-      </div>
-      {promotionLoading && (
-        <p className="promotion-loading" role="status">
-          <Icon>sync</Icon> Đang kiểm tra khuyến mãi...
-        </p>
-      )}
-      {promotionError && (
-        <p className="info-box" role="status">
-          <Icon>info</Icon> Chưa thể tải ưu đãi mới nhất. Khi chốt giỏ hàng, hệ thống sẽ kiểm tra lại.
-        </p>
-      )}
       {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable || isFreeShippingPromotion(item)) && (
         <div className="promotion-breakdown">
           <b>Ưu đãi đang áp dụng</b>
@@ -1776,9 +1756,23 @@ function CartSummary({
           })}
         </div>
       )}
+      <div className="cart-final-total">
+        <span>Tổng</span>
+        <Price value={finalTotalVnd} />
+      </div>
       {promotion?.progress.length ? (
         <PromotionProgressGroup progress={promotion.progress} />
       ) : null}
+      {promotionLoading && (
+        <p className="promotion-loading" role="status">
+          <Icon>sync</Icon> Đang kiểm tra khuyến mãi...
+        </p>
+      )}
+      {promotionError && (
+        <p className="info-box" role="status">
+          <Icon>info</Icon> Chưa thể tải ưu đãi mới nhất. Khi chốt giỏ hàng, hệ thống sẽ kiểm tra lại.
+        </p>
+      )}
       {checkoutConfig?.enabled === true ? (
         <DirectSellerShareControls
           lines={lines}

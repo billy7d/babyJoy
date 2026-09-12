@@ -14,6 +14,35 @@
   padding: 12px;
 }
 
+/* Tổng là điểm kết thúc monetary hierarchy; subtotal chỉ giữ vai trò tham chiếu. */
+.cart-page .cart-summary > .subtotal .price {
+  color: var(--primary);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.cart-page .cart-summary > .cart-final-total .price {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 30px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cart-page .cart-summary > .subtotal {
+  border-bottom: 0;
+}
+
+/* Breakdown đứng giữa subtotal và total nên divider đầu section là ranh giới duy nhất phía trên. */
+.cart-page .cart-summary > .promotion-breakdown {
+  margin-top: 0;
+  border-top: 1px solid var(--surface-container);
+}
+
+.cart-page .cart-summary > .cart-final-total {
+  margin-top: 8px;
+}
+
 .promotion-breakdown-row {
   min-width: 0;
   margin: 7px 0;
@@ -137,6 +166,16 @@
 
 /* Mobile chỉ giữ hai row đầu; không thu nhỏ chữ để ép tên dài vào một dòng. */
 @media (max-width: 430px) {
+  .cart-page .cart-summary > .subtotal .price {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .cart-page .cart-summary > .cart-final-total .price {
+    font-size: 26px;
+    font-weight: 800;
+  }
+
   .promotion-progress-group:not(.is-expanded) .promotion-progress-item:nth-child(n + 3) {
     display: none;
   }

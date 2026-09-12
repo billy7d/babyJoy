@@ -38,6 +38,9 @@ describe("mobile cart Stitch presentation contract", () => {
     expect(mobileCss).toContain(
       ".cart-item-info .unit-price .price",
     );
+    expect(mobileCss).toContain("Tên sản phẩm được phép tự tăng chiều cao");
+    expect(mobileCss).toContain(".cart-item-info h2");
+    expect(mobileCss).not.toContain("-webkit-line-clamp: 2");
     expect(mobileCss).toContain(
       '.quantity-stepper > span[aria-live="polite"]',
     );
@@ -57,8 +60,14 @@ describe("mobile cart Stitch presentation contract", () => {
     expect(cartPageSource).toContain("<PromotionProgressGroup progress={promotion.progress} />");
     expect(cartPageSource).toContain("className=\"promotion-progress-toggle\"");
     expect(cartPageSource).toContain("aria-expanded={expanded}");
+    expect(cartPageSource).not.toContain('className="promotion-total-row"');
+    expect(cartPageSource.indexOf('className="promotion-breakdown"')).toBeLessThan(cartPageSource.indexOf('className="cart-final-total"'));
+    expect(cartPageSource.indexOf('className="cart-final-total"')).toBeLessThan(cartPageSource.indexOf("<PromotionProgressGroup"));
     expect(cartPageSource).not.toContain("promotion.progress.slice(0, 2)");
     expect(promotionCss).toContain("grid-template-columns: auto minmax(0, 1fr)");
+    expect(promotionCss).toContain(".cart-final-total .price");
+    expect(promotionCss).toContain("font-size: 30px");
+    expect(promotionCss).toContain("font-weight: 800");
     expect(promotionCss).toContain("@media (max-width: 430px)");
     expect(promotionCss).toContain("nth-child(n + 3)");
     expect(promotionCss).toContain("nth-child(n + 4)");

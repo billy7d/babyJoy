@@ -160,6 +160,19 @@ async function inspect(page, width) {
     const firstItem = visibleItems[0];
     const icon = firstItem?.querySelector(".material-symbols-outlined")?.getBoundingClientRect();
     const text = firstItem?.querySelector("p")?.getBoundingClientRect();
+    const subtotal = document.querySelector(".subtotal");
+    const subtotalPrice = subtotal?.querySelector(".price");
+    const total = document.querySelector(".cart-final-total");
+    const totalPrice = total?.querySelector(".price");
+    const breakdown = document.querySelector(".promotion-breakdown");
+    const promotionTotalRow = document.querySelector(".promotion-total-row");
+    const productTitle = document.querySelector(".cart-item:not(.promotion-gift-cart-item) .cart-item-info h2");
+    const productTitleStyle = productTitle ? getComputedStyle(productTitle) : null;
+    const removeLine = document.querySelector(".cart-item .remove-line");
+    const removeLineBox = removeLine?.getBoundingClientRect();
+    const follows = (before, after) => Boolean(before && after && (before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const subtotalStyle = subtotalPrice ? getComputedStyle(subtotalPrice) : null;
+    const totalStyle = totalPrice ? getComputedStyle(totalPrice) : null;
     const freeRow = document.querySelector(".promotion-breakdown-row");
     return {
       overflow: document.documentElement.scrollWidth > viewportWidth + 1,
@@ -173,6 +186,19 @@ async function inspect(page, width) {
       textTop: text?.top ?? 0,
       whiteSpace: firstItem ? getComputedStyle(firstItem.querySelector("p")).whiteSpace : "",
       textOverflow: firstItem ? getComputedStyle(firstItem.querySelector("p")).textOverflow : "",
+      promotionTotalRow: Boolean(promotionTotalRow),
+      productTitle: productTitle?.textContent?.trim() ?? "",
+      productTitleDisplay: productTitleStyle?.display ?? "",
+      productTitleFullyVisible: Boolean(productTitle && productTitle.scrollHeight <= productTitle.clientHeight + 1),
+      removeLineHeight: removeLineBox?.height ?? 0,
+      breakdownBeforeTotal: follows(breakdown, total),
+      totalBeforeProgress: follows(total, group),
+      subtotalFontSize: Number.parseFloat(subtotalStyle?.fontSize ?? "0"),
+      totalFontSize: Number.parseFloat(totalStyle?.fontSize ?? "0"),
+      subtotalFontWeight: Number.parseInt(subtotalStyle?.fontWeight ?? "0", 10),
+      totalFontWeight: Number.parseInt(totalStyle?.fontWeight ?? "0", 10),
+      totalWhiteSpace: totalStyle?.whiteSpace ?? "",
+      totalOverflow: Boolean(totalPrice && totalPrice.scrollWidth > totalPrice.clientWidth + 1),
       summary: document.querySelector(".cart-summary")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
     };
   }, width);
@@ -198,13 +224,22 @@ try {
       assert(metrics.firstMessage.includes(productName), `Cart promotion ${width} truncate product name`);
       assert(metrics.whiteSpace !== "nowrap" && metrics.textOverflow !== "ellipsis", `Cart promotion ${width} ép text truncate`);
       assert(metrics.iconTop <= metrics.textTop + 4, `Icon promotion ${width} không căn theo dòng đầu`);
+      assert(metrics.productTitle === productName, `Cart promotion ${width} không hiển thị đủ tên sản phẩm`);
+      assert(metrics.productTitleDisplay !== "-webkit-box" && metrics.productTitleFullyVisible, `Cart promotion ${width} vẫn clamp tên sản phẩm`);
+      if (width <= 430) assert(metrics.removeLineHeight <= 48, `Cart promotion ${width} làm nút Xóa bị kéo giãn theo tên sản phẩm`);
+      assert(!metrics.promotionTotalRow, `Cart promotion ${width} còn row Khuyến mãi tổng hợp`);
+      assert(metrics.breakdownBeforeTotal, `Cart promotion ${width} đặt breakdown sau Tổng`);
+      assert(metrics.totalBeforeProgress, `Cart promotion ${width} đặt progress trước Tổng`);
+      assert(metrics.totalFontSize > metrics.subtotalFontSize, `Cart promotion ${width} Tổng chưa lớn hơn Tạm tính`);
+      assert(metrics.totalFontWeight > metrics.subtotalFontWeight, `Cart promotion ${width} Tổng chưa đậm hơn Tạm tính`);
+      assert(metrics.totalWhiteSpace === "nowrap" && !metrics.totalOverflow, `Cart promotion ${width} Tổng bị wrap hoặc tràn`);
       assert(metrics.freeName === "Ưu đãi giao hàng cho mẹ", `FREE SHIPPING ${width} duplicate benefit ở cột trái`);
       assert(metrics.freeValue.includes("Miễn phí vận chuyển") && metrics.freeValue.includes("- Free Shipping"), `FREE SHIPPING ${width} thiếu benefit ở cột phải`);
       assert(metrics.summary.includes("39.000"), `Cart promotion ${width} đổi total ngoài promotion response`);
 
       const toggle = page.locator(".promotion-progress-toggle");
       assert(await toggle.count() === 1, `Cart promotion ${width} thiếu toggle`);
-      const captureVisual = [320, 430, 1440].includes(width);
+      const captureVisual = [320, 390, 430, 1440].includes(width);
       if (captureVisual)
         await page.screenshot({
           path: fileURLToPath(new URL(`cart-promotions-${width}-collapsed.png`, screenshotDir)),

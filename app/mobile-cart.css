@@ -166,11 +166,10 @@
   .cart-page .cart-item-info h2 {
     min-width: 0;
     margin: 0;
-    overflow: hidden;
-    display: -webkit-box;
     grid-area: title;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    /* Tên sản phẩm được phép tự tăng chiều cao để không mất phần tên ở mobile. */
+    display: block;
+    overflow: visible;
     color: var(--on-surface);
     font-family: "Quicksand", sans-serif;
     font-size: 15px;
@@ -209,6 +208,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    /* Tiêu đề dài không được kéo giãn nút Xóa theo chiều cao của grid row. */
+    align-self: start;
     gap: 4px;
     border: 1px solid color-mix(in srgb, var(--error) 22%, transparent);
     border-radius: 999px;
@@ -390,12 +391,6 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-  }
-
-  .cart-page .promotion-gift-cart-item .cart-item-info h2 {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
   }
 
   .cart-page .promotion-gift-cart-item .promotion-gift-meta {
