@@ -30,7 +30,6 @@ import {
   getProductImageUrl,
   getProductImageUrlStrategy,
   getPublicImageUrl,
-  MAX_STORED_IMAGE_BYTES,
   type ProductImageUrlStrategy,
 } from "../shared/images";
 import {
@@ -69,6 +68,8 @@ import {
 } from "./scheduled-inventory-cleanup";
 import {
   evaluateAuthoritativeCart,
+  hasPromotionSchema,
+  loadPromotionHistory,
   PromotionCartError,
 } from "./promotions";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
@@ -112,6 +113,11 @@ import {
   normalizeLimit,
   normalizePage,
 } from "../shared/pagination";
+import {
+  FEATURED_COLLECTIONS,
+  isFeaturedCollection,
+  type FeaturedCollectionSystemKey,
+} from "../shared/tag-groups";
 import {
   buildCartRequestListQuery,
   parseCartRequestListParams,
@@ -264,6 +270,7 @@ async function evaluateCart(
       subtotalVnd: result.evaluation.subtotalVnd,
       discountTotalVnd: result.evaluation.discountTotalVnd,
       finalTotalVnd: result.evaluation.finalTotalVnd,
+      freeShipping: result.evaluation.freeShipping,
       totalQuantity: result.evaluation.totalQuantity,
       items: result.evaluation.items.map(({ categoryIds: _categoryIds, ...item }) => item),
       gifts: result.evaluation.gifts,
@@ -977,6 +984,7 @@ function buildProductListQuery({
   brands,
   age,
   bestSeller,
+  featuredSystemKey,
   tag,
   available,
   sort,
@@ -992,6 +1000,7 @@ function buildProductListQuery({
   brands: string[];
   age: number | null;
   bestSeller: boolean;
+  featuredSystemKey: FeaturedCollectionSystemKey | null;
   tag: string;
   available: boolean;
   sort: ProductListSort;
@@ -1045,8 +1054,22 @@ function buildProductListQuery({
     );
     values.push(tag);
   }
+  const sameVariantPredicates: string[] = [];
+  if (featuredSystemKey) {
+    sameVariantPredicates.push(`EXISTS (
+      SELECT 1
+      FROM variant_tags featured_vt
+      JOIN tags featured_tag ON featured_tag.id = featured_vt.tag_id
+      JOIN tag_groups featured_group ON featured_group.id = featured_tag.group_id
+      WHERE featured_vt.variant_id = pv.id
+        AND featured_tag.system_key = ?
+        AND featured_tag.is_active = 1
+        AND featured_group.is_active = 1
+    )`);
+    values.push(featuredSystemKey);
+  }
   if (variantTagGroups.length) {
-    const sameVariantPredicates = variantTagGroups.map((groupTagIds) => {
+    sameVariantPredicates.push(...variantTagGroups.map((groupTagIds) => {
       const tagPlaceholders = groupTagIds.map(() => "?").join(",");
       values.push(...groupTagIds);
       return `EXISTS (
@@ -1059,7 +1082,9 @@ function buildProductListQuery({
           AND svt_tag.is_active = 1
           AND svt_group.is_active = 1
       )`;
-    });
+    }));
+  }
+  if (sameVariantPredicates.length) {
     where.push(
       `EXISTS (
         SELECT 1
@@ -1114,6 +1139,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
   const url = new URL(request.url);
   const q = boundedCatalogText(url.searchParams.get("q"));
   const tag = boundedCatalogText(url.searchParams.get("tag"));
+  const featuredValue = url.searchParams.get("featured");
   const tagIds = csvQueryValue(url.searchParams.get("tagIds"));
   const categories = csvQueryValue(url.searchParams.get("category"));
   const brands = csvQueryValue(url.searchParams.get("brand"));
@@ -1131,11 +1157,30 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       "Bộ lọc tìm kiếm quá dài hoặc có quá nhiều giá trị.",
       422,
     );
+  if (
+    featuredValue !== null &&
+    featuredValue !== "" &&
+    !isFeaturedCollection(featuredValue)
+  )
+    return error(
+      "INVALID_FEATURED_COLLECTION",
+      "Bộ sưu tập nổi bật không hợp lệ.",
+      422,
+    );
   const [inventorySchema, variantRetirementSchema, tagGroupSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
     hasTagGroupSchema(env),
   ]);
+  const featuredSystemKey = featuredValue
+    ? FEATURED_COLLECTIONS[featuredValue as keyof typeof FEATURED_COLLECTIONS]
+    : null;
+  if (featuredSystemKey && !tagGroupSchema)
+    return error(
+      "FEATURED_COLLECTION_UNAVAILABLE",
+      "Bộ sưu tập nổi bật chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
   const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
   const ageValue = url.searchParams.get("age");
   let age: number | null = null;
@@ -1183,6 +1228,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     bestSeller: tagGroupSchema
       ? false
       : parseBooleanQuery(url.searchParams.get("bestSeller")),
+    featuredSystemKey,
     tag: tagGroupSchema ? "" : tag,
     available: parseBooleanQuery(url.searchParams.get("available")),
     sort: parseProductSort(sortValue),
@@ -1229,9 +1275,15 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
         (variant) => variant.availability !== "HIDDEN",
       );
     });
-  if (variantTagGroups.length) {
+  if (variantTagGroups.length || featuredSystemKey) {
     products.forEach((product) => {
       const matchedVariant = product.variants.find((variant) =>
+        (!featuredSystemKey ||
+          variant.tags?.some(
+            (tag) =>
+              tag.systemKey === featuredSystemKey ||
+              tag.featuredSectionKey === featuredSystemKey,
+          )) &&
         variantTagGroups.every((groupTagIds) =>
           groupTagIds.some((tagId) =>
             variant.tags?.some((tag) => tag.id === tagId),
@@ -1443,13 +1495,23 @@ async function getAdminRequest(id: string, env: Env) {
   )
     .bind(id)
     .all<CartItemSnapshotRow>();
-  const [reservations, promotionReservations] = await Promise.all([
+  const [reservations, promotionReservations, promotionSchema, promotionHistory] = await Promise.all([
     listActiveReservations(id, env),
     listPromotionReservations(id, env),
+    hasPromotionSchema(env),
+    loadPromotionHistory(id, env),
   ]);
   return json({
     data: {
       ...cartRequest,
+      promotionDiscountVnd: promotionSchema ? promotionHistory.discountAmountVnd : 0,
+      finalTotalVnd: promotionSchema
+        ? promotionHistory.finalTotalVnd
+        : Number(cartRequest.subtotalVnd ?? 0),
+      freeShipping: promotionSchema ? promotionHistory.freeShipping : false,
+      promotions: promotionSchema
+        ? promotionHistory.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion)
+        : [],
       serverNow: new Date().toISOString(),
       reservations,
       promotionReservations,
@@ -1523,7 +1585,7 @@ async function uploadImage(request: Request, env: Env) {
         caught.code === "UNSUPPORTED_TYPE"
           ? "Định dạng ảnh không được hỗ trợ."
           : caught.code === "TOO_LARGE"
-            ? `Ảnh tối ưu vượt quá ${MAX_STORED_IMAGE_BYTES / (1024 * 1024)} MB.`
+            ? "Không thể tối ưu ảnh này để tải lên. Vui lòng thử ảnh khác hoặc giảm kích thước ảnh."
             : caught.code === "KEY_COLLISION"
               ? "Không thể tạo khóa ảnh duy nhất."
               : "Tệp ảnh đang trống.";
@@ -1565,7 +1627,7 @@ async function uploadDescriptionImage(request: Request, env: Env) {
         caught instanceof ImageUploadError && caught.code === "UNSUPPORTED_TYPE"
           ? "Định dạng ảnh không được hỗ trợ."
           : caught instanceof ImageUploadError && caught.code === "TOO_LARGE"
-            ? `Ảnh tối ưu vượt quá ${MAX_STORED_IMAGE_BYTES / (1024 * 1024)} MB.`
+            ? "Không thể tối ưu ảnh này để tải lên. Vui lòng thử ảnh khác hoặc giảm kích thước ảnh."
             : caught instanceof ProductDescriptionAssetError &&
                 caught.code === "PRODUCT_NOT_FOUND"
               ? "Không tìm thấy sản phẩm."

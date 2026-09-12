@@ -620,7 +620,7 @@ describe("Configurable inventory and promotion reservation", () => {
   it("promotion chỉ reserve tại Messenger, dùng cùng deadline và consume đúng một lần khi confirm", async () => {
     setClock(futureTestClock());
     const { database, env } = createEnv();
-    const { variantId } = seedVariant(database, "promotion", 2);
+    const { productId, variantId } = seedVariant(database, "promotion", 2);
     await api(
       env,
       "/api/admin/settings/checkout",
@@ -632,15 +632,18 @@ describe("Configurable inventory and promotion reservation", () => {
         `INSERT INTO promotions (
           id, name, description, type, status, priority, stackable,
           usage_limit_total, usage_count_total, config_json, created_at, updated_at
-        ) VALUES (?, 'Giảm test', '', 'ORDER_FIXED_DISCOUNT', 'ACTIVE', 10, 0, 1, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        ) VALUES (?, 'Miễn phí ship test', '', 'PRODUCT_DISCOUNT', 'ACTIVE', 10, 0, 1, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       )
       .run(
         promotionId,
-        JSON.stringify({ type: "ORDER_FIXED_DISCOUNT", minimumSubtotal: 1, discountAmount: 1000 }),
+        JSON.stringify({ type: "PRODUCT_DISCOUNT", productIds: [productId], reward: { kind: "FREE_SHIPPING" } }),
       );
     const token = "promotion-reservation";
     const prepared = await prepare(env, token, variantId);
     expect(prepared.status).toBe(201);
+    expect(await prepared.json()).toMatchObject({
+      cartRequest: { promotionDiscountVnd: 0, finalTotalVnd: 100000, freeShipping: true },
+    });
     expect(database.prepare("SELECT usage_count_total FROM promotions WHERE id = ?").get(promotionId)).toEqual({ usage_count_total: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM promotion_reservations").get()).toEqual({ count: 0 });
     const activated = await activate(env, token, variantId);

@@ -207,6 +207,13 @@ describe("CatalogProvider API boundary", () => {
     expect(result.pagination).toMatchObject({ page: 2, totalItems: 25 });
   });
 
+  it("giữ featured collection trong canonical listing URL và kết hợp filter theo AND", () => {
+    const params = new URLSearchParams("featured=best-seller&age=6&sort=price_desc");
+    expect(buildProductListUrl(params)).toBe(
+      "/api/products?page=1&limit=24&featured=best-seller&age=6&sort=price_desc",
+    );
+  });
+
   it("không gửi brand, availability hoặc Best seller từ state filter cũ", () => {
     expect(
       buildProductListUrl(

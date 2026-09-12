@@ -11,6 +11,7 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import "./admin-cart-requests.css";
 import "./mobile-cart.css";
+import "./cart-summary.css";
 // Style promotion được tách riêng để giữ layout cart hiện tại và giới hạn phạm vi ảnh hưởng.
 import "./cart-promotions.css";
 import "./storefront-product-media.css";

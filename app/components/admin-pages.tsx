@@ -16,6 +16,7 @@ import {
   MIN_CHECKOUT_RESERVATION_MINUTES,
   formatReservationDuration,
 } from "../../shared/reservation";
+import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
 import { mapApiProduct } from "../lib/catalog-context";
 import {
   createDraftVariant,
@@ -2027,6 +2028,9 @@ export function AdminCartRequestDetailPage() {
     itemLineCount: number;
     totalQuantity: number;
     subtotalVnd: number;
+    promotionDiscountVnd?: number;
+    finalTotalVnd?: number;
+    freeShipping?: boolean;
     status: string;
     contactChannel: "LEGACY" | "MESSENGER" | "SHARE";
     messengerDeliveryStatus: string;
@@ -2059,6 +2063,12 @@ export function AdminCartRequestDetailPage() {
       promotionId: string;
       status: string;
       expiresAt: string;
+    }>;
+    promotions?: Array<{
+      promotionId?: string;
+      promotionName: string;
+      discountAmountVnd: number;
+      freeShipping?: boolean;
     }>;
     items: Array<{
       id: string;
@@ -2150,6 +2160,11 @@ export function AdminCartRequestDetailPage() {
     detail.checkoutState && detail.checkoutState !== "LEGACY"
       ? detail.checkoutState
       : status;
+  const requestPromotions = detail.promotions?.filter(
+    (promotion, index, all) =>
+      (promotion.discountAmountVnd > 0 || promotion.freeShipping === true) &&
+      (!promotion.freeShipping || all.findIndex((candidate) => candidate.freeShipping === true) === index),
+  ) ?? [];
   return (
     <AdminShell title="Giỏ Hàng Gửi Đến">
       <div className="request-detail-heading">
@@ -2219,6 +2234,32 @@ export function AdminCartRequestDetailPage() {
                 <Price value={detail.subtotalVnd} />
               </div>
             </div>
+            {(requestPromotions.length > 0 || detail.freeShipping) && (
+              <div className="request-promotion-summary">
+                <b>Ưu đãi đang áp dụng</b>
+                {requestPromotions.map((promotion) => (
+                  <p key={promotion.promotionId ?? promotion.promotionName}>
+                    <span>{promotion.promotionName}</span>
+                    <strong>
+                      {promotion.discountAmountVnd > 0 && `-${formatVnd(promotion.discountAmountVnd)}`}
+                      {promotion.freeShipping && (
+                        <small>{FREE_SHIPPING_LABEL}</small>
+                      )}
+                    </strong>
+                  </p>
+                ))}
+                {detail.freeShipping && !requestPromotions.some((promotion) => promotion.freeShipping) && (
+                  <p>
+                    <span>Khuyến mãi</span>
+                    <strong><small>{FREE_SHIPPING_LABEL}</small></strong>
+                  </p>
+                )}
+                <p className="request-promotion-total">
+                  <span>Tổng sau ưu đãi</span>
+                  <Price value={detail.finalTotalVnd ?? detail.subtotalVnd} />
+                </p>
+              </div>
+            )}
           </section>
         </div>
         <aside>

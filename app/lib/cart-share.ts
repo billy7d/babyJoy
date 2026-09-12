@@ -23,6 +23,7 @@ export type PreparedCartShare = {
     subtotalVnd: number;
     promotionDiscountVnd?: number;
     finalTotalVnd?: number;
+    freeShipping?: boolean;
     createdAt: string;
     checkoutState?: string;
     reservationStartedAt?: string | null;
@@ -38,7 +39,9 @@ export type PreparedCartShare = {
     promotions?: Array<{
       promotionName: string;
       discountAmountVnd: number;
+      freeShipping?: boolean;
     }>;
+    freeShipping?: boolean;
     gifts?: Array<{
       productName: string;
       variantName: string;
@@ -68,6 +71,7 @@ export type CartShareApiIssue = {
   subtotalVnd?: number;
   discountTotalVnd?: number;
   finalTotalVnd?: number;
+  freeShipping?: boolean;
   gifts?: Array<{
     productName?: string;
     variantName?: string;

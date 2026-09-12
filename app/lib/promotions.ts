@@ -33,6 +33,7 @@ export type CartAppliedPromotion = {
   promotionName: string;
   type: string;
   discountAmountVnd: number;
+  freeShipping: boolean;
   giftUnavailable: boolean;
 };
 
@@ -50,6 +51,7 @@ export type CartPromotionResult = {
   subtotalVnd: number;
   discountTotalVnd: number;
   finalTotalVnd: number;
+  freeShipping: boolean;
   totalQuantity: number;
   items: CartPromotionItem[];
   gifts: CartPromotionGift[];

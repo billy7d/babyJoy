@@ -46,6 +46,11 @@ describe("mobile cart Stitch presentation contract", () => {
     );
     expect(mobileCss).toContain("display: none !important;");
     expect(mobileCss).toContain("position: fixed");
+    expect(mobileCss).toContain(".cart-page .cart-layout,");
+    expect(mobileCss).toContain(".cart-page .cart-items,");
+    expect(mobileCss).toContain(".cart-page .cart-item,");
+    expect(mobileCss).toContain(".cart-page .cart-summary {");
+    expect(mobileCss).toContain("align-items: stretch;");
     expect(mobileCss).toContain(
       "padding: 12px 16px calc(12px + env(safe-area-inset-bottom));",
     );

@@ -22,9 +22,10 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
-import type {
-  CatalogTag as CatalogFilterTag,
-  CatalogTagGroup,
+import {
+  isFeaturedCollection,
+  type CatalogTag as CatalogFilterTag,
+  type CatalogTagGroup,
 } from "../../shared/tag-groups";
 
 export type ApiProduct = {
@@ -216,6 +217,8 @@ export function normalizeProductListParams(
   };
   copy("page");
   copy("q");
+  const featured = params.get("featured");
+  if (featured && isFeaturedCollection(featured)) next.set("featured", featured);
   if (!options.forcedCategory) copy("category");
   const filterGroupsReady = options.filterGroupsReady ?? true;
   const tagGroupsSupported = options.tagGroupsSupported === true;
@@ -379,6 +382,7 @@ function mapApiCategory(row: ApiCategory): Category {
 const productQueryKeys = [
   "q",
   "category",
+  "featured",
   "age",
   "tag",
   "tagIds",

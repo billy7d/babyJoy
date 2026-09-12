@@ -1,6 +1,7 @@
 import { generatePublicCode, type PricedItem } from "./services";
 import { consumeRateLimit, RateLimitError, sha256 } from "./rate-limit";
 import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
+import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 import { loadStoreSettings } from "./store-settings";
 import {
   buildPromotionPersistenceStatements,
@@ -330,6 +331,7 @@ async function startResponse(
         subtotalVnd: row.subtotalVnd,
         promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
         finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
+        freeShipping: history.freeShipping,
         createdAt: row.createdAt,
       },
     },
@@ -899,7 +901,8 @@ export function composeMessengerCartSummary(request: {
   subtotalVnd: number;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
-  promotions?: Array<{ promotionName: string; discountAmountVnd: number }>;
+  freeShipping?: boolean;
+  promotions?: Array<{ promotionName: string; discountAmountVnd: number; freeShipping?: boolean }>;
   gifts?: Array<Pick<PricedItem, "productName" | "variantName" | "quantity">>;
 }) {
   const storeDisplayName =
@@ -926,12 +929,19 @@ export function composeMessengerCartSummary(request: {
       lines.push(
         `Khuyến mãi ${promotion.promotionName}: -${formatVnd(promotion.discountAmountVnd)}`,
       );
+    if (promotion.freeShipping)
+      lines.push(
+        `Khuyến mãi ${promotion.promotionName}: ${FREE_SHIPPING_LABEL}`,
+      );
   });
   lines.push(
     "────────────────",
     `Tạm tính: ${formatVnd(request.subtotalVnd)}`,
     ...(request.promotionDiscountVnd
       ? [`Khuyến mãi: -${formatVnd(request.promotionDiscountVnd)}`]
+      : []),
+    ...(request.freeShipping && !request.promotions?.some((promotion) => promotion.freeShipping)
+      ? [FREE_SHIPPING_LABEL]
       : []),
     ...(request.finalTotalVnd !== undefined
       ? [`Tổng thanh toán: ${formatVnd(request.finalTotalVnd)}`]
@@ -1095,6 +1105,7 @@ async function deliverCartSummary(cartRequestId: string, env: Env) {
         subtotalVnd: delivery.subtotalVnd,
         promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
         finalTotalVnd: schema ? history.finalTotalVnd : delivery.subtotalVnd,
+        freeShipping: history.freeShipping,
         promotions: history.promotions,
         gifts: history.gifts,
       }),

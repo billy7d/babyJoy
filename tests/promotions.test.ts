@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluatePromotions,
+  promotionTypes,
   roundPercentage,
   validatePromotionInput,
   type PromotionDefinition,
@@ -228,6 +229,73 @@ describe("Promotion Engine P0 + P1", () => {
     });
     expect(completed.progress).toEqual([]);
     expect(completed.progress.some((item) => /mua thêm 0/.test(item.message))).toBe(false);
+  });
+
+  it("canonicalize FREE_SHIPPING và không giữ lại field tiền cũ", () => {
+    const validated = validatePromotionInput({
+      name: "Miễn phí ship",
+      type: "PRODUCT_DISCOUNT",
+      config: {
+        productIds: ["a"],
+        reward: {
+          kind: "FREE_SHIPPING",
+          amount: 50000,
+          percentage: 20,
+          maximumDiscount: 100000,
+        },
+      },
+    });
+    expect(validated.config).toEqual({
+      type: "PRODUCT_DISCOUNT",
+      productIds: ["a"],
+      reward: { kind: "FREE_SHIPPING" },
+    });
+    expect(promotionTypes).not.toContain("FREE_SHIPPING");
+  });
+
+  it("áp dụng miễn phí vận chuyển cho product, category, quantity, combo và tiered", () => {
+    const cases: Array<[PromotionType, Record<string, unknown>, ReturnType<typeof line>[]]> = [
+      ["PRODUCT_DISCOUNT", { productIds: ["a"], reward: { kind: "FREE_SHIPPING" } }, [line("a", 100000)]],
+      ["CATEGORY_DISCOUNT", { categoryIds: ["snack"], reward: { kind: "FREE_SHIPPING" } }, [line("a", 100000, 1, ["snack"])]],
+      ["QUANTITY_DISCOUNT", { requiredQuantity: 2, scope: "ENTIRE_CART", reward: { kind: "FREE_SHIPPING" } }, [line("a", 100000, 2)]],
+      ["COMBO_DISCOUNT", { items: [{ productId: "a", quantity: 1 }, { productId: "b", quantity: 1 }], reward: { kind: "FREE_SHIPPING" } }, [line("a", 100000), line("b", 100000)]],
+      ["TIERED_DISCOUNT", { tiers: [{ threshold: 100000, reward: { kind: "FIXED", amount: 1000 } }, { threshold: 200000, reward: { kind: "FREE_SHIPPING" } }] }, [line("a", 200000)]],
+    ];
+    cases.forEach(([type, config, cart]) => {
+      const result = evaluatePromotions({ cart, promotions: [promotion(type, config)], now });
+      expect(result).toMatchObject({
+        subtotalVnd: cart.reduce((sum, item) => sum + item.priceVnd * item.quantity, 0),
+        discountTotalVnd: 0,
+        freeShipping: true,
+      });
+      expect(result.finalTotalVnd).toBe(result.subtotalVnd);
+      expect(result.appliedPromotions[0]).toMatchObject({
+        discountAmountVnd: 0,
+        freeShipping: true,
+      });
+    });
+  });
+
+  it("giữ stacking, priority và không tạo -0 cho promotion miễn phí ship", () => {
+    const freeShipping = promotion(
+      "PRODUCT_DISCOUNT",
+      { productIds: ["a"], reward: { kind: "FREE_SHIPPING" } },
+      { id: "free-shipping", priority: 100, stackable: false },
+    );
+    const lowerExclusiveDiscount = promotion(
+      "ORDER_FIXED_DISCOUNT",
+      { minimumSubtotal: 1, discountAmount: 50000 },
+      { id: "lower-exclusive", priority: 10, stackable: false },
+    );
+    const result = evaluatePromotions({
+      cart: [line("a", 200000)],
+      promotions: [lowerExclusiveDiscount, freeShipping],
+      now,
+    });
+    expect(result.appliedPromotions.map((item) => item.promotionId)).toEqual(["free-shipping"]);
+    expect(result.discountTotalVnd).toBe(0);
+    expect(result.freeShipping).toBe(true);
+    expect(result.appliedPromotions[0].discountAmountVnd).toBe(0);
   });
 
   it("chỉ áp dụng combo khi đủ tất cả item và hỗ trợ nhiều combo", () => {

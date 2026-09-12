@@ -5,6 +5,8 @@ import {
   formatVnd,
   getDefaultVariant,
   getDisplayVariant,
+  getVariantFeaturedFlags,
+  isVariantInFeaturedCollection,
   getVariantPrimaryImage,
   getVariantAvailableQuantity,
   isVariantPurchasable,
@@ -101,10 +103,12 @@ import {
 import { useStoreSettings } from "../lib/store-settings";
 import { searchCatalog } from "../lib/search";
 import { getPaginationItems } from "../../shared/pagination";
+import { isFeaturedCollection } from "../../shared/tag-groups";
 import {
   DEFAULT_CHECKOUT_RESERVATION_MINUTES,
   formatReservationDuration,
 } from "../../shared/reservation";
+import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
 import { ProductImage } from "./product-image";
 import { ProductRichDescription } from "./product-rich-description";
 import {
@@ -134,21 +138,17 @@ export function HomePage() {
       cancelled = true;
     };
   }, []);
-  const legacyBestSellers = products
-    .filter((product) => product.isBestSeller)
-    .sort(
-      (left, right) =>
-        (left.bestSellerRank ?? Number.MAX_SAFE_INTEGER) -
-        (right.bestSellerRank ?? Number.MAX_SAFE_INTEGER),
-    );
-  const bestSellers = curated?.supported
-    ? curated.bestSellers
-    : legacyBestSellers;
-  const mustTry = curated?.supported ? curated.mustTry : [];
-  const featured = (bestSellers.length
+  const curatedSupported = curated?.supported === true;
+  const bestSellers = curatedSupported ? curated?.bestSellers ?? [] : [];
+  const mustTry = curatedSupported ? curated?.mustTry ?? [] : [];
+  const featured = (curatedSupported
     ? bestSellers
     : products.filter((product) => product.featured)
   ).slice(0, 4);
+  const featuredHeading = curatedSupported ? "Best Seller" : "Sản phẩm nổi bật";
+  const featuredLink = curatedSupported
+    ? "/shop?featured=best-seller"
+    : "/shop";
   return (
     <PublicShell>
       <section className="hero">
@@ -241,22 +241,28 @@ export function HomePage() {
       <section className="featured section">
         <div className="section-heading">
           <div>
-            <h2>{bestSellers.length ? "Best seller" : "Sản phẩm nổi bật"}</h2>
+            <h2>{featuredHeading}</h2>
             <p>Những hương vị được các bé yêu thích nhất.</p>
           </div>
-          <Link to="/shop">
+          <Link to={featuredLink}>
             Xem tất cả <Icon>arrow_forward</Icon>
           </Link>
         </div>
         <div className="product-grid">
-          {products.length === 0 ? (
+          {featured.length === 0 ? (
             <div className="empty-state product-empty-state">
-              <Icon>inventory_2</Icon>
-              <h2>Chưa có sản phẩm</h2>
-              <p>{displayName} đang chuẩn bị danh sách sản phẩm mới.</p>
-              <Link className="btn primary" to="/shop">
-                Xem cửa hàng
-              </Link>
+              <Icon>{curatedSupported ? "search_off" : "inventory_2"}</Icon>
+              <h2>{curatedSupported ? "Chưa có sản phẩm Best Seller" : "Chưa có sản phẩm"}</h2>
+              <p>
+                {curatedSupported
+                  ? "Hiện chưa có variant nào được đánh dấu Best Seller."
+                  : `${displayName} đang chuẩn bị danh sách sản phẩm mới.`}
+              </p>
+              {!curatedSupported && (
+                <Link className="btn primary" to="/shop">
+                  Xem cửa hàng
+                </Link>
+              )}
             </div>
           ) : (
             featured.map((product) => (
@@ -265,21 +271,29 @@ export function HomePage() {
           )}
         </div>
       </section>
-      {mustTry.length > 0 && (
+      {curatedSupported && (
         <section className="featured section must-try-section">
           <div className="section-heading">
             <div>
               <h2>Must Try</h2>
               <p>Những lựa chọn mới đáng để mẹ thử cho bé.</p>
             </div>
-            <Link to="/shop">
+            <Link to="/shop?featured=must-try">
               Xem tất cả <Icon>arrow_forward</Icon>
             </Link>
           </div>
           <div className="product-grid">
-            {mustTry.map((product) => (
-              <ProductCard key={`${product.id}-${product.matchedVariantId ?? "default"}`} product={product} compact />
-            ))}
+            {mustTry.length === 0 ? (
+              <div className="empty-state product-empty-state">
+                <Icon>search_off</Icon>
+                <h2>Chưa có sản phẩm Must Try</h2>
+                <p>Hiện chưa có variant nào được đánh dấu Must Try.</p>
+              </div>
+            ) : (
+              mustTry.map((product) => (
+                <ProductCard key={`${product.id}-${product.matchedVariantId ?? "default"}`} product={product} compact />
+              ))
+            )}
           </div>
         </section>
       )}
@@ -300,6 +314,11 @@ export function applyFilters(
   const selectedBrands = (params.get("brand") ?? "").split(",").filter(Boolean);
   const age = Number.parseInt(params.get("age") ?? "", 10);
   const bestSeller = params.get("bestSeller") === "1";
+  const featuredParam = params.get("featured");
+  const featuredCollection =
+    featuredParam && isFeaturedCollection(featuredParam)
+      ? featuredParam
+      : null;
   const tag = params.get("tag");
   const available = params.get("available");
   const sort = params.get("sort") ?? "default";
@@ -320,6 +339,10 @@ export function applyFilters(
         )) &&
       (!Number.isFinite(age) ||
         (Number.isFinite(productMinAge) && productMinAge <= age)) &&
+      (!featuredCollection ||
+        product.variants.some((variant) =>
+          isVariantInFeaturedCollection(variant, featuredCollection),
+        )) &&
       (!bestSeller || product.isBestSeller) &&
       (!tag || product.tags.includes(tag) || product.tagSlugs?.includes(tag)) &&
       (!available ||
@@ -503,8 +526,17 @@ export function ProductListPage({
     }
     setParams(next);
   };
-  const title = searchMode
-    ? `Kết quả tìm kiếm${params.get("q") ? ` cho “${params.get("q")}”` : ""}`
+  const featuredCollectionParam = normalizedParams.get("featured");
+  const featuredTitle =
+    featuredCollectionParam === "best-seller"
+      ? "Best Seller"
+      : featuredCollectionParam === "must-try"
+        ? "Must Try"
+        : null;
+  const title = featuredTitle
+    ? featuredTitle
+    : searchMode
+      ? `Kết quả tìm kiếm${params.get("q") ? ` cho “${params.get("q")}”` : ""}`
     : categorySlug
       ? (categories.find((item) => item.slug === categorySlug)?.name ??
         "Sản phẩm ăn dặm")
@@ -516,7 +548,8 @@ export function ProductListPage({
       normalizedParams.get("category") ||
       normalizedParams.get("age") ||
       normalizedParams.get("tag") ||
-      normalizedParams.get("tagIds"),
+      normalizedParams.get("tagIds") ||
+      normalizedParams.get("featured"),
   );
   const selectedTagIds = useMemo(
     () =>
@@ -1474,21 +1507,57 @@ export function ProductDetailPage() {
               <a href="#guide">Hướng dẫn chọn loại</a>
             </div>
             <div className="variant-buttons">
-              {product.variants.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={variantId === item.id ? "active" : ""}
-                  onClick={() => selectVariant(item.id)}
-                  aria-pressed={variantId === item.id}
-                >
-                  {getVariantPrimaryImage(item) && (
-                    <ProductImage image={getVariantPrimaryImage(item)} alt="" loading="lazy" />
-                  )}
-                  {item.name}{item.packageSize ? ` · ${item.packageSize}` : ""}
-                  {!isVariantPurchasable(item) ? " — Hết hàng" : ""}
-                </button>
-              ))}
+              {product.variants.map((item) => {
+                const featuredFlags = getVariantFeaturedFlags(item);
+                const badges = [
+                  featuredFlags.bestSeller
+                    ? { key: "best-seller", label: "BEST SELLER" }
+                    : null,
+                  featuredFlags.mustTry
+                    ? { key: "must-try", label: "MUST TRY" }
+                    : null,
+                ].filter((badge): badge is { key: string; label: string } => Boolean(badge));
+                const variantLabel = `${item.name}${item.packageSize ? ` · ${item.packageSize}` : ""}`;
+                const statusLabel = !isVariantPurchasable(item)
+                  ? "Hết hàng"
+                  : "";
+                const accessibleLabel = [
+                  variantLabel,
+                  ...badges.map((badge) => badge.label),
+                  statusLabel,
+                ]
+                  .filter(Boolean)
+                  .join(", ");
+                return (
+                  <div
+                    key={item.id}
+                    className={`variant-option${badges.length ? " has-variant-badges" : ""}${badges.length > 1 ? " has-multiple-variant-badges" : ""}`}
+                  >
+                    {badges.length > 0 && (
+                      <span className="variant-badge-cluster" aria-hidden="true">
+                        {badges.map((badge) => (
+                          <span className={`variant-badge variant-badge-${badge.key}`} key={badge.key}>
+                            {badge.label}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className={`variant-button${variantId === item.id ? " active" : ""}`}
+                      onClick={() => selectVariant(item.id)}
+                      aria-pressed={variantId === item.id}
+                      aria-label={accessibleLabel}
+                    >
+                      {getVariantPrimaryImage(item) && (
+                        <ProductImage image={getVariantPrimaryImage(item)} alt="" loading="lazy" />
+                      )}
+                      {variantLabel}
+                      {statusLabel ? ` — ${statusLabel}` : ""}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="detail-quantity">
@@ -1720,6 +1789,19 @@ function CartSummary({
   const checkoutConfig = useCheckoutConfig();
   const subtotalVnd = promotion?.subtotalVnd ?? cart.subtotalVnd;
   const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd;
+  const isFreeShippingApplied = (
+    item: CartPromotionResult["appliedPromotions"][number],
+  ) => item.freeShipping === true || isFreeShippingPromotion(item);
+  const appliedPromotions = promotion?.appliedPromotions.filter(
+    (item, index, all) =>
+      !isFreeShippingApplied(item) ||
+      all.findIndex((candidate) => isFreeShippingApplied(candidate)) === index,
+  ) ?? [];
+  const hasAppliedPromotion = Boolean(
+    promotion?.appliedPromotions.some(
+      (item) => item.discountAmountVnd > 0 || isFreeShippingApplied(item) || item.giftUnavailable,
+    ),
+  );
   return (
     <aside className="cart-summary">
       <h2>Tóm tắt giỏ hàng</h2>
@@ -1731,11 +1813,11 @@ function CartSummary({
         <span>Tạm tính</span>
         <Price value={subtotalVnd} />
       </div>
-      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable || isFreeShippingPromotion(item)) && (
+      {hasAppliedPromotion && (
         <div className="promotion-breakdown">
           <b>Ưu đãi đang áp dụng</b>
-          {promotion.appliedPromotions.map((item) => {
-            const freeShipping = isFreeShippingPromotion(item);
+          {appliedPromotions.map((item) => {
+            const freeShipping = isFreeShippingApplied(item);
             return (
               <div className="promotion-breakdown-row" key={item.promotionId}>
                 <span className="promotion-breakdown-name">{item.promotionName}</span>
@@ -2285,6 +2367,7 @@ type PublicCartShareDto = {
   subtotalVnd: number;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
+  freeShipping?: boolean;
   checkoutState?: string;
   reservationStartedAt?: string | null;
   reservationExpiresAt?: string | null;
@@ -2294,6 +2377,7 @@ type PublicCartShareDto = {
   promotions?: Array<{
     promotionName: string;
     discountAmountVnd: number;
+    freeShipping?: boolean;
   }>;
   items: Array<{
     productName: string;
@@ -2315,6 +2399,11 @@ export function PublicCartSharePage() {
   const token = pathname.split("/").filter(Boolean).at(-1) ?? "";
   const [data, setData] = useState<PublicCartShareDto | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const publicPromotions = data?.promotions?.filter(
+    (promotion, index, all) =>
+      (promotion.discountAmountVnd > 0 || promotion.freeShipping === true) &&
+      (!promotion.freeShipping || all.findIndex((candidate) => candidate.freeShipping === true) === index),
+  ) ?? [];
   useEffect(() => {
     let cancelled = false;
     void fetch(`/api/cart/share/${encodeURIComponent(token)}`)
@@ -2386,12 +2475,19 @@ export function PublicCartSharePage() {
           <footer>
             <p><span>Tổng số lượng</span><b>{data.totalQuantity}</b></p>
             <p><span>Tạm tính</span><Price value={data.subtotalVnd} /></p>
-            {data.promotions?.map((promotion) => (
+            {publicPromotions.map((promotion) => (
               <p key={promotion.promotionName}>
                 <span>{promotion.promotionName}</span>
-                <b className="promotion-value">-{formatVnd(promotion.discountAmountVnd)}</b>
+                <b className="promotion-value">
+                  {promotion.discountAmountVnd > 0
+                    ? `-${formatVnd(promotion.discountAmountVnd)}`
+                    : FREE_SHIPPING_LABEL}
+                </b>
               </p>
             ))}
+            {data.freeShipping && !publicPromotions.some((promotion) => promotion.freeShipping) && (
+              <p><span>Khuyến mãi</span><b className="promotion-value">{FREE_SHIPPING_LABEL}</b></p>
+            )}
             {(data.promotionDiscountVnd ?? 0) > 0 && (
               <p><span>Khuyến mãi</span><b className="promotion-value">-{formatVnd(data.promotionDiscountVnd ?? 0)}</b></p>
             )}
@@ -2772,10 +2868,16 @@ function GuideActions({
               <span>{formatVnd(change.displayedPrice)} → {formatVnd(change.currentPrice)}</span>
             </p>
           ))}
-          {issue?.discountTotalVnd !== undefined && (
+          {issue?.discountTotalVnd !== undefined && issue.discountTotalVnd > 0 && (
             <p>
               <span>Khuyến mãi hiện tại</span>
               <span>-{formatVnd(issue.discountTotalVnd)}</span>
+            </p>
+          )}
+          {issue?.freeShipping && (
+            <p>
+              <span>Ưu đãi hiện tại</span>
+              <span>{FREE_SHIPPING_LABEL}</span>
             </p>
           )}
           {issue?.finalTotalVnd !== undefined && (
@@ -2871,6 +2973,7 @@ export function SuccessPage() {
     subtotalVnd: 367000,
     promotionDiscountVnd: 0,
     finalTotalVnd: 367000,
+    freeShipping: false,
     createdAt: "2026-08-25T15:12:00+07:00",
     contactChannel: "LEGACY",
   });
@@ -2934,6 +3037,12 @@ export function SuccessPage() {
                 <div className="meta-promotion">
                   <span>Khuyến mãi</span>
                   <b>-{formatVnd(data.promotionDiscountVnd)}</b>
+                </div>
+              )}
+              {data.freeShipping && (
+                <div className="meta-promotion">
+                  <span>Ưu đãi vận chuyển</span>
+                  <b>{FREE_SHIPPING_LABEL}</b>
                 </div>
               )}
               {data.finalTotalVnd !== undefined && data.finalTotalVnd !== data.subtotalVnd && (
