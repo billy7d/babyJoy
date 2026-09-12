@@ -212,10 +212,17 @@ export type PromotionEvaluationResult = {
   progress: PromotionProgress[];
 };
 
+// Tên target được truy vấn từ dữ liệu authoritative; không nhận metadata từ trình duyệt.
+export type PromotionTargetNames = {
+  products?: Readonly<Record<string, string>>;
+  categories?: Readonly<Record<string, string>>;
+};
+
 export type PromotionEvaluationInput = {
   cart: PromotionCartLine[];
   promotions: PromotionDefinition[];
   catalog?: PromotionCatalogProduct[];
+  targetNames?: PromotionTargetNames;
   now?: Date | string;
   customerId?: string;
 };
@@ -884,9 +891,66 @@ function productGift(
   } satisfies PromotionGiftItem;
 }
 
+function targetNamesForIds(
+  ids: string[],
+  namesById: Readonly<Record<string, string>> | undefined,
+  fallback: (id: string) => string | undefined,
+) {
+  return [...new Set(
+    ids
+      .map((id) => {
+        const name = namesById?.[id] ?? fallback(id);
+        const trimmed = name?.trim();
+        return trimmed || undefined;
+      })
+      .filter((name): name is string => Boolean(name)),
+  )];
+}
+
+function progressTargetName(
+  config: PromotionConfig,
+  lines: PromotionCartLine[],
+  targetNames: PromotionTargetNames | undefined,
+) {
+  if (config.type === "QUANTITY_DISCOUNT") {
+    if (config.scope === "SELECTED_PRODUCTS") {
+      const names = targetNamesForIds(
+        config.productIds ?? [],
+        targetNames?.products,
+        (id) => lines.find((line) => line.productId === id)?.productName,
+      );
+      return names.join(", ") || undefined;
+    }
+    if (config.scope === "SELECTED_CATEGORIES") {
+      const names = targetNamesForIds(
+        config.categoryIds ?? [],
+        targetNames?.categories,
+        () => undefined,
+      );
+      return names.join(", ") || undefined;
+    }
+  }
+  if (config.type === "BUY_X_GET_Y") {
+    return targetNamesForIds(
+      [config.triggerProductId],
+      targetNames?.products,
+      (id) => lines.find((line) => line.productId === id)?.productName,
+    ).join(", ") || undefined;
+  }
+  if (config.type === "COMBO_DISCOUNT") {
+    return targetNamesForIds(
+      config.items.map((item) => item.productId),
+      targetNames?.products,
+      (id) => lines.find((line) => line.productId === id)?.productName,
+    ).join(", ") || undefined;
+  }
+  return undefined;
+}
+
 function progressFor(
   candidate: Candidate,
   lines: PromotionCartLine[],
+  targetNames?: PromotionTargetNames,
 ): PromotionProgress | null {
   if (candidate.promotion.config.type === "TIERED_DISCOUNT") {
     const subtotal = sumLineTotals(lines);
@@ -923,6 +987,7 @@ function progressFor(
   if (config.type === "BUY_X_GET_Y") {
     const count = triggerQuantity(config, lines);
     const remaining = Math.max(0, config.requiredQuantity - count);
+    const targetName = progressTargetName(config, lines, targetNames);
     return {
       promotionId: candidate.promotion.id,
       promotionName: candidate.promotion.name,
@@ -930,13 +995,17 @@ function progressFor(
       priority: candidate.promotion.priority,
       remainingQuantity: remaining,
       nextReward: `tặng ${config.rewardQuantity}`,
-      message: `Mua thêm ${remaining} sản phẩm để nhận quà.`,
+      message: targetName
+        ? `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để nhận quà.`
+        : `Mua thêm ${remaining} sản phẩm để nhận quà.`,
     };
   }
   if (config.type === "QUANTITY_DISCOUNT") {
     const indexes = rewardForScope(config, lines);
     const count = indexes.reduce((sum, index) => sum + lines[index].quantity, 0);
     const remaining = Math.max(0, config.requiredQuantity - count);
+    const targetName = progressTargetName(config, lines, targetNames);
+    if (config.scope !== "ENTIRE_CART" && !targetName) return null;
     return {
       promotionId: candidate.promotion.id,
       promotionName: candidate.promotion.name,
@@ -944,7 +1013,10 @@ function progressFor(
       priority: candidate.promotion.priority,
       remainingQuantity: remaining,
       nextReward: describeReward(config.reward),
-      message: `Bạn đã mua ${count}/${config.requiredQuantity} sản phẩm để ${describeReward(config.reward)}.`,
+      message:
+        config.scope === "ENTIRE_CART"
+          ? `Bạn đã mua ${count}/${config.requiredQuantity} sản phẩm để ${describeReward(config.reward)}.`
+          : `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để áp dụng ưu đãi ${describeReward(config.reward)}.`,
     };
   }
   if (config.type === "COMBO_DISCOUNT") {
@@ -954,6 +1026,7 @@ function progressFor(
         return Math.max(0, item.quantity - current);
       })
       .reduce((sum, value) => sum + value, 0);
+    const targetName = progressTargetName(config, lines, targetNames);
     return {
       promotionId: candidate.promotion.id,
       promotionName: candidate.promotion.name,
@@ -961,7 +1034,9 @@ function progressFor(
       priority: candidate.promotion.priority,
       remainingQuantity: missing,
       nextReward: describeReward(config.reward),
-      message: `Bổ sung ${missing} sản phẩm còn thiếu để ${describeReward(config.reward)}.`,
+      message: targetName
+        ? `Bổ sung ${missing} sản phẩm ${targetName} còn thiếu để ${describeReward(config.reward)}.`
+        : `Bổ sung ${missing} sản phẩm còn thiếu để ${describeReward(config.reward)}.`,
     };
   }
   return null;
@@ -1075,10 +1150,9 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
   const progress = input.promotions
     .filter((promotion) => isPromotionRunning(promotion, now))
     .map((promotion) => evaluateCandidate(promotion, lines))
-    .map((candidate) => progressFor(candidate, lines))
+    .map((candidate) => progressFor(candidate, lines, input.targetNames))
     .filter((value): value is PromotionProgress => Boolean(value))
-    .sort((left, right) => right.priority - left.priority || (left.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) - (right.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) || (left.remainingQuantity ?? Number.MAX_SAFE_INTEGER) - (right.remainingQuantity ?? Number.MAX_SAFE_INTEGER))
-    .slice(0, 3);
+    .sort((left, right) => right.priority - left.priority || (left.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) - (right.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) || (left.remainingQuantity ?? Number.MAX_SAFE_INTEGER) - (right.remainingQuantity ?? Number.MAX_SAFE_INTEGER));
   return {
     subtotalVnd,
     discountTotalVnd,

@@ -1,0 +1,158 @@
+/* Presentation chung cho breakdown và progress; không can thiệp vào promotion engine. */
+.cart-summary > .promotion-breakdown,
+.cart-summary > .promotion-progress-group {
+  display: block;
+}
+
+.cart-page .cart-summary > .promotion-breakdown,
+.cart-page .cart-summary > .promotion-progress-group {
+  align-items: initial;
+  justify-content: initial;
+}
+
+.cart-page .cart-summary > .promotion-progress-group {
+  padding: 12px;
+}
+
+.promotion-breakdown-row {
+  min-width: 0;
+  margin: 7px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 46%);
+  gap: 8px;
+  align-items: start;
+}
+
+.promotion-breakdown-row > * {
+  min-width: 0;
+}
+
+.promotion-breakdown-name,
+.promotion-breakdown-value {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.promotion-breakdown-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--secondary);
+  text-align: right;
+}
+
+.promotion-breakdown-value strong {
+  color: var(--secondary);
+}
+
+.promotion-breakdown-value small {
+  color: var(--error);
+}
+
+.promotion-breakdown-benefit {
+  color: var(--secondary);
+}
+
+.promotion-progress-group {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.promotion-progress-list {
+  min-width: 0;
+}
+
+.promotion-progress-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+}
+
+.promotion-progress-item + .promotion-progress-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--secondary) 14%, transparent);
+}
+
+.promotion-progress-item > .material-symbols-outlined {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 16px;
+  line-height: 1.4;
+  vertical-align: top;
+}
+
+.promotion-progress-item > p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.5;
+}
+
+.promotion-progress-group:not(.is-expanded) .promotion-progress-item:nth-child(n + 4) {
+  display: none;
+}
+
+.promotion-progress-toggle {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 8px 4px;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--secondary) 14%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--on-variant);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.promotion-progress-toggle:hover,
+.promotion-progress-toggle:focus-visible {
+  color: var(--secondary);
+}
+
+.promotion-progress-toggle .material-symbols-outlined {
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+.promotion-progress-toggle-mobile {
+  display: none;
+}
+
+.promotion-progress-toggle-desktop {
+  display: inline;
+}
+
+/* Mobile chỉ giữ hai row đầu; không thu nhỏ chữ để ép tên dài vào một dòng. */
+@media (max-width: 430px) {
+  .promotion-progress-group:not(.is-expanded) .promotion-progress-item:nth-child(n + 3) {
+    display: none;
+  }
+
+  .promotion-progress-toggle-mobile {
+    display: inline;
+  }
+
+  .promotion-progress-toggle-desktop {
+    display: none;
+  }
+}
+
+/* Từ 431px dùng giới hạn ba row; chỉ hiện toggle khi còn row thứ tư trở đi. */
+@media (min-width: 431px) {
+  .promotion-progress-group[data-has-desktop-overflow="false"] .promotion-progress-toggle {
+    display: none;
+  }
+}

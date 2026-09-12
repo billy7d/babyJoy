@@ -8,6 +8,7 @@ import {
   type PromotionEvaluationResult,
   type PromotionGiftItem,
   type PromotionProgress,
+  type PromotionTargetNames,
 } from "../shared/promotions";
 import type { PricedItem } from "./services";
 import { getPublicImageUrl } from "../shared/images";
@@ -114,6 +115,7 @@ type CanonicalVariantRow = {
 };
 
 type CategoryRow = { productId: string; categoryId: string };
+type NamedRow = { id: string; name: string };
 
 function isMissingPromotionSchema(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -330,6 +332,56 @@ function promotionGiftProductIds(promotions: PromotionDefinition[]) {
   return [...ids];
 }
 
+async function loadPromotionTargetNames(
+  promotions: PromotionDefinition[],
+  env: Env,
+): Promise<PromotionTargetNames> {
+  const productIds = new Set<string>();
+  const categoryIds = new Set<string>();
+  promotions.forEach((promotion) => {
+    const config = promotion.config;
+    if (config.type === "BUY_X_GET_Y") productIds.add(config.triggerProductId);
+    if (config.type === "PRODUCT_DISCOUNT")
+      config.productIds.forEach((productId) => productIds.add(productId));
+    if (config.type === "CATEGORY_DISCOUNT")
+      config.categoryIds.forEach((categoryId) => categoryIds.add(categoryId));
+    if (config.type === "QUANTITY_DISCOUNT") {
+      if (config.scope === "SELECTED_PRODUCTS")
+        config.productIds?.forEach((productId) => productIds.add(productId));
+      if (config.scope === "SELECTED_CATEGORIES")
+        config.categoryIds?.forEach((categoryId) => categoryIds.add(categoryId));
+    }
+    if (config.type === "COMBO_DISCOUNT")
+      config.items.forEach((item) => productIds.add(item.productId));
+  });
+  const emptyProducts = { results: [] as NamedRow[] };
+  const emptyCategories = { results: [] as NamedRow[] };
+  const [productRows, categoryRows] = await Promise.all([
+    productIds.size
+      ? env.DB.prepare(
+          `SELECT id, name FROM products WHERE id IN (${[...productIds].map(() => "?").join(",")})`,
+        )
+          .bind(...productIds)
+          .all<NamedRow>()
+      : Promise.resolve(emptyProducts),
+    categoryIds.size
+      ? env.DB.prepare(
+          `SELECT id, name FROM categories WHERE id IN (${[...categoryIds].map(() => "?").join(",")})`,
+        )
+          .bind(...categoryIds)
+          .all<NamedRow>()
+      : Promise.resolve(emptyCategories),
+  ]);
+  return {
+    products: Object.fromEntries(
+      productRows.results.map((row) => [row.id, row.name]),
+    ),
+    categories: Object.fromEntries(
+      categoryRows.results.map((row) => [row.id, row.name]),
+    ),
+  };
+}
+
 async function loadGiftCatalog(
   promotions: PromotionDefinition[],
   env: Env,
@@ -433,11 +485,16 @@ export async function evaluateAuthoritativeCart(
   const schema = await hasPromotionSchema(env);
   const canonical = await loadCanonicalLines(items, env);
   const promotions = await loadActivePromotions(env, now);
-  const catalog = await loadGiftCatalog(promotions, env);
+  // Tải song song catalog quà và tên target để không nhận dữ liệu hiển thị từ client.
+  const [catalog, targetNames] = await Promise.all([
+    loadGiftCatalog(promotions, env),
+    loadPromotionTargetNames(promotions, env),
+  ]);
   const evaluation = evaluatePromotions({
     cart: canonical.lines,
     promotions,
     catalog,
+    targetNames,
     now,
   });
   const pricedItems = evaluation.items.map((item) => ({

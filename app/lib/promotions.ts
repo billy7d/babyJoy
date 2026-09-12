@@ -28,6 +28,23 @@ export type CartPromotionGift = {
   isPromotionGift: true;
 };
 
+export type CartAppliedPromotion = {
+  promotionId: string;
+  promotionName: string;
+  type: string;
+  discountAmountVnd: number;
+  giftUnavailable: boolean;
+};
+
+// Chỉ nhận diện theo type mà API trả về, không phụ thuộc tên promotion do admin đặt.
+export const FREE_SHIPPING_PROMOTION_TYPE = "FREE_SHIPPING";
+
+export function isFreeShippingPromotion(
+  promotion: Pick<CartAppliedPromotion, "type">,
+) {
+  return promotion.type === FREE_SHIPPING_PROMOTION_TYPE;
+}
+
 export type CartPromotionResult = {
   success: true;
   subtotalVnd: number;
@@ -36,13 +53,7 @@ export type CartPromotionResult = {
   totalQuantity: number;
   items: CartPromotionItem[];
   gifts: CartPromotionGift[];
-  appliedPromotions: Array<{
-    promotionId: string;
-    promotionName: string;
-    type: string;
-    discountAmountVnd: number;
-    giftUnavailable: boolean;
-  }>;
+  appliedPromotions: CartAppliedPromotion[];
   progress: Array<{
     promotionId: string;
     promotionName: string;

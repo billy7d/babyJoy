@@ -69,6 +69,7 @@ import {
 } from "../lib/catalog-context";
 import { cartStorageKey, parseStoredCart, useCart } from "../lib/cart";
 import {
+  isFreeShippingPromotion,
   useCartPromotionEvaluation,
   type CartPromotionResult,
 } from "../lib/promotions";
@@ -1750,26 +1751,33 @@ function CartSummary({
           <Icon>info</Icon> Chưa thể tải ưu đãi mới nhất. Khi chốt giỏ hàng, hệ thống sẽ kiểm tra lại.
         </p>
       )}
-      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable) && (
+      {promotion?.appliedPromotions.some((item) => item.discountAmountVnd > 0 || item.giftUnavailable || isFreeShippingPromotion(item)) && (
         <div className="promotion-breakdown">
           <b>Ưu đãi đang áp dụng</b>
-          {promotion.appliedPromotions.map((item) => (
-            <p key={item.promotionId}>
-              <span>{item.promotionName}</span>
-              {item.discountAmountVnd > 0 && <strong>-{formatVnd(item.discountAmountVnd)}</strong>}
-              {item.giftUnavailable && <small>Quà hiện tạm hết hàng</small>}
-            </p>
-          ))}
+          {promotion.appliedPromotions.map((item) => {
+            const freeShipping = isFreeShippingPromotion(item);
+            return (
+              <div className="promotion-breakdown-row" key={item.promotionId}>
+                <span className="promotion-breakdown-name">{item.promotionName}</span>
+                <span className="promotion-breakdown-value">
+                  {freeShipping && (
+                    <>
+                      <span>Miễn phí vận chuyển</span>
+                      <span className="promotion-breakdown-benefit">- Free Shipping</span>
+                    </>
+                  )}
+                  {!freeShipping && item.discountAmountVnd > 0 && (
+                    <strong>-{formatVnd(item.discountAmountVnd)}</strong>
+                  )}
+                  {item.giftUnavailable && <small>Quà hiện tạm hết hàng</small>}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
       {promotion?.progress.length ? (
-        <div className="promotion-progress" aria-live="polite">
-          {promotion.progress.slice(0, 2).map((item) => (
-            <p key={item.promotionId}>
-              <Icon>local_offer</Icon> {item.message}
-            </p>
-          ))}
-        </div>
+        <PromotionProgressGroup progress={promotion.progress} />
       ) : null}
       {checkoutConfig?.enabled === true ? (
         <DirectSellerShareControls
@@ -1793,6 +1801,58 @@ function CartSummary({
         <Icon>lock</Icon> Thông tin của bạn được bảo mật an toàn
       </small>
     </aside>
+  );
+}
+
+function PromotionProgressGroup({
+  progress,
+}: {
+  progress: CartPromotionResult["progress"];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasMobileOverflow = progress.length > 2;
+  const hasDesktopOverflow = progress.length > 3;
+  if (!progress.length) return null;
+  return (
+    <div
+      className={`promotion-progress promotion-progress-group${expanded ? " is-expanded" : ""}`}
+      data-has-desktop-overflow={hasDesktopOverflow ? "true" : "false"}
+      aria-live="polite"
+    >
+      <div className="promotion-progress-list">
+        {progress.map((item) => (
+          <div className="promotion-progress-item" key={item.promotionId}>
+            <Icon>local_offer</Icon>
+            <p>{item.message}</p>
+          </div>
+        ))}
+      </div>
+      {hasMobileOverflow && (
+        <button
+          className="promotion-progress-toggle"
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? "Thu gọn ưu đãi" : "Xem thêm ưu đãi"}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? (
+            <>
+              Thu gọn <Icon>expand_less</Icon>
+            </>
+          ) : (
+            <>
+              <span className="promotion-progress-toggle-mobile">
+                Xem thêm {progress.length - 2} ưu đãi
+              </span>
+              <span className="promotion-progress-toggle-desktop">
+                Xem thêm {Math.max(0, progress.length - 3)} ưu đãi
+              </span>
+              <Icon>expand_more</Icon>
+            </>
+          )}
+        </button>
+      )}
+    </div>
   );
 }
 

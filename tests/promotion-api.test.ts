@@ -227,4 +227,67 @@ describe("Promotion API và D1 snapshot", () => {
     expect((await archived.json()) as { archived: boolean }).toMatchObject({ archived: true });
     expect(database.prepare("SELECT status FROM promotions WHERE id = ?").get(created.id)).toEqual({ status: "ARCHIVED" });
   });
+
+  it("evaluate lấy đúng tên product/category từ D1 cho promotion progress", async () => {
+    const { env, database } = createEnv();
+    database.prepare(
+      "INSERT INTO categories (id, name, slug, is_active) VALUES (?, ?, ?, 1)",
+    ).run("category-progress", "Bột ăn dặm", "category-progress");
+
+    const productPromotion = await api(env, "/api/admin/promotions", jsonInit("POST", {
+      name: "Đủ số lượng theo product",
+      description: "",
+      type: "QUANTITY_DISCOUNT",
+      status: "ACTIVE",
+      priority: 20,
+      stackable: true,
+      config: {
+        type: "QUANTITY_DISCOUNT",
+        requiredQuantity: 5,
+        scope: "SELECTED_PRODUCTS",
+        productIds: ["promotion-test-product"],
+        reward: { kind: "FIXED", amount: 20000 },
+      },
+    }));
+    expect(productPromotion.status).toBe(201);
+
+    const categoryPromotion = await api(env, "/api/admin/promotions", jsonInit("POST", {
+      name: "Đủ số lượng theo category",
+      description: "",
+      type: "QUANTITY_DISCOUNT",
+      status: "ACTIVE",
+      priority: 10,
+      stackable: true,
+      config: {
+        type: "QUANTITY_DISCOUNT",
+        requiredQuantity: 5,
+        scope: "SELECTED_CATEGORIES",
+        categoryIds: ["category-progress"],
+        reward: { kind: "FIXED", amount: 20000 },
+      },
+    }));
+    expect(categoryPromotion.status).toBe(201);
+
+    const response = await api(env, "/api/cart/evaluate", jsonInit("POST", {
+      items: [{ variantId: "promotion-test-variant", quantity: 2 }],
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      subtotalVnd: number;
+      discountTotalVnd: number;
+      finalTotalVnd: number;
+      progress: Array<{ message: string; remainingQuantity?: number }>;
+    };
+    expect(body).toMatchObject({ subtotalVnd: 250000, discountTotalVnd: 0, finalTotalVnd: 250000 });
+    expect(body.progress.map(({ message, remainingQuantity }) => ({ message, remainingQuantity }))).toEqual([
+      {
+        message: "Bạn cần mua thêm 3 sản phẩm Promotion test product để áp dụng ưu đãi giảm 20.000 ₫.",
+        remainingQuantity: 3,
+      },
+      {
+        message: "Bạn cần mua thêm 5 sản phẩm Bột ăn dặm để áp dụng ưu đãi giảm 20.000 ₫.",
+        remainingQuantity: 5,
+      },
+    ]);
+  });
 });

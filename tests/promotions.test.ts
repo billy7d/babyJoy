@@ -157,6 +157,79 @@ describe("Promotion Engine P0 + P1", () => {
     expect(result.items.find((item) => item.productId === "c")?.discountAmountVnd).toBe(0);
   });
 
+  it("hiển thị số lượng còn thiếu cùng tên product/category authoritative", () => {
+    const productProgress = evaluatePromotions({
+      cart: [line("product-a", 100000, 2)],
+      promotions: [
+        promotion("QUANTITY_DISCOUNT", {
+          requiredQuantity: 5,
+          scope: "SELECTED_PRODUCTS",
+          productIds: ["product-a"],
+          reward: { kind: "FIXED", amount: 20000 },
+        }),
+      ],
+      targetNames: {
+        products: { "product-a": "Bánh ăn dặm Heinz Farley's Rusks Original dành cho bé từ 6 tháng 120g" },
+      },
+      now,
+    });
+    expect(productProgress.progress[0]).toMatchObject({
+      remainingQuantity: 3,
+      message: "Bạn cần mua thêm 3 sản phẩm Bánh ăn dặm Heinz Farley's Rusks Original dành cho bé từ 6 tháng 120g để áp dụng ưu đãi giảm 20.000 ₫.",
+    });
+
+    const categoryProgress = evaluatePromotions({
+      cart: [line("product-a", 100000, 1)],
+      promotions: [
+        promotion("QUANTITY_DISCOUNT", {
+          requiredQuantity: 5,
+          scope: "SELECTED_CATEGORIES",
+          categoryIds: ["category-snack"],
+          reward: { kind: "FIXED", amount: 20000 },
+        }),
+      ],
+      targetNames: { categories: { "category-snack": "Bột ăn dặm" } },
+      now,
+    });
+    expect(categoryProgress.progress[0]).toMatchObject({
+      remainingQuantity: 5,
+      message: "Bạn cần mua thêm 5 sản phẩm Bột ăn dặm để áp dụng ưu đãi giảm 20.000 ₫.",
+    });
+  });
+
+  it("trả đủ progress theo thứ tự priority và không render ngưỡng đã đạt", () => {
+    const promotions = Array.from({ length: 5 }, (_, index) =>
+      promotion(
+        "ORDER_FIXED_DISCOUNT",
+        { minimumSubtotal: (index + 2) * 100000, discountAmount: 10000 },
+        { id: `progress-${index}`, priority: 5 - index },
+      ),
+    );
+    const result = evaluatePromotions({ cart: [line("a", 100000)], promotions, now });
+    expect(result.progress).toHaveLength(5);
+    expect(result.progress.map((item) => item.promotionId)).toEqual([
+      "progress-0",
+      "progress-1",
+      "progress-2",
+      "progress-3",
+      "progress-4",
+    ]);
+
+    const completed = evaluatePromotions({
+      cart: [line("a", 100000, 2)],
+      promotions: [
+        promotion("QUANTITY_DISCOUNT", {
+          requiredQuantity: 2,
+          scope: "ENTIRE_CART",
+          reward: { kind: "FIXED", amount: 10000 },
+        }),
+      ],
+      now,
+    });
+    expect(completed.progress).toEqual([]);
+    expect(completed.progress.some((item) => /mua thêm 0/.test(item.message))).toBe(false);
+  });
+
   it("chỉ áp dụng combo khi đủ tất cả item và hỗ trợ nhiều combo", () => {
     const combo = promotion("COMBO_DISCOUNT", {
       items: [
