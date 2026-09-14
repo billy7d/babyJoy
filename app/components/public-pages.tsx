@@ -110,6 +110,7 @@ import {
 } from "../../shared/reservation";
 import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
 import {
+  formatComboGroupSelectionRule,
   validateComboSelection,
   type ComboConfig,
   type ComboGroup,
@@ -1363,13 +1364,7 @@ function ComboSelectionBuilder({
           <section className="combo-group" key={group.id}>
             <div className="field-heading">
               <span>{group.name}</span>
-              <small>
-                {group.selectionType === "FIXED"
-                  ? "Bắt buộc"
-                  : group.selectionType === "CHOOSE_QUANTITY"
-                    ? `Tổng ${group.minSelect}-${group.maxSelect}`
-                    : `Chọn ${group.minSelect}-${group.maxSelect}`}
-              </small>
+              <small>{formatComboGroupSelectionRule(group)}</small>
             </div>
             {group.description && <p>{group.description}</p>}
             <div className="combo-items">
@@ -1427,7 +1422,9 @@ function ComboSelectionBuilder({
       })}
       {validation.errors.length > 0 && (
         <ul className="form-error combo-errors" role="alert">
-          {validation.errors.map((error) => <li key={error}>{error}</li>)}
+          {validation.errors.map((error, index) => (
+            <li key={`${index}-${error}`}>{error}</li>
+          ))}
         </ul>
       )}
       <div className="detail-quantity">

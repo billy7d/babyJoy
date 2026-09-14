@@ -14,6 +14,12 @@ import type {
   ProductImageRecord,
 } from "../lib/catalog";
 import type { CatalogTagGroup } from "../../shared/tag-groups";
+import {
+  legacyDescriptionToDocument,
+  type ProductDescriptionAsset,
+  type ProductDescriptionDocument,
+} from "../../shared/product-description";
+import { ProductDescriptionEditor } from "./product-description-editor";
 import { ProductImage } from "./product-image";
 import { AdminShell, Icon, StatusBadge, Tag } from "./ui";
 import {
@@ -136,7 +142,10 @@ export function ComboEditorPage() {
   const [slug, setSlug] = useState("");
   const [basePriceVnd, setBasePriceVnd] = useState("0");
   const [shortDescription, setShortDescription] = useState("");
-  const [description, setDescription] = useState("");
+  const [descriptionContent, setDescriptionContent] =
+    useState<ProductDescriptionDocument>(() => legacyDescriptionToDocument(""));
+  const [descriptionAssets, setDescriptionAssets] = useState<ProductDescriptionAsset[]>([]);
+  const [descriptionUploadSessionId] = useState(() => crypto.randomUUID());
   const [status, setStatus] = useState("HIDDEN");
   const [images, setImages] = useState<ProductImageRecord[]>([]);
   const [classificationCategories, setClassificationCategories] = useState<Category[]>([]);
@@ -286,7 +295,11 @@ export function ComboEditorPage() {
         setSlug(product.slug);
         setBasePriceVnd(String(product.basePriceVnd ?? 0));
         setShortDescription(product.shortDescription ?? "");
-        setDescription(product.description ?? "");
+        setDescriptionContent(
+          product.descriptionContent ??
+            legacyDescriptionToDocument(product.description ?? ""),
+        );
+        setDescriptionAssets(product.descriptionAssets ?? []);
         setStatus(product.status ?? "HIDDEN");
         setImages(product.images ?? []);
         setGroupMode(product.comboConfig?.groupMode ?? "ALL_GROUPS");
@@ -561,7 +574,8 @@ export function ComboEditorPage() {
             slug: slug.trim(),
             basePriceVnd: parsedPrice,
             shortDescription,
-            description,
+            descriptionContent,
+            descriptionUploadSessionId,
             images: images.map(({ id: imageId, r2Key, altText }, sortOrder) => ({
               id: imageId,
               r2Key,
@@ -784,10 +798,23 @@ export function ComboEditorPage() {
                   Mô tả ngắn
                   <textarea className="short" value={shortDescription} onChange={(event) => setShortDescription(event.target.value)} />
                 </label>
-                <label>
-                  Mô tả chi tiết
-                  <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-                </label>
+                <div>
+                  <span>Mô tả chi tiết</span>
+                  <ProductDescriptionEditor
+                    value={descriptionContent}
+                    productId={id}
+                    uploadSessionId={descriptionUploadSessionId}
+                    assets={descriptionAssets}
+                    onChange={setDescriptionContent}
+                    onAsset={(asset) =>
+                      setDescriptionAssets((current) =>
+                        current.some((item) => item.id === asset.id)
+                          ? current
+                          : [...current, asset],
+                      )
+                    }
+                  />
+                </div>
               </section>
 
               <section className="editor-card combo-rule-card">

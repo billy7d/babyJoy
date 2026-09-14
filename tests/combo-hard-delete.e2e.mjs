@@ -125,9 +125,26 @@ async function inspectStorefront(viewport) {
     const card = page.locator(".product-card").filter({ hasText: comboName }).first();
     await card.waitFor({ state: "visible", timeout: 10000 });
     assert((await card.innerText()).includes("COMBO"), `Card Combo thiếu nhãn ở ${viewport.width}px`);
+    const comboCta = card.getByRole("link", { name: "Xem Combo" });
     assert(
-      await card.getByRole("link", { name: "Xem Combo" }).count() === 1,
+      await comboCta.count() === 1,
       `Card Combo thiếu CTA ở ${viewport.width}px`,
+    );
+    const comboCtaLayout = await comboCta.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        display: style.display,
+        alignItems: style.alignItems,
+        justifyContent: style.justifyContent,
+        textAlign: style.textAlign,
+      };
+    });
+    assert(
+      comboCtaLayout.display === "inline-flex" &&
+        comboCtaLayout.alignItems === "center" &&
+        comboCtaLayout.justifyContent === "center" &&
+        comboCtaLayout.textAlign === "center",
+      `CTA Xem Combo chưa căn giữa ở ${viewport.width}px: ${JSON.stringify(comboCtaLayout)}`,
     );
     await assertNoHorizontalOverflow(page, viewport.width);
 
@@ -136,6 +153,17 @@ async function inspectStorefront(viewport) {
     const builder = page.getByLabel("Tùy chọn Combo");
     await builder.waitFor({ state: "visible", timeout: 10000 });
     assert(await builder.getByText("Món chính").count() >= 1, `Combo detail thiếu Group ở ${viewport.width}px`);
+    assert(
+      (await builder.locator(".field-heading small").first().innerText()) ===
+        "Chọn tối thiểu 1 sp / tối đa 1 sp",
+      `Rule Group chưa rõ nghĩa ở ${viewport.width}px: ${await builder.innerText()}`,
+    );
+    const comboErrors = builder.locator(".combo-errors li");
+    assert(
+      (await comboErrors.count()) === 1 &&
+        (await comboErrors.first().innerText()) === "Hãy chọn 1 sản phẩm trong Món chính",
+      `Alert Combo chưa đúng một dòng/Group ở ${viewport.width}px: ${await builder.innerText()}`,
+    );
     const pickerButtons = builder.locator('.combo-item-stepper button[aria-label="Tăng số lượng"]');
     assert(
       await pickerButtons.count() === 1,
@@ -210,6 +238,33 @@ try {
 
     await adminPage.goto(`${baseUrl}/admin/combos/${comboProductId}/edit`, { waitUntil: "domcontentloaded" });
     await adminPage.getByRole("heading", { name: "Sửa Combo" }).waitFor({ state: "visible", timeout: 10000 });
+    const richEditor = adminPage.locator(".product-description-editor");
+    await richEditor.waitFor({ state: "visible", timeout: 10000 });
+    assert(
+      await richEditor.getByLabel("Thanh công cụ mô tả chi tiết").count() === 1,
+      "Combo Admin chưa dùng Rich Editor của Product thường.",
+    );
+    const variantSearch = adminPage.getByPlaceholder("Tìm kiếm...");
+    await variantSearch.fill(componentSku);
+    const variantOption = adminPage.locator(".combo-variant-options > button").filter({ hasText: componentName }).first();
+    await variantOption.waitFor({ state: "visible", timeout: 10000 });
+    const optionLayout = await variantOption.evaluate((element) => {
+      const name = element.querySelector("b");
+      const nameStyle = name ? getComputedStyle(name) : null;
+      return {
+        optionWidth: element.getBoundingClientRect().width,
+        nameWidth: name?.getBoundingClientRect().width ?? 0,
+        overflowWrap: nameStyle?.overflowWrap ?? "",
+        wordBreak: nameStyle?.wordBreak ?? "",
+      };
+    });
+    assert(
+      optionLayout.nameWidth >= 140 &&
+        optionLayout.overflowWrap !== "anywhere" &&
+        optionLayout.wordBreak !== "break-all",
+      `Variant Picker desktop vẫn bó chữ theo cột: ${JSON.stringify(optionLayout)}`,
+    );
+    await assertNoHorizontalOverflow(adminPage, 1024);
     const deleteButton = adminPage.getByRole("button", { name: /XÓA VĨNH VIỄN/ });
     await deleteButton.waitFor({ state: "visible", timeout: 10000 });
     await deleteButton.click();
