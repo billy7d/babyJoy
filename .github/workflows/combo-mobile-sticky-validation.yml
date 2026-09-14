@@ -1,0 +1,83 @@
+name: Combo Mobile Sticky Validation
+
+on:
+  push:
+    branches:
+      - fix/combo-mobile-sticky-purchase
+
+concurrency:
+  group: combo-mobile-sticky-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate:local
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: git diff --check origin/main...HEAD
+
+  combo-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          for apt_source in /etc/apt/sources.list.d/*; do
+            if [ -f "$apt_source" ] && grep -q "dl.google.com" "$apt_source"; then
+              sudo mv "$apt_source" "$apt_source.disabled"
+            fi
+          done
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          npx playwright install --with-deps chromium
+      - name: Create CI local secrets
+        shell: bash
+        run: |
+          cat > .dev.vars <<'EOF'
+          META_PAGE_ACCESS_TOKEN=ci-page-token
+          META_APP_SECRET=ci-meta-app-secret
+          META_WEBHOOK_VERIFY_TOKEN=ci-webhook-token
+          CART_SHARE_SECRET=ci-cart-share-secret-0123456789abcdef
+          STOREFRONT_ACCESS_SECRET=ci-storefront-access-secret-0123456789abcdef
+          EOF
+      - run: npm run db:migrate:local
+      - name: Start development server
+        shell: bash
+        run: |
+          npm run dev -- --host 127.0.0.1 > /tmp/babyjoy-combo-mobile.log 2>&1 &
+          echo $! > /tmp/babyjoy-combo-mobile.pid
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5173/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/babyjoy-combo-mobile.log
+          exit 1
+      - name: Combo mobile sticky E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+        run: npm run test:e2e:combo
+      - name: Show server log on failure
+        if: failure()
+        run: cat /tmp/babyjoy-combo-mobile.log || true
