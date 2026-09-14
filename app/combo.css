@@ -202,6 +202,101 @@
   .combo-detail-page .detail-info {
     padding-bottom: 24px;
   }
+
+  /* Combo dùng chính cụm mua hàng cố định như Product thường, không hiển thị CTA xem giỏ cũ. */
+  .combo-detail-page ~ .mobile-add-bar {
+    display: none;
+  }
+
+  /* Chừa nội dung cuối trang để cụm mua hàng cố định không che mô tả khi cuộn tới đáy. */
+  .combo-detail-page {
+    padding-bottom: 228px;
+  }
+
+  /* Alert chỉ tồn tại khi validation chưa đạt; neo ngay phía trên cụm quantity + CTA. */
+  .combo-builder .combo-errors {
+    position: fixed;
+    z-index: 73;
+    right: 16px;
+    bottom: calc(150px + env(safe-area-inset-bottom));
+    left: 16px;
+    max-height: min(28vh, 180px);
+    margin: 0;
+    padding: 11px 14px 11px 34px;
+    overflow-y: auto;
+    border: 1px solid color-mix(in srgb, var(--error) 20%, transparent);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--error-container) 92%, #fff);
+    box-shadow: 0 10px 28px rgba(79, 32, 21, .12);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .combo-builder .combo-errors li + li {
+    margin-top: 4px;
+  }
+
+  /* Quantity là hàng điều khiển gọn, dễ chạm và cân bằng thị giác với CTA chính. */
+  .combo-builder .detail-quantity {
+    position: fixed;
+    z-index: 72;
+    right: 16px;
+    bottom: calc(82px + env(safe-area-inset-bottom));
+    left: 16px;
+    min-height: 56px;
+    margin: 0;
+    padding: 8px 10px 8px 16px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: nowrap;
+    border: 1px solid color-mix(in srgb, var(--outline-variant) 72%, transparent);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, .97);
+    box-shadow: 0 8px 24px rgba(66, 44, 34, .1);
+    backdrop-filter: blur(14px);
+  }
+
+  .combo-builder .detail-quantity > span {
+    width: auto;
+    margin: 0;
+    flex: 1 1 auto;
+    flex-basis: auto;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .combo-builder .detail-quantity .quantity-stepper {
+    flex: 0 0 auto;
+    background: var(--surface-low);
+  }
+
+  .combo-builder .add-cart {
+    position: fixed;
+    z-index: 72;
+    right: 16px;
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    left: 16px;
+    width: auto;
+    min-height: 56px;
+    margin: 0;
+    padding-inline: 18px;
+    border-radius: 18px;
+    box-shadow: 0 10px 26px rgba(148, 74, 24, .24);
+  }
+
+  .combo-builder .add-cart .material-symbols-outlined {
+    font-size: 21px;
+  }
+
+  /* Toast sau khi thêm Combo luôn nằm trên cụm mua hàng thay vì che CTA. */
+  .combo-detail-page + .toast {
+    right: 16px;
+    bottom: calc(154px + env(safe-area-inset-bottom));
+    left: 16px;
+    justify-content: center;
+  }
 }
 
 /* Khu vực Admin Combo dùng lại card/form chung nhưng cho phép chỉnh nhiều Group gọn gàng. */

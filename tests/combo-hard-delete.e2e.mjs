@@ -140,7 +140,7 @@ async function inspectStorefront(viewport) {
       };
     });
     assert(
-      comboCtaLayout.display === "inline-flex" &&
+      ["flex", "inline-flex"].includes(comboCtaLayout.display) &&
         comboCtaLayout.alignItems === "center" &&
         comboCtaLayout.justifyContent === "center" &&
         comboCtaLayout.textAlign === "center",
@@ -169,6 +169,70 @@ async function inspectStorefront(viewport) {
       await pickerButtons.count() === 1,
       `Combo detail thiếu picker ở ${viewport.width}px: ${await builder.innerText()}`,
     );
+
+    if (viewport.width <= 639) {
+      const mobilePurchaseLayout = await page.evaluate(() => {
+        const error = document.querySelector(".combo-builder .combo-errors");
+        const quantity = document.querySelector(".combo-builder .detail-quantity");
+        const add = document.querySelector(".combo-builder .add-cart");
+        const oldCartBar = document.querySelector(".mobile-add-bar");
+        const fixedData = (element) => {
+          if (!(element instanceof HTMLElement)) return null;
+          const rect = element.getBoundingClientRect();
+          return {
+            position: getComputedStyle(element).position,
+            bottomGap: Math.round(window.innerHeight - rect.bottom),
+            visible: rect.width > 0 && rect.height > 0,
+          };
+        };
+        return {
+          error: fixedData(error),
+          quantity: fixedData(quantity),
+          add: fixedData(add),
+          oldCartBarDisplay: oldCartBar ? getComputedStyle(oldCartBar).display : "missing",
+        };
+      });
+      assert(
+        mobilePurchaseLayout.error?.position === "fixed" &&
+          mobilePurchaseLayout.quantity?.position === "fixed" &&
+          mobilePurchaseLayout.add?.position === "fixed",
+        `Cụm mua Combo mobile chưa được ghim đáy: ${JSON.stringify(mobilePurchaseLayout)}`,
+      );
+      assert(
+        mobilePurchaseLayout.error.visible &&
+          mobilePurchaseLayout.quantity.visible &&
+          mobilePurchaseLayout.add.visible,
+        `Cụm mua Combo mobile không hiển thị đầy đủ: ${JSON.stringify(mobilePurchaseLayout)}`,
+      );
+      assert(
+        mobilePurchaseLayout.oldCartBarDisplay === "none",
+        `CTA Xem giỏ hàng cũ vẫn còn trên Combo mobile: ${JSON.stringify(mobilePurchaseLayout)}`,
+      );
+
+      const beforeScroll = mobilePurchaseLayout;
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForTimeout(80);
+      const afterScroll = await page.evaluate(() => {
+        const readBottomGap = (selector) => {
+          const element = document.querySelector(selector);
+          if (!(element instanceof HTMLElement)) return null;
+          return Math.round(window.innerHeight - element.getBoundingClientRect().bottom);
+        };
+        return {
+          errorBottomGap: readBottomGap(".combo-builder .combo-errors"),
+          quantityBottomGap: readBottomGap(".combo-builder .detail-quantity"),
+          addBottomGap: readBottomGap(".combo-builder .add-cart"),
+        };
+      });
+      assert(
+        Math.abs((afterScroll.errorBottomGap ?? 0) - (beforeScroll.error?.bottomGap ?? 0)) <= 2 &&
+          Math.abs((afterScroll.quantityBottomGap ?? 0) - (beforeScroll.quantity?.bottomGap ?? 0)) <= 2 &&
+          Math.abs((afterScroll.addBottomGap ?? 0) - (beforeScroll.add?.bottomGap ?? 0)) <= 2,
+        `Cụm mua Combo không bám viewport khi cuộn: ${JSON.stringify({ beforeScroll, afterScroll })}`,
+      );
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+
     await assertNoHorizontalOverflow(page, viewport.width);
     return page;
   } catch (error) {
@@ -184,8 +248,18 @@ try {
   try {
     const builder = mobilePage.getByLabel("Tùy chọn Combo");
     await builder.locator('.combo-item-stepper button[aria-label="Tăng số lượng"]').click();
+    await mobilePage.waitForFunction(() => !document.querySelector(".combo-builder .combo-errors"));
+    assert(
+      await builder.locator(".combo-errors").count() === 0,
+      `Alert vẫn hiện sau khi hoàn thành điều kiện Combo: ${await builder.innerText()}`,
+    );
     const addButton = builder.getByRole("button", { name: "THÊM COMBO VÀO GIỎ" });
+    const quantityControl = builder.locator(".detail-quantity");
     await addButton.waitFor({ state: "visible" });
+    assert(
+      await quantityControl.isVisible() && await addButton.isVisible(),
+      "Sau khi Combo hợp lệ, cụm sticky phải còn số lượng và nút thêm giỏ.",
+    );
     assert(await addButton.isEnabled(), "Combo hợp lệ nhưng nút thêm vẫn bị khóa.");
     await addButton.click();
     await mobilePage.waitForFunction(() => {
@@ -283,7 +357,7 @@ try {
   }
 
   console.log(
-    "COMBO_HARD_DELETE_E2E_OK mobile=390 desktop=1024 storefront=pass cart=line admin=filter+confirm delete=pass component=retained",
+    "COMBO_HARD_DELETE_E2E_OK mobile=390 sticky=purchase-controls alert=conditional desktop=1024 storefront=pass cart=line admin=filter+confirm delete=pass component=retained",
   );
 } finally {
   const cleanupIds = [comboProductId, componentProductId].filter(Boolean);
