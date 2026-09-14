@@ -7,10 +7,19 @@ import {
   type Product,
 } from "./catalog";
 import { useCatalog } from "./catalog-context";
+import {
+  comboLineId,
+  validateComboSelection,
+  type ComboSelection,
+} from "../../shared/combos";
 
 export type CartLine = {
   variantId: string;
   quantity: number;
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string;
+  comboVersion?: number;
+  comboSelection?: ComboSelection;
   // Snapshot nhẹ giúp hiển thị rõ dòng cũ nếu variant bị gỡ khỏi catalog.
   productId?: string;
   productName?: string;
@@ -26,6 +35,7 @@ type CartContextValue = {
   totalQuantity: number;
   subtotalVnd: number;
   addItem: (variantId: string, quantity?: number, product?: Product) => void;
+  addComboItem: (product: Product, selection: ComboSelection, quantity?: number) => void;
   incrementItem: (variantId: string, product?: Product) => void;
   decrementItem: (variantId: string) => void;
   setQuantity: (variantId: string, quantity: number) => void;
@@ -40,6 +50,11 @@ const demoCart: CartLine[] = canonicalVariantIds.map((variantId, index) => ({
   quantity: index === 0 ? 2 : 1,
 }));
 const CartContext = createContext<CartContextValue | null>(null);
+
+/** Tạo khóa ổn định để các lựa chọn Combo khác nhau không bị gộp nhầm trong giỏ. */
+export function comboCartLineId(productId: string, selection: ComboSelection) {
+  return comboLineId(productId, selection);
+}
 
 export function changeCartItemQuantity(
   items: CartLine[],
@@ -77,6 +92,10 @@ export function parseStoredCart(raw: string | null): CartLine[] {
         (line.priceVnd === undefined || (typeof line.priceVnd === "number" && Number.isSafeInteger(line.priceVnd) && line.priceVnd >= 0))
         && (line.imageKey === undefined || line.imageKey === null || typeof line.imageKey === "string")
         && (line.imageUrl === undefined || typeof line.imageUrl === "string")
+        && (line.lineType === undefined || line.lineType === "STANDARD" || line.lineType === "COMBO")
+        && (line.comboProductId === undefined || typeof line.comboProductId === "string")
+        && (line.comboVersion === undefined || (Number.isSafeInteger(line.comboVersion) && Number(line.comboVersion) >= 1))
+        && (line.comboSelection === undefined || (line.comboSelection !== null && typeof line.comboSelection === "object"))
       );
     });
     return items.length === parsed.items.length ? items : [];
@@ -135,6 +154,49 @@ function findCartVariant(
   );
 }
 
+function findCartCombo(
+  products: ReturnType<typeof useCatalog>["products"],
+  line: CartLine,
+  providedProduct?: Product,
+) {
+  const product = providedProduct?.productType === "COMBO"
+    ? providedProduct
+    : products.find((item) => item.id === line.comboProductId);
+  if (!product || product.productType !== "COMBO" || !product.comboConfig)
+    return undefined;
+  const validation = validateComboSelection(product.comboConfig, line.comboSelection);
+  return validation.ok && product.status === "AVAILABLE" ? { product, validation } : undefined;
+}
+
+function comboUnitPrice(product: Product, selection: ComboSelection) {
+  const config = product.comboConfig;
+  if (!config) return product.basePriceVnd ?? 0;
+  const validation = validateComboSelection(config, selection);
+  return Math.max(0, (product.basePriceVnd ?? 0) + validation.priceAdjustment);
+}
+
+function snapshotComboLine(
+  product: Product,
+  selection: ComboSelection,
+  quantity: number,
+): CartLine {
+  const image = product.images?.[0];
+  return {
+    variantId: comboCartLineId(product.id, selection),
+    lineType: "COMBO",
+    comboProductId: product.id,
+    comboVersion: product.comboConfig?.configVersion,
+    comboSelection: selection,
+    quantity,
+    productId: product.id,
+    productName: product.name,
+    variantName: "Combo",
+    priceVnd: comboUnitPrice(product, selection),
+    imageKey: image?.r2Key ?? product.imageKey ?? null,
+    imageUrl: image?.url ?? product.image,
+  };
+}
+
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<CartLine[]>([]);
   const [hydrated, setHydrated] = useState(false);
@@ -154,6 +216,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<CartContextValue>(() => {
     const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
     const subtotalVnd = items.reduce((sum, item) => {
+      if (item.lineType === "COMBO")
+        return sum + (item.priceVnd ?? 0) * item.quantity;
       const match = findVariantInProducts(products, item.variantId);
       return sum + (match?.variant.priceVnd ?? item.priceVnd ?? 0) * item.quantity;
     }, 0);
@@ -193,7 +257,43 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           ]);
         });
       },
+      addComboItem(product, selection, quantity = 1) {
+        if (product.productType !== "COMBO" || !product.comboConfig) return;
+        if (!Number.isSafeInteger(quantity) || quantity < 1) return;
+        const validation = validateComboSelection(product.comboConfig, selection);
+        if (!validation.ok || product.status !== "AVAILABLE") return;
+        const amount = Math.min(99, quantity);
+        const lineId = comboCartLineId(product.id, selection);
+        setItems((current) => {
+          const existing = current.find((item) => item.variantId === lineId);
+          const nextQuantity = Math.min(99, (existing?.quantity ?? 0) + amount);
+          if (existing)
+            return persist(
+              current.map((item) =>
+                item.variantId === lineId
+                  ? { ...item, quantity: nextQuantity }
+                  : item,
+              ),
+            );
+          return persist([...current, snapshotComboLine(product, selection, amount)]);
+        });
+      },
       incrementItem(variantId, providedProduct) {
+        const existingLine = items.find((item) => item.variantId === variantId);
+        if (existingLine?.lineType === "COMBO") {
+          const combo = findCartCombo(products, existingLine, providedProduct);
+          if (!combo) return;
+          setItems((current) =>
+            persist(
+              current.map((item) =>
+                item.variantId === variantId
+                  ? { ...item, quantity: Math.min(99, item.quantity + 1) }
+                  : item,
+              ),
+            ),
+          );
+          return;
+        }
         const match = findCartVariant(products, variantId, providedProduct);
         if (!match || !isVariantPurchasable(match.variant)) return;
         setItems((current) => {

@@ -24,6 +24,27 @@ export type CartItemSnapshotRow = {
   quantity: number;
   lineTotalVnd: number;
   createdAt: string;
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string | null;
+  comboVersion?: number | null;
+  comboSelectionJson?: string | null;
+  comboComponents?: CartComboComponentSnapshot[];
+};
+
+export type CartComboComponentSnapshot = {
+  id: string;
+  groupId: string | null;
+  groupName: string;
+  groupItemId: string | null;
+  variantId: string | null;
+  productId: string | null;
+  productName: string;
+  variantName: string;
+  sku: string | null;
+  imageKey: string | null;
+  quantity: number;
+  priceAdjustmentVnd: number;
+  createdAt: string;
 };
 
 export function mapCartItemSnapshot(row: CartItemSnapshotRow) {
@@ -31,6 +52,15 @@ export function mapCartItemSnapshot(row: CartItemSnapshotRow) {
     ...row,
     // URL luôn được dựng từ khóa snapshot, không đọc ảnh hiện tại của sản phẩm.
     imageUrl: getPublicImageUrl(row.imageKey),
+    ...(row.comboComponents
+      ? {
+          comboComponents: row.comboComponents.map((component) => ({
+            ...component,
+            // Thành phần lịch sử cũng phải dùng ảnh snapshot độc lập với Product hiện tại.
+            imageUrl: getPublicImageUrl(component.imageKey),
+          })),
+        }
+      : {}),
   };
 }
 

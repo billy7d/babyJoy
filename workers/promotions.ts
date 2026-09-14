@@ -13,16 +13,37 @@ import {
   type PromotionProgress,
   type PromotionTargetNames,
 } from "../shared/promotions";
+import {
+  comboLineId,
+  validateComboConfig,
+  validateComboSelection,
+  type ComboSelection,
+} from "../shared/combos";
 import type { PricedItem } from "./services";
 import { getPublicImageUrl } from "../shared/images";
 import { hasInventorySchema, hasVariantRetirementSchema } from "./inventory";
 import { hasVariantMediaSchema } from "./variant-media";
+import { getComboConfig, hasComboSchema } from "./combos";
 
-export type PromotionCartRequestItem = {
+export type StandardPromotionCartRequestItem = {
+  lineType?: "STANDARD";
   variantId: string;
   quantity: number;
   displayedPrice?: number;
 };
+
+export type ComboPromotionCartRequestItem = {
+  lineType: "COMBO";
+  comboProductId: string;
+  comboVersion: number;
+  selection: ComboSelection;
+  quantity: number;
+  displayedPrice?: number;
+};
+
+export type PromotionCartRequestItem =
+  | StandardPromotionCartRequestItem
+  | ComboPromotionCartRequestItem;
 
 export type AuthoritativePricedItem = PricedItem & {
   originalLineTotalVnd: number;
@@ -33,6 +54,11 @@ export type AuthoritativePricedItem = PricedItem & {
   reservedQuantity?: number;
   availableQuantity?: number;
   inventoryAvailability?: "AVAILABLE" | "OUT_OF_STOCK";
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string;
+  comboVersion?: number;
+  comboSelection?: ComboSelection;
+  comboComponents?: ComboComponentSnapshot[];
 };
 
 export type PromotionSnapshot = {
@@ -68,14 +94,15 @@ export type AuthoritativeCartEvaluation = {
     currentPrice: number;
   }>;
   insufficientStock: string[];
+  inventoryItems: Array<{ variantId: string; quantity: number; trackInventory?: boolean }>;
   promotionSchema: boolean;
 };
 
 export class PromotionCartError extends Error {
   constructor(
-    readonly code: "VARIANT_NOT_FOUND" | "VARIANT_UNAVAILABLE",
+    readonly code: "VARIANT_NOT_FOUND" | "VARIANT_UNAVAILABLE" | "COMBO_NOT_FOUND" | "COMBO_INVALID",
     message: string,
-    readonly status: 404 | 409,
+    readonly status: 404 | 409 | 422,
     readonly variantIds: string[] = [],
   ) {
     super(message);
@@ -111,7 +138,6 @@ type CanonicalVariantRow = {
   productId: string;
   productName: string;
   productStatus: string;
-  archivedAt: string | null;
   variantArchivedAt: string | null;
   imageKey: string | null;
   trackInventory: number;
@@ -122,20 +148,54 @@ type CanonicalVariantRow = {
 type CategoryRow = { productId: string; categoryId: string };
 type NamedRow = { id: string; name: string };
 
+type ComboProductRow = {
+  id: string;
+  name: string;
+  status: string;
+  productType: string;
+  basePriceVnd: number | null;
+  imageKey: string | null;
+};
+
+type ComboComponentRow = {
+  id: string;
+  productId: string;
+  productName: string;
+  productStatus: string;
+  variantName: string;
+  sku: string | null;
+  availability: string;
+  trackInventory: number;
+  stockOnHand: number;
+  reservedQuantity: number;
+  imageKey: string | null;
+};
+
+export type ComboComponentSnapshot = {
+  groupId: string;
+  groupNameSnapshot: string;
+  groupItemId: string;
+  variantId: string;
+  productId: string | null;
+  productNameSnapshot: string;
+  variantNameSnapshot: string;
+  skuSnapshot: string | null;
+  imageKeySnapshot: string | null;
+  quantity: number;
+  priceAdjustmentVnd: number;
+};
+
+type CanonicalLineResult = {
+  lines: PromotionCartLine[];
+  unavailable: string[];
+  changed: AuthoritativeCartEvaluation["changed"];
+  insufficientStock: string[];
+  inventoryItems: Array<{ variantId: string; quantity: number; trackInventory?: boolean }>;
+};
+
 function isMissingPromotionSchema(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return /no such table: promotions|no such column: promotion_discount_vnd/i.test(message);
-}
-
-async function hasProductArchiveColumn(env: Env) {
-  try {
-    const row = await env.DB.prepare(
-      "SELECT 1 AS present FROM pragma_table_info('products') WHERE name = 'archived_at' LIMIT 1",
-    ).first<{ present: number }>();
-    return Boolean(row?.present);
-  } catch {
-    return false;
-  }
 }
 
 export async function hasPromotionSchema(env: Env) {
@@ -202,7 +262,7 @@ export async function loadActivePromotions(
 }
 
 async function loadCanonicalLines(
-  items: PromotionCartRequestItem[],
+  items: StandardPromotionCartRequestItem[],
   env: Env,
 ) {
   if (!items.length)
@@ -211,6 +271,7 @@ async function loadCanonicalLines(
       unavailable: [] as string[],
       changed: [] as AuthoritativeCartEvaluation["changed"],
       insufficientStock: [] as string[],
+      inventoryItems: [] as CanonicalLineResult["inventoryItems"],
     };
   const placeholders = items.map(() => "?").join(",");
   const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
@@ -218,9 +279,6 @@ async function loadCanonicalLines(
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
   ]);
-  const archivedAtSelect = (await hasProductArchiveColumn(env))
-    ? "p.archived_at AS archivedAt"
-    : "NULL AS archivedAt";
   const variantArchivedAtSelect = variantRetirementSchema
     ? "v.archived_at AS variantArchivedAt"
     : "NULL AS variantArchivedAt";
@@ -242,7 +300,7 @@ async function loadCanonicalLines(
   const rows = await env.DB.prepare(
     `SELECT v.id AS variantId, ${variantNameSelect} AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability, p.id AS productId,
-      p.name AS productName, p.status AS productStatus, ${archivedAtSelect},
+      p.name AS productName, p.status AS productStatus,
       ${variantArchivedAtSelect},
       ${inventorySelect},
       ${imageKeySelect} AS imageKey
@@ -286,7 +344,6 @@ async function loadCanonicalLines(
     const row = byId.get(item.variantId)!;
     if (
       row.productStatus !== "AVAILABLE" ||
-      row.archivedAt ||
       row.variantArchivedAt ||
       row.availability !== "AVAILABLE"
     )
@@ -325,7 +382,242 @@ async function loadCanonicalLines(
         : {}),
     } satisfies PromotionCartLine;
   });
-  return { lines, unavailable, changed, insufficientStock };
+  return {
+    lines,
+    unavailable,
+    changed,
+    insufficientStock,
+    inventoryItems: lines
+      .filter((line) => line.trackInventory)
+      .map((line) => ({
+        variantId: line.variantId,
+        quantity: line.quantity,
+        trackInventory: line.trackInventory,
+      })),
+  } satisfies CanonicalLineResult;
+}
+
+/** Nạp Combo từ DB, xác thực version/rule rồi tách component để giữ tồn kho theo Variant thật. */
+async function loadCanonicalComboLines(
+  items: ComboPromotionCartRequestItem[],
+  env: Env,
+): Promise<CanonicalLineResult> {
+  if (!items.length)
+    return {
+      lines: [],
+      unavailable: [],
+      changed: [],
+      insufficientStock: [],
+      inventoryItems: [],
+    };
+  if (!(await hasComboSchema(env)))
+    throw new PromotionCartError(
+      "COMBO_NOT_FOUND",
+      "Cấu hình Combo chưa sẵn sàng trên cơ sở dữ liệu.",
+      404,
+      [...new Set(items.map((item) => item.comboProductId))],
+    );
+
+  const productIds = [...new Set(items.map((item) => item.comboProductId))];
+  const productRows = await env.DB.prepare(
+    `SELECT p.id, p.name, p.status,
+       COALESCE(p.product_type, 'STANDARD') AS productType,
+       p.base_price_vnd AS basePriceVnd,
+       (SELECT r2_key FROM product_images pi
+        WHERE pi.product_id = p.id
+        ORDER BY pi.sort_order, pi.created_at, pi.id LIMIT 1) AS imageKey
+     FROM products p WHERE p.id IN (${productIds.map(() => "?").join(",")})`,
+  )
+    .bind(...productIds)
+    .all<ComboProductRow>();
+  const products = new Map(productRows.results.map((row) => [row.id, row]));
+  const configs = new Map<string, Awaited<ReturnType<typeof getComboConfig>>>();
+  await Promise.all(
+    productIds.map(async (productId) => {
+      configs.set(productId, await getComboConfig(productId, env));
+    }),
+  );
+
+  const prepared = items.map((item) => {
+    const config = configs.get(item.comboProductId);
+    if (!config)
+      throw new PromotionCartError(
+        "COMBO_NOT_FOUND",
+        "Combo không còn tồn tại hoặc chưa được cấu hình.",
+        404,
+        [item.comboProductId],
+      );
+    const configValidation = validateComboConfig(config);
+    const normalizedSelection: ComboSelection = {
+      ...item.selection,
+      configVersion: config.configVersion,
+    };
+    const selectionValidation = validateComboSelection(config, item.selection);
+    if (
+      !configValidation.ok ||
+      item.comboVersion !== config.configVersion ||
+      item.selection.configVersion !== config.configVersion ||
+      !selectionValidation.ok
+    ) {
+      throw new PromotionCartError(
+        "COMBO_INVALID",
+        [
+          ...configValidation.errors,
+          ...(item.comboVersion !== config.configVersion ||
+          item.selection.configVersion !== config.configVersion
+            ? ["Combo này vừa được cập nhật. Vui lòng kiểm tra lại lựa chọn."]
+            : []),
+          ...selectionValidation.errors,
+        ].join(" "),
+        409,
+        [item.comboProductId],
+      );
+    }
+    return {
+      item,
+      config,
+      selection: normalizedSelection,
+      validation: selectionValidation,
+      lineId: comboLineId(item.comboProductId, normalizedSelection),
+    };
+  });
+  const componentIds = [
+    ...new Set(
+      prepared.flatMap((entry) => entry.validation.components.map((component) => component.variantId)),
+    ),
+  ];
+  const inventorySchema = await hasInventorySchema(env);
+  const componentRows = componentIds.length
+    ? await env.DB.prepare(
+        `SELECT v.id, v.product_id AS productId, p.name AS productName,
+           p.status AS productStatus, v.name AS variantName, v.sku,
+           v.availability,
+           ${inventorySchema
+             ? "v.track_inventory AS trackInventory, v.stock_on_hand AS stockOnHand, v.reserved_quantity AS reservedQuantity"
+             : "0 AS trackInventory, 0 AS stockOnHand, 0 AS reservedQuantity"},
+           (SELECT r2_key FROM product_images pi
+            WHERE pi.product_id = v.product_id
+            ORDER BY pi.sort_order, pi.created_at, pi.id LIMIT 1) AS imageKey
+         FROM product_variants v JOIN products p ON p.id = v.product_id
+         WHERE v.id IN (${componentIds.map(() => "?").join(",")})`,
+      )
+        .bind(...componentIds)
+        .all<ComboComponentRow>()
+    : { results: [] as ComboComponentRow[] };
+  const components = new Map(componentRows.results.map((row) => [row.id, row]));
+  const categoryRows = await env.DB.prepare(
+    `SELECT pc.product_id AS productId, pc.category_id AS categoryId
+     FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+     WHERE c.is_active = 1 AND pc.product_id IN (${productIds.map(() => "?").join(",")})
+     ORDER BY pc.product_id, pc.category_id`,
+  )
+    .bind(...productIds)
+    .all<CategoryRow>();
+  const categoryMap = new Map<string, string[]>();
+  categoryRows.results.forEach((row) => {
+    const current = categoryMap.get(row.productId) ?? [];
+    current.push(row.categoryId);
+    categoryMap.set(row.productId, current);
+  });
+
+  const unavailable: string[] = [];
+  const changed: AuthoritativeCartEvaluation["changed"] = [];
+  const insufficientStock: string[] = [];
+  const inventoryItems: CanonicalLineResult["inventoryItems"] = [];
+  const lines = prepared.map((entry) => {
+    const product = products.get(entry.item.comboProductId);
+    if (!product || product.productType !== "COMBO")
+      throw new PromotionCartError(
+        "COMBO_NOT_FOUND",
+        "Combo không còn tồn tại hoặc chưa được cấu hình.",
+        404,
+        [entry.item.comboProductId],
+      );
+    const priceVnd = Math.max(
+      0,
+      Number(product?.basePriceVnd ?? 0) + entry.validation.priceAdjustment,
+    );
+    const lineQuantity = entry.item.quantity;
+    let lineUnavailable = !product || product.status !== "AVAILABLE";
+    entry.validation.components.forEach((component) => {
+      const row = components.get(component.variantId);
+      const requestedQuantity = component.quantity * lineQuantity;
+      if (
+        !row ||
+        row.productStatus !== "AVAILABLE" ||
+        row.availability !== "AVAILABLE"
+      ) {
+        lineUnavailable = true;
+        return;
+      }
+      const availableQuantity = Math.max(
+        0,
+        Number(row.stockOnHand ?? 0) - Number(row.reservedQuantity ?? 0),
+      );
+      if (row.trackInventory && availableQuantity < requestedQuantity)
+        insufficientStock.push(row.id);
+      if (row.trackInventory)
+        inventoryItems.push({
+          variantId: row.id,
+          quantity: requestedQuantity,
+          trackInventory: true,
+        });
+    });
+    if (lineUnavailable) unavailable.push(entry.lineId);
+    if (
+      entry.item.displayedPrice !== undefined &&
+      entry.item.displayedPrice !== priceVnd
+    )
+      changed.push({
+        variantId: entry.lineId,
+        displayedPrice: entry.item.displayedPrice,
+        currentPrice: priceVnd,
+      });
+    const comboComponents = entry.validation.components.map((component) => {
+      const group = entry.config.groups.find((candidate) => candidate.id === component.groupId);
+      const groupItem = group?.items.find((candidate) => candidate.id === component.groupItemId);
+      const row = components.get(component.variantId);
+      return {
+        groupId: component.groupId,
+        groupNameSnapshot: group?.name ?? "Group",
+        groupItemId: component.groupItemId,
+        variantId: component.variantId,
+        productId: row?.productId ?? groupItem?.productId ?? null,
+        productNameSnapshot: row?.productName ?? groupItem?.productName ?? "Sản phẩm",
+        variantNameSnapshot: row?.variantName ?? groupItem?.variantName ?? "Variant",
+        skuSnapshot: row?.sku ?? groupItem?.sku ?? null,
+        imageKeySnapshot: row?.imageKey ?? groupItem?.imageKey ?? null,
+        quantity: component.quantity * lineQuantity,
+        priceAdjustmentVnd: component.priceAdjustment * component.quantity * lineQuantity,
+      } satisfies ComboComponentSnapshot;
+    });
+    return {
+      productId: entry.item.comboProductId,
+      variantId: entry.lineId,
+      productName: product?.name ?? "Combo",
+      variantName: "Combo",
+      sku: null,
+      imageKey: product?.imageKey ?? null,
+      priceVnd,
+      quantity: lineQuantity,
+      categoryIds: categoryMap.get(entry.item.comboProductId) ?? [],
+      lineType: "COMBO" as const,
+      comboProductId: entry.item.comboProductId,
+      comboVersion: entry.config.configVersion,
+      comboSelection: entry.selection,
+      comboComponents,
+      ...(inventorySchema
+        ? { trackInventory: false, inventoryAvailability: "AVAILABLE" as const }
+        : {}),
+    } satisfies PromotionCartLine;
+  });
+  return {
+    lines,
+    unavailable: [...new Set(unavailable)],
+    changed,
+    insufficientStock: [...new Set(insufficientStock)],
+    inventoryItems,
+  } satisfies CanonicalLineResult;
 }
 
 function promotionGiftProductIds(promotions: PromotionDefinition[]) {
@@ -393,16 +685,12 @@ async function loadGiftCatalog(
 ) {
   const productIds = promotionGiftProductIds(promotions);
   if (!productIds.length) return [] as PromotionCatalogProduct[];
-  const [hasProductArchive, inventorySchema, variantRetirementSchema, variantMediaSchema] =
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema] =
     await Promise.all([
-      hasProductArchiveColumn(env),
       hasInventorySchema(env),
       hasVariantRetirementSchema(env),
       hasVariantMediaSchema(env),
     ]);
-  const archivedAtSelect = hasProductArchive
-    ? "p.archived_at AS archivedAt"
-    : "NULL AS archivedAt";
   const variantArchivedAtSelect = variantRetirementSchema
     ? "v.archived_at AS variantArchivedAt"
     : "NULL AS variantArchivedAt";
@@ -420,7 +708,6 @@ async function loadGiftCatalog(
     : "v.name";
   const rows = await env.DB.prepare(
     `SELECT p.id AS productId, p.name AS productName, p.status AS productStatus,
-      ${archivedAtSelect},
       v.id AS variantId, ${variantNameSelect} AS variantName, v.sku,
       v.price_vnd AS priceVnd, v.availability,
       ${variantArchivedAtSelect},
@@ -439,7 +726,6 @@ async function loadGiftCatalog(
     .bind(...productIds)
     .all<PromotionCatalogProduct & {
       sortOrder: number | null;
-      archivedAt: string | null;
       variantArchivedAt: string | null;
     }>();
   const selected = new Map<string, PromotionCatalogProduct>();
@@ -452,7 +738,6 @@ async function loadGiftCatalog(
       !selected.has(row.productId) &&
       row.variantId &&
       row.productStatus === "AVAILABLE" &&
-      !row.archivedAt &&
       !row.variantArchivedAt &&
       row.availability === "AVAILABLE" &&
       (!row.trackInventory || availableQuantity > 0)
@@ -488,7 +773,54 @@ export async function evaluateAuthoritativeCart(
   now: Date | string = new Date(),
 ): Promise<AuthoritativeCartEvaluation> {
   const schema = await hasPromotionSchema(env);
-  const canonical = await loadCanonicalLines(items, env);
+  const standardItems = items.filter(
+    (item): item is StandardPromotionCartRequestItem => item.lineType !== "COMBO",
+  );
+  const comboItems = items.filter(
+    (item): item is ComboPromotionCartRequestItem => item.lineType === "COMBO",
+  );
+  const [standardCanonical, comboCanonical] = await Promise.all([
+    loadCanonicalLines(standardItems, env),
+    loadCanonicalComboLines(comboItems, env),
+  ]);
+  const canonical: CanonicalLineResult = {
+    lines: [...standardCanonical.lines, ...comboCanonical.lines],
+    unavailable: [...standardCanonical.unavailable, ...comboCanonical.unavailable],
+    changed: [...standardCanonical.changed, ...comboCanonical.changed],
+    insufficientStock: [
+      ...new Set([
+        ...standardCanonical.insufficientStock,
+        ...comboCanonical.insufficientStock,
+      ]),
+    ],
+    inventoryItems: [...standardCanonical.inventoryItems, ...comboCanonical.inventoryItems],
+  };
+  const inventoryByVariant = new Map<string, { variantId: string; quantity: number; trackInventory?: boolean }>();
+  canonical.inventoryItems.forEach((item) => {
+    const current = inventoryByVariant.get(item.variantId);
+    if (current) current.quantity += item.quantity;
+    else inventoryByVariant.set(item.variantId, { ...item });
+  });
+  const componentStock = new Map<string, number>();
+  if (inventoryByVariant.size) {
+    const inventoryRows = await env.DB.prepare(
+      `SELECT id, stock_on_hand AS stockOnHand, reserved_quantity AS reservedQuantity
+       FROM product_variants WHERE id IN (${[...inventoryByVariant.keys()].map(() => "?").join(",")})`,
+    )
+      .bind(...inventoryByVariant.keys())
+      .all<{ id: string; stockOnHand: number; reservedQuantity: number }>();
+    inventoryRows.results.forEach((row) =>
+      componentStock.set(
+        row.id,
+        Math.max(0, Number(row.stockOnHand ?? 0) - Number(row.reservedQuantity ?? 0)),
+      ),
+    );
+    inventoryByVariant.forEach((item, variantId) => {
+      if ((componentStock.get(variantId) ?? 0) < item.quantity)
+        canonical.insufficientStock.push(variantId);
+    });
+    canonical.insufficientStock = [...new Set(canonical.insufficientStock)];
+  }
   const promotions = await loadActivePromotions(env, now);
   // Tải song song catalog quà và tên target để không nhận dữ liệu hiển thị từ client.
   const [catalog, targetNames] = await Promise.all([
@@ -520,6 +852,11 @@ export async function evaluateAuthoritativeCart(
     reservedQuantity: item.reservedQuantity,
     availableQuantity: item.availableQuantity,
     inventoryAvailability: item.inventoryAvailability,
+    lineType: item.lineType,
+    comboProductId: item.comboProductId,
+    comboVersion: item.comboVersion,
+    comboSelection: item.comboSelection,
+    comboComponents: item.comboComponents,
   }));
   return {
     lines: canonical.lines,
@@ -529,8 +866,107 @@ export async function evaluateAuthoritativeCart(
     unavailable: canonical.unavailable,
     changed: canonical.changed,
     insufficientStock: canonical.insufficientStock,
+    inventoryItems: [...inventoryByVariant.values()],
     promotionSchema: schema,
   };
+}
+
+/** Tạo snapshot Cart line và component trong cùng batch với CartRequest. */
+export function buildCartRequestItemStatements(
+  prepare: (sql: string) => D1PreparedStatement,
+  cartRequestId: string,
+  createdAt: string,
+  items: AuthoritativePricedItem[],
+  comboSchema: boolean,
+) {
+  const statements: D1PreparedStatement[] = [];
+  items.forEach((item) => {
+    const itemId = crypto.randomUUID();
+    if (comboSchema) {
+      statements.push(
+        prepare(
+          `INSERT INTO cart_request_items (
+            id, cart_request_id, product_id, variant_id, product_name_snapshot,
+            variant_name_snapshot, sku_snapshot, image_key_snapshot, unit_price_vnd,
+            quantity, line_total_vnd, line_type, combo_product_id, combo_version,
+            combo_selection_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          itemId,
+          cartRequestId,
+          item.productId,
+          item.lineType === "COMBO" ? null : item.variantId,
+          item.productName,
+          item.variantName,
+          item.sku,
+          item.imageKey,
+          item.priceVnd,
+          item.quantity,
+          item.lineTotalVnd,
+          item.lineType ?? "STANDARD",
+          item.lineType === "COMBO" ? item.comboProductId : null,
+          item.lineType === "COMBO" ? item.comboVersion : null,
+          item.lineType === "COMBO" && item.comboSelection
+            ? JSON.stringify(item.comboSelection)
+            : null,
+          createdAt,
+        ),
+      );
+      item.comboComponents?.forEach((component) => {
+        statements.push(
+          prepare(
+            `INSERT INTO cart_request_combo_components (
+              id, cart_request_item_id, combo_product_id, combo_version,
+              group_id, group_name_snapshot, group_item_id, variant_id, product_id,
+              product_name_snapshot, variant_name_snapshot, sku_snapshot,
+              image_key_snapshot, quantity, price_adjustment_vnd, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(
+            crypto.randomUUID(),
+            itemId,
+            item.comboProductId ?? item.productId,
+            item.comboVersion ?? 1,
+            component.groupId,
+            component.groupNameSnapshot,
+            component.groupItemId,
+            component.variantId,
+            component.productId,
+            component.productNameSnapshot,
+            component.variantNameSnapshot,
+            component.skuSnapshot,
+            component.imageKeySnapshot,
+            component.quantity,
+            component.priceAdjustmentVnd,
+            createdAt,
+          ),
+        );
+      });
+      return;
+    }
+    statements.push(
+      prepare(
+        `INSERT INTO cart_request_items (
+          id, cart_request_id, product_id, variant_id, product_name_snapshot,
+          variant_name_snapshot, sku_snapshot, image_key_snapshot, unit_price_vnd,
+          quantity, line_total_vnd, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        itemId,
+        cartRequestId,
+        item.productId,
+        item.variantId,
+        item.productName,
+        item.variantName,
+        item.sku,
+        item.imageKey,
+        item.priceVnd,
+        item.quantity,
+        item.lineTotalVnd,
+        createdAt,
+      ),
+    );
+  });
+  return statements;
 }
 
 export type PromotionPersistenceStatements = {

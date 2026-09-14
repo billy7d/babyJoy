@@ -153,7 +153,7 @@ describe("Product Taxonomy API", () => {
     ).toEqual({ count: 0 });
   });
 
-  it("archive chặn catalog/add mới nhưng không xóa dữ liệu sản phẩm", async () => {
+  it("preflight rồi hard-delete product, giữ lịch sử snapshot và dọn relation", async () => {
     const { env, database } = createEnv();
     const created = (await (
       await api(env, "/api/admin/products", {
@@ -162,14 +162,34 @@ describe("Product Taxonomy API", () => {
         body: JSON.stringify(productPayload),
       })
     ).json()) as { id: string };
-    expect((await api(env, `/api/admin/products/${created.id}`, { method: "DELETE" })).status).toBe(200);
+    const preflight = await api(env, `/api/admin/products/${created.id}/delete-preflight`);
+    expect(preflight.status).toBe(200);
+    expect(await preflight.json()).toMatchObject({
+      success: true,
+      data: { counts: { variants: 1, categories: 2 } },
+    });
+    const missingConfirmation = await api(env, `/api/admin/products/${created.id}`, { method: "DELETE" });
+    expect(missingConfirmation.status).toBe(422);
+    expect((await missingConfirmation.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: "DELETE_CONFIRMATION_REQUIRED" },
+    });
+    const deleted = await api(env, `/api/admin/products/${created.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmation: "DELETE" }),
+    });
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toMatchObject({ success: true, deleted: true });
     const catalog = (await (await api(env, "/api/products?q=Product%20Taxonomy")).json()) as {
       data: unknown[];
     };
     expect(catalog.data).toEqual([]);
     expect(
-      database.prepare("SELECT status, archived_at IS NOT NULL AS archived FROM products WHERE id = ?").get(created.id),
-    ).toEqual({ status: "HIDDEN", archived: 1 });
+      database.prepare("SELECT COUNT(*) AS count FROM products WHERE id = ?").get(created.id),
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM product_categories WHERE product_id = ?").get(created.id),
+    ).toEqual({ count: 0 });
   });
 
   it("ẩn category giữ relation và public không còn trả category", async () => {

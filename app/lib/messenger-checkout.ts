@@ -1,4 +1,5 @@
 import type { CartLine } from "./cart";
+import { comboLineId } from "../../shared/combos";
 
 export const pendingMessengerCartKey = "babyjoy.pendingMessengerCart.v1";
 export const messengerSubmissionKey = "babyjoy.messengerSubmission.v1";
@@ -23,9 +24,15 @@ export type PendingMessengerCart = {
 
 export function cartFingerprint(items: CartLine[]) {
   return items
-    .map((item) => ({ variantId: item.variantId, quantity: item.quantity }))
-    .sort((left, right) => left.variantId.localeCompare(right.variantId))
-    .map((item) => `${item.variantId}:${item.quantity}`)
+    .map((item) => ({
+      lineId:
+        item.lineType === "COMBO" && item.comboProductId && item.comboSelection
+          ? comboLineId(item.comboProductId, item.comboSelection)
+          : item.variantId,
+      quantity: item.quantity,
+    }))
+    .sort((left, right) => left.lineId.localeCompare(right.lineId))
+    .map((item) => `${item.lineId}:${item.quantity}`)
     .join("|");
 }
 

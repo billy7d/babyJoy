@@ -854,7 +854,9 @@ try {
   assert((await page.locator(".detail-gallery img").count()) === storefrontGalleryImageCount, "Xóa description image làm thay đổi product gallery");
 } finally {
   if (productId)
-    await page.request.delete(`${baseUrl}/api/admin/products/${productId}`).catch(() => undefined);
+    await page.request
+      .delete(`${baseUrl}/api/admin/products/${productId}`, { data: { confirmation: "DELETE" } })
+      .catch(() => undefined);
   await context.close();
   await browser.close();
 }

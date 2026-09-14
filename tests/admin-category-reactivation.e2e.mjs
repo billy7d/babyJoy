@@ -178,7 +178,10 @@ try {
   console.log("ADMIN_CATEGORY_REACTIVATION_E2E_OK hide=pass restore=pass refresh=pass relation=pass hidden-product=pass local-only=pass");
 } finally {
   if (productId)
-    await api(`/api/admin/products/${productId}`, { method: "DELETE" }).catch(() => undefined);
+    await api(`/api/admin/products/${productId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE" }),
+    }).catch(() => undefined);
   if (categoryId)
     await api(`/api/admin/categories/${categoryId}/permanent`, { method: "DELETE" }).catch(() => undefined);
   await context.close();

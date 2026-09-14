@@ -290,6 +290,33 @@ export async function hasVariantRetirementSchema(env: Env) {
   }
 }
 
+/** Xác nhận migration đã tách FK vận hành khỏi lịch sử trước khi xóa cứng Variant. */
+export async function hasDetachedVariantHistorySchema(env: Env) {
+  try {
+    const [reservationColumns, movementColumns, reservationForeignKeys, movementForeignKeys] = await Promise.all([
+      env.DB.prepare(
+        "SELECT name FROM pragma_table_info('inventory_reservations') WHERE name IN ('variant_name_snapshot', 'sku_snapshot')",
+      ).all<{ name: string }>(),
+      env.DB.prepare(
+        "SELECT name FROM pragma_table_info('inventory_movements') WHERE name IN ('variant_name_snapshot', 'sku_snapshot')",
+      ).all<{ name: string }>(),
+      env.DB.prepare(
+        "SELECT on_delete AS onDelete FROM pragma_foreign_key_list('inventory_reservations') WHERE \"table\" = 'product_variants' AND \"from\" = 'variant_id'",
+      ).all<{ onDelete: string }>(),
+      env.DB.prepare(
+        "SELECT on_delete AS onDelete FROM pragma_foreign_key_list('inventory_movements') WHERE \"table\" = 'product_variants' AND \"from\" = 'variant_id'",
+      ).all<{ onDelete: string }>(),
+    ]);
+    const hasSnapshots =
+      reservationColumns.results.length === 2 && movementColumns.results.length === 2;
+    const detached = (rows: Array<{ onDelete: string }>) =>
+      rows.some((row) => row.onDelete.toUpperCase() === "SET NULL");
+    return hasSnapshots && detached(reservationForeignKeys.results) && detached(movementForeignKeys.results);
+  } catch {
+    return false;
+  }
+}
+
 function isoNow(value: Date | string) {
   const timestamp = typeof value === "string" ? Date.parse(value) : value.getTime();
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString();
@@ -432,6 +459,7 @@ export function buildInventoryReservationStatements(
   expiresAt: string,
   items: ReservationLine[],
   gifts: ReservationGiftLine[],
+  includeSnapshots = false,
 ) {
   const grouped = new Map<string, { variantId: string; quantity: number; sourceType: string }>();
   const add = (item: ReservationLine, sourceType: string) => {
@@ -445,19 +473,93 @@ export function buildInventoryReservationStatements(
   gifts.forEach((gift) => add(gift, "PROMOTION_GIFT"));
   return [...grouped.values()].map((item) =>
     prepare(
-      `INSERT INTO inventory_reservations (
-        id, cart_request_id, variant_id, quantity, source_type, status,
-        expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`,
+      includeSnapshots
+        ? `INSERT INTO inventory_reservations (
+            id, cart_request_id, variant_id, variant_name_snapshot, sku_snapshot,
+            quantity, source_type, status, expires_at, created_at
+          ) VALUES (?, ?, ?,
+            COALESCE((SELECT name FROM product_variants WHERE id = ?), ''),
+            (SELECT sku FROM product_variants WHERE id = ?),
+            ?, ?, 'ACTIVE', ?, ?)`
+        : `INSERT INTO inventory_reservations (
+            id, cart_request_id, variant_id, quantity, source_type, status,
+            expires_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`,
     ).bind(
-      crypto.randomUUID(),
-      cartRequestId,
-      item.variantId,
-      item.quantity,
-      item.sourceType,
-      expiresAt,
-      createdAt,
+      ...(includeSnapshots
+        ? [
+            crypto.randomUUID(),
+            cartRequestId,
+            item.variantId,
+            item.variantId,
+            item.variantId,
+            item.quantity,
+            item.sourceType,
+            expiresAt,
+            createdAt,
+          ]
+        : [
+            crypto.randomUUID(),
+            cartRequestId,
+            item.variantId,
+            item.quantity,
+            item.sourceType,
+            expiresAt,
+            createdAt,
+          ]),
     ),
+  );
+}
+
+/** Ghi movement kèm snapshot để lịch sử tồn kho không phụ thuộc Product còn tồn tại. */
+export function buildInventoryMovementStatement(
+  prepare: (sql: string) => D1PreparedStatement,
+  variantId: string,
+  movementType: string,
+  quantityDelta: number,
+  stockBefore: number,
+  stockAfter: number,
+  note: string,
+  createdAt: string,
+  includeSnapshots = false,
+) {
+  return prepare(
+    includeSnapshots
+      ? `INSERT INTO inventory_movements (
+          id, variant_id, variant_name_snapshot, sku_snapshot,
+          movement_type, quantity_delta, stock_before, stock_after, note, created_at
+        ) VALUES (?, ?,
+          COALESCE((SELECT name FROM product_variants WHERE id = ?), ''),
+          (SELECT sku FROM product_variants WHERE id = ?),
+          ?, ?, ?, ?, ?, ?)`
+      : `INSERT INTO inventory_movements (
+          id, variant_id, movement_type, quantity_delta,
+          stock_before, stock_after, note, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    ...(includeSnapshots
+      ? [
+          crypto.randomUUID(),
+          variantId,
+          variantId,
+          variantId,
+          movementType,
+          quantityDelta,
+          stockBefore,
+          stockAfter,
+          note,
+          createdAt,
+        ]
+      : [
+          crypto.randomUUID(),
+          variantId,
+          movementType,
+          quantityDelta,
+          stockBefore,
+          stockAfter,
+          note,
+          createdAt,
+        ]),
   );
 }
 

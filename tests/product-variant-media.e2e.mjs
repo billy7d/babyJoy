@@ -272,7 +272,9 @@ try {
   console.log("PRODUCT_VARIANT_MEDIA_E2E_OK admin-persist=pass statuses=pass gallery-sync=pass cart-snapshot=pass draft-seller=pass viewports=390,1440");
 } finally {
   if (productId)
-    await page.request.delete(`${baseUrl}/api/admin/products/${productId}`).catch(() => undefined);
+    await page.request
+      .delete(`${baseUrl}/api/admin/products/${productId}`, { data: { confirmation: "DELETE" } })
+      .catch(() => undefined);
   await context.close();
   await browser.close();
 }

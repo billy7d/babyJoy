@@ -69,7 +69,7 @@ import {
   type ProductPageResult,
   useCatalog,
 } from "../lib/catalog-context";
-import { cartStorageKey, parseStoredCart, useCart } from "../lib/cart";
+import { cartStorageKey, parseStoredCart, useCart, type CartLine } from "../lib/cart";
 import {
   isFreeShippingPromotion,
   useCartPromotionEvaluation,
@@ -109,6 +109,12 @@ import {
   formatReservationDuration,
 } from "../../shared/reservation";
 import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
+import {
+  validateComboSelection,
+  type ComboConfig,
+  type ComboGroup,
+  type ComboSelection,
+} from "../../shared/combos";
 import { ProductImage } from "./product-image";
 import { ProductRichDescription } from "./product-rich-description";
 import {
@@ -326,6 +332,7 @@ export function applyFilters(
     ? searchCatalog(source, categories, q).products
     : source;
   const filtered = searchSource.filter((product) => {
+    const isCombo = product.productType === "COMBO";
     const productMinAge =
       product.minAgeMonths ?? Number.parseInt(product.age, 10);
     return (
@@ -346,14 +353,18 @@ export function applyFilters(
       (!bestSeller || product.isBestSeller) &&
       (!tag || product.tags.includes(tag) || product.tagSlugs?.includes(tag)) &&
       (!available ||
-        product.variants.some(
-          (variant) => isVariantPurchasable(variant),
-        ))
+        (isCombo
+          ? product.status === "AVAILABLE" && Boolean(product.comboConfig)
+          : product.variants.some((variant) => isVariantPurchasable(variant))))
     );
   });
   return filtered.sort((a, b) => {
-    const aPrice = getDisplayVariant(a)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
-    const bPrice = getDisplayVariant(b)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
+    const aPrice = a.productType === "COMBO"
+      ? a.basePriceVnd ?? Number.MAX_SAFE_INTEGER
+      : getDisplayVariant(a)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
+    const bPrice = b.productType === "COMBO"
+      ? b.basePriceVnd ?? Number.MAX_SAFE_INTEGER
+      : getDisplayVariant(b)?.priceVnd ?? Number.MAX_SAFE_INTEGER;
     if (sort === "price_asc") return aPrice - bPrice;
     if (sort === "price_desc") return bPrice - aPrice;
     if (sort === "newest") return b.id.localeCompare(a.id);
@@ -1251,6 +1262,243 @@ export function CategoriesPage() {
   );
 }
 
+function ComboSelectionBuilder({
+  product,
+  onAdded,
+}: {
+  product: Product;
+  onAdded: () => void;
+}) {
+  const { addComboItem } = useCart();
+  const config = product.comboConfig;
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [selectedQuantities, setSelectedQuantities] = useState<Record<string, number>>({});
+  const [quantity, setQuantity] = useState(1);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    setSelectedGroupId(config?.groupMode === "ONE_OF_GROUPS" ? "" : "");
+    setSelectedQuantities({});
+    setQuantity(1);
+    setMessage("");
+  }, [config?.configVersion, config?.groupMode]);
+  if (!config) {
+    return <p className="form-error" role="alert">Combo chưa được cấu hình đầy đủ.</p>;
+  }
+  const selection: ComboSelection = {
+    configVersion: config.configVersion,
+    ...(config.groupMode === "ONE_OF_GROUPS" && selectedGroupId
+      ? { selectedGroupId }
+      : {}),
+    items: Object.entries(selectedQuantities)
+      .filter(([, itemQuantity]) => itemQuantity > 0)
+      .map(([groupItemId, itemQuantity]) => {
+        const groupItem = config.groups
+          .flatMap((group) => group.items)
+          .find((item) => item.id === groupItemId);
+        return {
+          groupItemId,
+          variantId: groupItem?.variantId ?? "",
+          quantity: itemQuantity,
+        };
+      }),
+  };
+  const validation = validateComboSelection(config, selection);
+  const unitPrice = Math.max(0, (product.basePriceVnd ?? 0) + validation.priceAdjustment);
+  const selectedGroup = config.groupMode === "ONE_OF_GROUPS"
+    ? config.groups.find((group) => group.id === selectedGroupId)
+    : undefined;
+  const visibleGroups = selectedGroup ? [selectedGroup] : config.groupMode === "ALL_GROUPS" ? config.groups : [];
+  const setItemQuantity = (group: ComboGroup, groupItemId: string, nextQuantity: number) => {
+    setSelectedQuantities((current) => {
+      const next = { ...current };
+      if (nextQuantity <= 0) delete next[groupItemId];
+      else next[groupItemId] = Math.min(
+        group.items.find((item) => item.id === groupItemId)?.maxQuantity ?? 99,
+        nextQuantity,
+      );
+      return next;
+    });
+  };
+  const add = () => {
+    if (!validation.ok || product.status === "HIDDEN") return;
+    addComboItem(product, selection, quantity);
+    setMessage("Đã thêm Combo vào giỏ hàng.");
+    onAdded();
+  };
+  return (
+    <div className="combo-builder" aria-label="Tùy chọn Combo">
+      <div className="combo-base-price">
+        <span>Giá Combo</span>
+        <Price value={unitPrice} />
+      </div>
+      {config.groupMode === "ONE_OF_GROUPS" && (
+        <div className="combo-group-picker" role="tablist" aria-label="Chọn Group">
+          {config.groups.map((group) => (
+            <button
+              key={group.id}
+              type="button"
+              className={`variant-button${selectedGroupId === group.id ? " active" : ""}`}
+              onClick={() => {
+                setSelectedGroupId(group.id);
+                setSelectedQuantities({});
+              }}
+              role="tab"
+              aria-selected={selectedGroupId === group.id}
+            >
+              {group.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {visibleGroups.map((group) => {
+        const selectedCount = group.items.reduce(
+          (sum, item) => sum + (selectedQuantities[item.id] ? 1 : 0),
+          0,
+        );
+        const selectedTotal = group.items.reduce(
+          (sum, item) => sum + (selectedQuantities[item.id] ?? 0),
+          0,
+        );
+        return (
+          <section className="combo-group" key={group.id}>
+            <div className="field-heading">
+              <span>{group.name}</span>
+              <small>
+                {group.selectionType === "FIXED"
+                  ? "Bắt buộc"
+                  : group.selectionType === "CHOOSE_QUANTITY"
+                    ? `Tổng ${group.minSelect}-${group.maxSelect}`
+                    : `Chọn ${group.minSelect}-${group.maxSelect}`}
+              </small>
+            </div>
+            {group.description && <p>{group.description}</p>}
+            <div className="combo-items">
+              {group.items.map((item) => {
+                const currentQuantity = selectedQuantities[item.id] ?? 0;
+                const distinctLimitReached =
+                  group.selectionType === "CHOOSE" &&
+                  currentQuantity === 0 &&
+                  selectedCount >= group.maxSelect;
+                const quantityLimitReached =
+                  group.selectionType === "CHOOSE_QUANTITY" &&
+                  selectedTotal >= group.maxSelect;
+                return (
+                  <div className="combo-item" key={item.id}>
+                    <div>
+                      <b>{item.productName ?? "Sản phẩm"}</b>
+                      <span>{item.variantName ?? item.sku ?? "Variant"}</span>
+                      {item.priceAdjustment !== 0 && (
+                        <small>
+                          {item.priceAdjustment > 0 ? "+" : ""}{formatVnd(item.priceAdjustment)} / món
+                        </small>
+                      )}
+                    </div>
+                    {group.selectionType === "FIXED" ? (
+                      <strong>× {item.fixedQuantity}</strong>
+                    ) : (
+                      <div className="combo-item-stepper" aria-label={`Số lượng ${item.variantName ?? item.sku ?? "variant"}`}>
+                        <button
+                          type="button"
+                          onClick={() => setItemQuantity(group, item.id, currentQuantity - 1)}
+                          disabled={currentQuantity <= 0}
+                          aria-label="Giảm số lượng"
+                        >−</button>
+                        <span>{currentQuantity}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setItemQuantity(
+                              group,
+                              item.id,
+                              currentQuantity === 0 ? Math.max(1, item.minQuantity) : currentQuantity + 1,
+                            )
+                          }
+                          disabled={distinctLimitReached || quantityLimitReached || currentQuantity >= item.maxQuantity}
+                          aria-label="Tăng số lượng"
+                        >+</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+      {validation.errors.length > 0 && (
+        <ul className="form-error combo-errors" role="alert">
+          {validation.errors.map((error) => <li key={error}>{error}</li>)}
+        </ul>
+      )}
+      <div className="detail-quantity">
+        <span>Số lượng Combo</span>
+        <QuantityStepper value={quantity} onChange={setQuantity} maxQuantity={99} />
+      </div>
+      <button className="btn primary add-cart" type="button" onClick={add} disabled={!validation.ok || product.status !== "AVAILABLE"}>
+        <Icon>shopping_bag</Icon> THÊM COMBO VÀO GIỎ
+      </button>
+      {message && <p className="form-success" role="status">{message}</p>}
+    </div>
+  );
+}
+
+function ComboProductDetailPage({
+  product,
+  displayName,
+  totalQuantity,
+}: {
+  product: Product;
+  displayName: string;
+  totalQuantity: number;
+}) {
+  const [toast, setToast] = useState(false);
+  const images = buildVariantGallery(product);
+  const [selectedImage, setSelectedImage] = useState(0);
+  const showAdded = () => {
+    setToast(true);
+    window.setTimeout(() => setToast(false), 1800);
+  };
+  return (
+    <PublicShell hideMobileNav>
+      <article className="detail-page combo-detail-page">
+        <div className="detail-media">
+          <div className="detail-main-image-wrap">
+            <ProductImage className="detail-main-image" product={product} image={images[selectedImage]} />
+          </div>
+          {images.length > 1 && (
+            <div className="detail-thumbs" aria-label="Chọn ảnh Combo">
+              {images.map((image, index) => (
+                <button key={`${image.r2Key}-${index}`} type="button" className={index === selectedImage ? "active" : ""} onClick={() => setSelectedImage(index)}>
+                  <ProductImage product={product} image={image} alt="" loading="lazy" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="detail-info">
+          <div className="detail-breadcrumbs">Trang chủ <Icon>chevron_right</Icon> Combo</div>
+          <div className="detail-tags"><Tag tone="primary">COMBO</Tag></div>
+          <h1>{product.name}</h1>
+          <p>{product.shortDescription || product.description}</p>
+          <ComboSelectionBuilder product={product} onAdded={showAdded} />
+          <div className="detail-benefits">
+            <div><Icon>inventory_2</Icon><b>Giữ hàng theo món thật</b><small>Trừ tồn kho từng Variant component</small></div>
+            <div><Icon>local_offer</Icon><b>Ưu đãi chính xác</b><small>Khuyến mãi tính theo một dòng Combo</small></div>
+            <div><Icon>local_shipping</Icon><b>Xác nhận giao hàng</b><small>Người bán xác nhận</small></div>
+          </div>
+        </div>
+        <section className="nutrition detail-description-section" aria-label="Mô tả Combo">
+          <div className="detail-description-card">
+            <ProductRichDescription content={product.descriptionContent} assets={product.descriptionAssets} fallback={product.description} />
+          </div>
+        </section>
+      </article>
+      {toast && <div className="toast"><Icon>check_circle</Icon> Đã thêm Combo vào giỏ</div>}
+      <div className="mobile-add-bar" aria-label="Giỏ hàng"><Link className="btn secondary-btn" to="/cart">Xem giỏ hàng ({totalQuantity})</Link></div>
+    </PublicShell>
+  );
+}
+
 export function ProductDetailPage() {
   const { displayName } = useStoreSettings();
   const { mergeProducts } = useCatalog();
@@ -1350,6 +1598,14 @@ export function ProductDetailPage() {
       </PublicShell>
     );
   }
+  if (product.productType === "COMBO")
+    return (
+      <ComboProductDetailPage
+        product={product}
+        displayName={displayName}
+        totalQuantity={totalQuantity}
+      />
+    );
   const variant =
     product.variants.find((item) => item.id === variantId) ??
     getDefaultVariant(product);
@@ -1672,7 +1928,7 @@ export function CartPage() {
         ) : (
           <div className="cart-layout">
             <div className="cart-items">
-              {lines.map(({ product, variant, quantity, lineTotal, unavailable, imageKey, imageUrl }) => {
+              {lines.map(({ product, variant, quantity, lineTotal, unavailable, imageKey, imageUrl, lineType, comboSelection }) => {
                 const evaluated = evaluatedByVariant.get(variant.id);
                 const shownLineTotal = evaluated?.lineTotalVnd ?? lineTotal;
                 return (
@@ -1689,10 +1945,24 @@ export function CartPage() {
                     />
                     <div className="cart-item-info">
                       <h2>{product.name}</h2>
-                      <Tag>{variant.name}{variant.packageSize ? ` · ${variant.packageSize}` : ""}</Tag>
+                      <Tag>{lineType === "COMBO" ? "COMBO" : `${variant.name}${variant.packageSize ? ` · ${variant.packageSize}` : ""}`}</Tag>
+                      {lineType === "COMBO" && comboSelection && product.comboConfig && (
+                        <p className="combo-cart-selection">
+                          {comboSelection.items?.length
+                            ? comboSelection.items
+                                .map((selected) =>
+                                  product.comboConfig?.groups
+                                    .flatMap((group) => group.items)
+                                    .find((item) => item.id === selected.groupItemId)?.variantName,
+                                )
+                                .filter(Boolean)
+                                .join(" · ")
+                            : "Các món cố định trong Combo"}
+                        </p>
+                      )}
                       {unavailable && (
                         <p className="form-error" role="alert">
-                          Phân loại này không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.
+                          {lineType === "COMBO" ? "Combo này" : "Phân loại này"} không còn khả dụng. Bạn có thể xóa khỏi giỏ hàng.
                         </p>
                       )}
                       <button
@@ -1983,6 +2253,26 @@ function findCurrentCartPrice(
   return findVariantInProducts(products, variantId)?.variant.priceVnd ?? fallback;
 }
 
+/** Chuyển snapshot giỏ hàng sang request item; Combo không được giả làm Variant. */
+function cartRequestItemFromLine(line: CartLine, products: Product[]) {
+  if (line.lineType === "COMBO") {
+    const comboProduct = products.find((product) => product.id === line.comboProductId);
+    return {
+      lineType: "COMBO" as const,
+      comboProductId: line.comboProductId ?? line.productId ?? "",
+      comboVersion: line.comboVersion ?? comboProduct?.comboConfig?.configVersion ?? 1,
+      selection: line.comboSelection ?? { items: [] },
+      quantity: line.quantity,
+      displayedPrice: line.priceVnd,
+    };
+  }
+  return {
+    variantId: line.variantId,
+    quantity: line.quantity,
+    displayedPrice: findCurrentCartPrice(line.variantId, products, line.priceVnd),
+  };
+}
+
 function DirectSellerShareControls({
   lines,
   seller,
@@ -1993,6 +2283,7 @@ function DirectSellerShareControls({
   reservationMinutes: number;
 }) {
   const cart = useCart();
+  const { products } = useCatalog();
   const navigate = useNavigate();
   const fingerprint = cartShareFingerprint(cart.items);
   const prepared = readPreparedCartShare();
@@ -2028,11 +2319,9 @@ function DirectSellerShareControls({
         fingerprint,
         forceNew,
         acceptCurrentPrices,
-        items: lines.map(({ variant, quantity }) => ({
-          variantId: variant.id,
-          quantity,
-          displayedPrice: variant.priceVnd,
-        })),
+        items: lines.map((line) =>
+          cartRequestItemFromLine(line as CartLine, products),
+        ),
       });
       const value = buildPreparedCartShare(
         fingerprint,
@@ -2163,6 +2452,7 @@ function MessengerCheckoutControls({
 }) {
   const { displayName } = useStoreSettings();
   const cart = useCart();
+  const { products } = useCatalog();
   const navigate = useNavigate();
   const fingerprint = cartFingerprint(cart.items);
   const [pending, setPending] = useState<PendingMessengerCart | null>(() =>
@@ -2259,10 +2549,9 @@ function MessengerCheckoutControls({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           submissionToken,
-          items: lines.map(({ variant, quantity }) => ({
-            variantId: variant.id,
-            quantity,
-          })),
+          items: lines.map((line) =>
+            cartRequestItemFromLine(line as CartLine, products),
+          ),
         }),
       });
       const body = (await response.json()) as
@@ -2386,6 +2675,16 @@ type PublicCartShareDto = {
     unitPriceVnd: number;
     quantity: number;
     lineTotalVnd: number;
+    lineType?: "STANDARD" | "COMBO";
+    comboComponents?: Array<{
+      groupName: string;
+      productName: string;
+      variantName: string;
+      sku: string | null;
+      imageUrl: string;
+      quantity: number;
+      priceAdjustmentVnd: number;
+    }>;
     isPromotionGift?: boolean;
     promotionId?: string;
   }>;
@@ -2468,6 +2767,19 @@ export function PublicCartSharePage() {
                       : `${formatVnd(item.unitPriceVnd)} × ${item.quantity}`}
                   </small>
                 </p>
+                {item.lineType === "COMBO" && item.comboComponents?.length ? (
+                  <ul className="share-combo-components">
+                    {item.comboComponents.map((component, componentIndex) => (
+                      <li key={`${component.groupName}-${component.productName}-${component.variantName}-${componentIndex}`}>
+                        <span>
+                          <b>{component.groupName}</b>
+                          {component.productName} — {component.variantName}
+                        </span>
+                        <small>× {component.quantity}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 <Price value={item.lineTotalVnd} />
               </section>
             ))}
@@ -2633,15 +2945,9 @@ export function CartShareGuidePage() {
         fingerprint: prepared.fingerprint,
         submissionToken,
         acceptCurrentPrices,
-        items: latestItems.map((item) => ({
-          variantId: item.variantId,
-          quantity: item.quantity,
-          displayedPrice: findCurrentCartPrice(
-            item.variantId,
-            products,
-            item.priceVnd,
-          ),
-        })),
+        items: latestItems.map((item) =>
+          cartRequestItemFromLine(item, products),
+        ),
         onRecoveryStarted: () => {
           setPrepared(null);
           setCopyStatus("FAILED");

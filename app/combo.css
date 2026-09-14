@@ -1,0 +1,448 @@
+/* Giao diện chọn Combo giữ cùng nhịp thị giác với trang chi tiết hiện có. */
+.combo-detail-page .detail-info {
+  min-width: 0;
+}
+
+.combo-builder {
+  margin-top: 22px;
+}
+
+.combo-base-price {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.combo-base-price .price {
+  color: var(--primary);
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.combo-group-picker,
+.combo-items {
+  display: grid;
+  gap: 10px;
+}
+
+.combo-group-picker {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 18px;
+}
+
+.combo-group-picker .variant-button {
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--surface-container);
+  border-radius: 12px;
+  background: var(--surface-container);
+  cursor: pointer;
+}
+
+.combo-group-picker .variant-button.active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.combo-group {
+  margin-bottom: 22px;
+}
+
+.combo-group > .field-heading small,
+.combo-item > div > span,
+.combo-item > div > small {
+  color: var(--on-variant);
+}
+
+.combo-group > p {
+  margin: 8px 0 12px;
+  color: var(--on-variant);
+  font-size: 13px;
+}
+
+.combo-item {
+  min-width: 0;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  background: var(--surface-lowest);
+}
+
+.combo-item > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.combo-item > div:first-child > * {
+  overflow-wrap: anywhere;
+}
+
+.combo-item-stepper {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.combo-item-stepper button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-container);
+  cursor: pointer;
+}
+
+.combo-item-stepper button:disabled {
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+.combo-item-stepper span {
+  min-width: 20px;
+  text-align: center;
+}
+
+.combo-errors {
+  margin: 10px 0;
+  padding-left: 20px;
+}
+
+.combo-builder .detail-quantity,
+.combo-builder .add-cart {
+  display: flex;
+}
+
+.combo-cart-selection {
+  margin: 8px 0 0;
+  color: var(--on-variant);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.share-combo-components,
+.request-combo-components {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  display: grid;
+  gap: 5px;
+  border-left: 2px solid var(--secondary);
+  background: var(--surface-low);
+  color: var(--on-variant);
+  font-size: 12px;
+  line-height: 1.35;
+  list-style: none;
+}
+
+.request-line-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.share-combo-components li,
+.request-combo-components li {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.share-combo-components li > span,
+.request-combo-components li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.share-combo-components b,
+.request-combo-components b {
+  display: block;
+  color: var(--on-surface);
+  font-size: 11px;
+}
+
+.share-combo-components small,
+.request-combo-components small {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 639px) {
+  .combo-builder {
+    margin-top: 16px;
+  }
+
+  .combo-base-price .price {
+    font-size: 22px;
+  }
+
+  .combo-group-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .combo-builder .detail-quantity {
+    display: flex;
+  }
+
+  .combo-builder .add-cart {
+    display: flex;
+    margin-top: 18px;
+  }
+
+  .combo-detail-page .detail-info {
+    padding-bottom: 24px;
+  }
+}
+
+/* Khu vực Admin Combo dùng lại card/form chung nhưng cho phép chỉnh nhiều Group gọn gàng. */
+.admin-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.combo-admin-heading > div:first-child > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--primary);
+}
+
+.combo-admin-heading > div:first-child > p {
+  max-width: 760px;
+}
+
+.combo-admin-grid {
+  width: min(100%, 1240px);
+  margin-inline: auto;
+}
+
+.combo-rule-card {
+  background: linear-gradient(145deg, rgba(211, 236, 234, .42), #fff 72%);
+}
+
+.combo-taxonomy-editor fieldset {
+  margin: 0 0 16px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 10px;
+}
+
+.combo-taxonomy-editor legend {
+  padding-inline: 4px;
+  font-weight: 700;
+}
+
+.combo-product-tag-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.combo-product-tag-group {
+  display: grid;
+  gap: 6px;
+}
+
+.combo-group-editor .form-grid {
+  align-items: start;
+}
+
+.combo-range-fields {
+  max-width: 680px;
+}
+
+.combo-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.combo-admin-item {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: minmax(170px, 1.5fr) repeat(2, minmax(100px, .7fr)) minmax(100px, auto);
+  gap: 10px;
+  align-items: end;
+  background: var(--surface-low);
+}
+
+.combo-admin-item:has(label:nth-child(4)) {
+  grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(96px, .7fr)) minmax(100px, auto);
+}
+
+.combo-group-actions,
+.combo-admin-item-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.combo-admin-item-actions {
+  min-width: 100px;
+}
+
+.combo-admin-item-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.combo-admin-item-copy b,
+.combo-admin-item-copy small {
+  overflow-wrap: anywhere;
+}
+
+.combo-admin-item-copy small,
+.combo-empty-items,
+.combo-admin-help li {
+  color: var(--on-variant);
+}
+
+.combo-admin-item label {
+  min-width: 0;
+  margin: 0;
+}
+
+.combo-admin-item input {
+  min-width: 0;
+}
+
+.combo-empty-items {
+  margin: 4px 0;
+  padding: 12px;
+  border: 1px dashed var(--outline-variant);
+  border-radius: 10px;
+}
+
+.combo-add-group {
+  align-self: flex-start;
+}
+
+.combo-variant-picker {
+  position: sticky;
+  top: 24px;
+}
+
+.combo-variant-options {
+  max-height: 480px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.combo-variant-options > button {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto 22px;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: #fff;
+  cursor: pointer;
+}
+
+.combo-variant-options > button > img,
+.combo-variant-placeholder {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface-container);
+}
+
+.combo-variant-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--on-variant);
+}
+
+.combo-variant-options > button:hover {
+  border-color: var(--secondary);
+  background: var(--secondary-container);
+}
+
+.combo-variant-options > button > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.combo-variant-options > button b,
+.combo-variant-options > button small {
+  overflow-wrap: anywhere;
+}
+
+.combo-variant-options > button small {
+  color: var(--on-variant);
+}
+
+.combo-variant-options > button > .material-symbols-outlined {
+  color: var(--primary);
+}
+
+.combo-admin-help ul {
+  margin: 0 0 18px;
+  padding-left: 20px;
+}
+
+@media (max-width: 1023px) {
+  .combo-variant-picker {
+    position: static;
+  }
+}
+
+@media (max-width: 639px) {
+  .admin-heading-actions {
+    width: 100%;
+  }
+
+  .admin-heading-actions .btn {
+    flex: 1;
+  }
+
+  .combo-admin-item,
+  .combo-admin-item:has(label:nth-child(4)) {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .combo-admin-item-copy {
+    grid-column: 1 / -1;
+  }
+
+  .combo-admin-item label {
+    grid-column: span 1;
+  }
+
+  .combo-admin-item-actions {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .combo-admin-heading > div:last-child {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

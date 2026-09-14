@@ -4,12 +4,16 @@ import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
 import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 import { loadStoreSettings } from "./store-settings";
 import {
+  buildCartRequestItemStatements,
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
   hasPromotionSchema,
   loadPromotionHistory,
   PromotionCartError,
+  type PromotionCartRequestItem,
 } from "./promotions";
+import { comboLineId, type ComboSelection } from "../shared/combos";
+import { hasComboSchema } from "./combos";
 
 async function storeDisplayNameForMessenger(env: Env) {
   try {
@@ -43,7 +47,7 @@ type MessengerDeliveryStatus =
 
 type MessengerStartBody = {
   submissionToken: string;
-  items: Array<{ variantId: string; quantity: number }>;
+  items: PromotionCartRequestItem[];
 };
 
 type MessengerConfig = {
@@ -151,9 +155,7 @@ export function validateMessengerStart(value: unknown): MessengerStartBody {
         422,
       );
     const item = value as Record<string, unknown>;
-    const variantId = requiredString(item.variantId, 120);
     if (
-      seen.has(variantId) ||
       !Number.isInteger(item.quantity) ||
       Number(item.quantity) < 1 ||
       Number(item.quantity) > 99
@@ -163,8 +165,58 @@ export function validateMessengerStart(value: unknown): MessengerStartBody {
         "Thông tin gửi chưa hợp lệ.",
         422,
       );
+    const displayedPrice =
+      item.displayedPrice === undefined ? undefined : Number(item.displayedPrice);
+    if (
+      displayedPrice !== undefined &&
+      (!Number.isSafeInteger(displayedPrice) || displayedPrice < 0)
+    )
+      throw new MessengerDomainError(
+        "VALIDATION_ERROR",
+        "Thông tin gửi chưa hợp lệ.",
+        422,
+      );
+    if (item.lineType === "COMBO") {
+      const comboProductId = requiredString(item.comboProductId, 120);
+      const comboVersion = Number(item.comboVersion);
+      const selection = item.selection ?? item.comboSelection;
+      if (
+        !Number.isSafeInteger(comboVersion) ||
+        comboVersion < 1 ||
+        !selection ||
+        typeof selection !== "object"
+      )
+        throw new MessengerDomainError(
+          "VALIDATION_ERROR",
+          "Thông tin gửi chưa hợp lệ.",
+          422,
+        );
+      const lineId = comboLineId(comboProductId, selection as ComboSelection);
+      if (seen.has(lineId))
+        throw new MessengerDomainError(
+          "VALIDATION_ERROR",
+          "Thông tin gửi chưa hợp lệ.",
+          422,
+        );
+      seen.add(lineId);
+      return {
+        lineType: "COMBO" as const,
+        comboProductId,
+        comboVersion,
+        selection: selection as ComboSelection,
+        quantity: Number(item.quantity),
+        displayedPrice,
+      };
+    }
+    const variantId = requiredString(item.variantId, 120);
+    if (seen.has(variantId))
+      throw new MessengerDomainError(
+        "VALIDATION_ERROR",
+        "Thông tin gửi chưa hợp lệ.",
+        422,
+      );
     seen.add(variantId);
-    return { variantId, quantity: Number(item.quantity) };
+    return { variantId, quantity: Number(item.quantity), displayedPrice };
   });
   return { submissionToken, items };
 }
@@ -388,6 +440,7 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       createdAt,
       loaded,
     );
+    const comboSchema = await hasComboSchema(env);
     const itemLineCount = pricedItems.length + loaded.evaluation.gifts.length;
     const statements: D1PreparedStatement[] = [
       ...promotionStatements.usage,
@@ -444,28 +497,13 @@ export async function startMessengerCheckout(request: Request, env: Env) {
         createdAt,
       ),
     ];
-    pricedItems.forEach((item) =>
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO cart_request_items (
-            id, cart_request_id, product_id, variant_id, product_name_snapshot,
-            variant_name_snapshot, sku_snapshot, image_key_snapshot, unit_price_vnd,
-            quantity, line_total_vnd, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(
-          crypto.randomUUID(),
-          cartRequestId,
-          item.productId,
-          item.variantId,
-          item.productName,
-          item.variantName,
-          item.sku,
-          item.imageKey,
-          item.priceVnd,
-          item.quantity,
-          item.lineTotalVnd,
-          createdAt,
-        ),
+    statements.push(
+      ...buildCartRequestItemStatements(
+        (sql) => env.DB.prepare(sql),
+        cartRequestId,
+        createdAt,
+        pricedItems,
+        comboSchema,
       ),
     );
     statements.push(

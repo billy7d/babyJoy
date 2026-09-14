@@ -151,6 +151,8 @@ export type PromotionInput = {
   config: unknown;
 };
 
+import type { ComboSelection } from "./combos";
+
 export type PromotionCartLine = {
   productId: string;
   variantId: string;
@@ -161,6 +163,23 @@ export type PromotionCartLine = {
   priceVnd: number;
   quantity: number;
   categoryIds: string[];
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string;
+  comboVersion?: number;
+  comboSelection?: ComboSelection;
+  comboComponents?: Array<{
+    groupId: string;
+    groupNameSnapshot: string;
+    groupItemId: string;
+    variantId: string;
+    productId: string | null;
+    productNameSnapshot: string;
+    variantNameSnapshot: string;
+    skuSnapshot: string | null;
+    imageKeySnapshot: string | null;
+    quantity: number;
+    priceAdjustmentVnd: number;
+  }>;
   // Các trường inventory là tuỳ chọn để bộ máy promotion vẫn chạy với fixture/schema legacy.
   trackInventory?: boolean;
   stockOnHand?: number;

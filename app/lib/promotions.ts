@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ComboSelection } from "../../shared/combos";
 
 export type CartPromotionItem = {
   productId: string;
@@ -12,6 +13,10 @@ export type CartPromotionItem = {
   originalLineTotalVnd: number;
   discountAmountVnd: number;
   lineTotalVnd: number;
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string;
+  comboVersion?: number;
+  comboSelection?: ComboSelection;
 };
 
 export type CartPromotionGift = {
@@ -74,11 +79,35 @@ type CartPromotionFailure = {
 };
 
 export function useCartPromotionEvaluation(
-  items: Array<{ variantId: string; quantity: number }>,
+  items: Array<{
+    variantId: string;
+    quantity: number;
+    priceVnd?: number;
+    lineType?: "STANDARD" | "COMBO";
+    comboProductId?: string;
+    comboVersion?: number;
+    comboSelection?: ComboSelection;
+  }>,
   hydrated: boolean,
 ) {
   const requestItems = useMemo(
-    () => items.map(({ variantId, quantity }) => ({ variantId, quantity })),
+    () =>
+      items.map((item) =>
+        item.lineType === "COMBO"
+          ? {
+              lineType: "COMBO" as const,
+              comboProductId: item.comboProductId,
+              comboVersion: item.comboVersion,
+              selection: item.comboSelection,
+              quantity: item.quantity,
+              displayedPrice: item.priceVnd,
+            }
+          : {
+              variantId: item.variantId,
+              quantity: item.quantity,
+              displayedPrice: item.priceVnd,
+            },
+      ),
     [items],
   );
   const signature = useMemo(() => JSON.stringify(requestItems), [requestItems]);
