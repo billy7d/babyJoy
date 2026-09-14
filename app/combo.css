@@ -446,3 +446,51 @@
     justify-content: flex-end;
   }
 }
+
+/* Combo UI refinement: centered card CTA and desktop-only picker readability. */
+.product-card a.inline-cart-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+@media (min-width: 1024px) {
+  .combo-variant-options > button {
+    grid-template-columns: 48px minmax(150px, 1fr) auto 24px;
+    padding: 10px 12px;
+  }
+
+  .combo-variant-options > button > span {
+    min-width: 0;
+  }
+
+  .combo-variant-options > button b,
+  .combo-variant-options > button small {
+    overflow-wrap: normal;
+    word-break: normal;
+    line-height: 1.35;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1199px) {
+  .combo-admin-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .combo-admin-side {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .combo-variant-picker {
+    position: static;
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1200px) {
+  .combo-admin-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(390px, 420px);
+  }
+}

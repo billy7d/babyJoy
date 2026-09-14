@@ -102,6 +102,21 @@ function errorText(message: string) {
   return message.trim() || "Cấu hình Combo chưa hợp lệ.";
 }
 
+export function formatComboGroupSelectionRule(
+  group: Pick<ComboGroup, "selectionType" | "minSelect" | "maxSelect">,
+) {
+  if (group.selectionType === "FIXED") return "Bắt buộc";
+  if (group.selectionType === "CHOOSE_QUANTITY")
+    return `Tổng số lượng tối thiểu ${group.minSelect} sp / tối đa ${group.maxSelect} sp`;
+  return `Chọn tối thiểu ${group.minSelect} sp / tối đa ${group.maxSelect} sp`;
+}
+
+export function formatComboGroupSelectionError(
+  group: Pick<ComboGroup, "name" | "maxSelect">,
+) {
+  return `Hãy chọn ${group.maxSelect} sản phẩm trong ${group.name}`;
+}
+
 /** Kiểm tra cấu hình Admin trước khi ghi để rule không phụ thuộc vào UI. */
 export function validateComboConfig(config: ComboConfig): ComboConfigValidation {
   const errors: string[] = [];
@@ -258,7 +273,7 @@ export function validateComboSelection(
       group.selectionType === "CHOOSE" &&
       (selectedCount < group.minSelect || selectedCount > group.maxSelect)
     )
-      errors.push(`Group "${group.name}" yêu cầu ${group.minSelect}-${group.maxSelect} lựa chọn.`);
+      errors.push(formatComboGroupSelectionError(group));
     for (const item of selected) {
       const stored = group.items.find((candidate) => candidate.id === item.groupItemId)!;
       components.push({ ...item, groupId: group.id, priceAdjustment: stored.priceAdjustment });
@@ -267,7 +282,7 @@ export function validateComboSelection(
     if (group.selectionType === "CHOOSE_QUANTITY") {
       const totalQuantity = selected.reduce((sum, item) => sum + item.quantity, 0);
       if (totalQuantity < group.minSelect || totalQuantity > group.maxSelect)
-        errors.push(`Group "${group.name}" yêu cầu tổng quantity ${group.minSelect}-${group.maxSelect}.`);
+        errors.push(formatComboGroupSelectionError(group));
     }
   }
   return { ok: errors.length === 0, errors: errors.map(errorText), components, priceAdjustment };
