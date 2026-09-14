@@ -104,7 +104,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Fail on targeted E2E failure
-        if: steps.combo_e2e.outcome == 'failure'
+        if: steps.combo_e2e.conclusion == 'failure'
         run: exit 1
 
       - name: Commit validated source changes
