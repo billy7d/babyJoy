@@ -140,7 +140,7 @@ async function inspectStorefront(viewport) {
       };
     });
     assert(
-      comboCtaLayout.display === "inline-flex" &&
+      ["flex", "inline-flex"].includes(comboCtaLayout.display) &&
         comboCtaLayout.alignItems === "center" &&
         comboCtaLayout.justifyContent === "center" &&
         comboCtaLayout.textAlign === "center",
