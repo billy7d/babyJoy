@@ -22,6 +22,7 @@ import type {
   ProductDescriptionAsset,
   ProductDescriptionDocument,
 } from "../../shared/product-description";
+import type { ComboConfig } from "../../shared/combos";
 import {
   isFeaturedCollection,
   type CatalogTag as CatalogFilterTag,
@@ -38,7 +39,9 @@ export type ApiProduct = {
   minAgeMonths?: number | null;
   isBestSeller?: number | boolean;
   bestSellerRank?: number | null;
-  archivedAt?: string | null;
+  productType?: "STANDARD" | "COMBO";
+  basePriceVnd?: number | null;
+  comboConfig?: ComboConfig | null;
   shortDescription?: string;
   description?: string;
   descriptionContent?: ProductDescriptionDocument | null;
@@ -351,7 +354,10 @@ export function mapApiProduct(row: ApiProduct): Product {
         : `${row.minAgeMonths}+ tháng`,
     isBestSeller: Boolean(row.isBestSeller),
     bestSellerRank: row.bestSellerRank ?? null,
-    archivedAt: row.archivedAt ?? null,
+    productType: row.productType === "COMBO" ? "COMBO" : "STANDARD",
+    basePriceVnd: row.basePriceVnd ?? null,
+    comboConfig: row.comboConfig ?? null,
+    status: row.status === "HIDDEN" ? "HIDDEN" : row.status === "OUT_OF_STOCK" ? "OUT_OF_STOCK" : "AVAILABLE",
     // Mảng rỗng từ API nghĩa là taxonomy đã bị xóa, không được khôi phục fallback cũ.
     tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
     tagSlugs: Array.isArray(row.tagSlugs) ? row.tagSlugs : (fallback?.tagSlugs ?? []),

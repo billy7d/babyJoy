@@ -292,7 +292,9 @@ try {
   console.log(`FEATURED_CROSS_BROWSER_E2E_OK browser=${selectedBrowserName} cta=pass listing=pass badges=pass upload=pass`);
 } finally {
   if (productId)
-    await page.request.delete(`${baseUrl}/api/admin/products/${productId}`).catch(() => undefined);
+    await page.request
+      .delete(`${baseUrl}/api/admin/products/${productId}`, { data: { confirmation: "DELETE" } })
+      .catch(() => undefined);
   await context.close();
   await browser.close();
 }

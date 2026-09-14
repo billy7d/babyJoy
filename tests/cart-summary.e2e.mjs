@@ -251,5 +251,10 @@ try {
   );
 } finally {
   await browser.close();
+  await jsonRequest("DELETE", `/api/admin/promotions/${freeShippingPromotionId}`).catch(() => undefined);
+  await jsonRequest("DELETE", `/api/admin/promotions/${promotionId}`).catch(() => undefined);
+  await jsonRequest("DELETE", `/api/admin/products/${productId}`, { confirmation: "DELETE" }).catch(
+    () => undefined,
+  );
   await api.dispose();
 }

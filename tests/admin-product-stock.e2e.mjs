@@ -173,7 +173,9 @@ try {
   }
 } finally {
   for (const productId of productIds)
-    await api.delete(`${baseUrl}/api/admin/products/${productId}`).catch(() => undefined);
+    await api
+      .delete(`${baseUrl}/api/admin/products/${productId}`, { data: { confirmation: "DELETE" } })
+      .catch(() => undefined);
   await api.dispose();
   await browser.close();
 }

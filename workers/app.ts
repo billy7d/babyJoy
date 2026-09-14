@@ -1,6 +1,7 @@
 import { createRequestHandler } from "react-router";
 import {
   mapCartItemSnapshot,
+  type CartComboComponentSnapshot,
   type CartItemSnapshotRow,
 } from "./services";
 import {
@@ -54,7 +55,9 @@ import {
   cancelInventoryOrder,
   confirmInventoryOrder,
   cleanupExpiredReservations,
+  buildInventoryMovementStatement,
   getAdminCheckoutSettings,
+  hasDetachedVariantHistorySchema,
   hasInventorySchema,
   hasVariantRetirementSchema,
   listActiveReservations,
@@ -71,7 +74,9 @@ import {
   hasPromotionSchema,
   loadPromotionHistory,
   PromotionCartError,
+  type PromotionCartRequestItem,
 } from "./promotions";
+import { comboLineId, type ComboSelection } from "../shared/combos";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import {
   deleteAdminPromotion,
@@ -143,6 +148,25 @@ import {
 } from "./store-settings";
 import { hasVariantMediaSchema } from "./variant-media";
 import {
+  getComboConfig,
+  getComboConfigs,
+  hasComboSchema,
+  hasProductTypeSchema,
+  listAdminComboVariants,
+  saveAdminComboConfig,
+  saveAdminComboGroup,
+  deleteAdminComboGroup,
+  saveAdminComboItem,
+  deleteAdminComboItem,
+  revalidateComboProduct,
+  validateAdminComboConfigInput,
+} from "./combos";
+import {
+  getProductDeletePreflight,
+  hardDeleteProduct,
+  processProductStorageCleanup,
+} from "./product-delete";
+import {
   getVariantTagMap,
   hasTagGroupSchema,
   listTagGroups,
@@ -203,6 +227,90 @@ async function readBoundedJson(request: Request, maxBytes = 64 * 1024) {
   return JSON.parse(text) as unknown;
 }
 
+async function readProductDeleteConfirmation(request: Request) {
+  try {
+    const body = await readBoundedJson(request, 8 * 1024);
+    if (!body || typeof body !== "object") return false;
+    const value = (body as Record<string, unknown>).confirmation ??
+      (body as Record<string, unknown>).confirm;
+    return value === "DELETE" || value === "XÓA";
+  } catch {
+    return false;
+  }
+}
+
+async function saveAdminComboProduct(
+  request: Request,
+  env: Env,
+  id?: string,
+) {
+  if (!(await hasComboSchema(env)))
+    return error(
+      "COMBO_SCHEMA_UNAVAILABLE",
+      "Cấu hình Combo chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  let raw: Record<string, unknown>;
+  try {
+    const value = await readBoundedJson(request, 512 * 1024);
+    raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    return error("VALIDATION_ERROR", "Thông tin Combo chưa hợp lệ.", 422);
+  }
+  const basePayload = {
+    ...raw,
+    productType: "COMBO",
+    variants: [],
+  };
+  const config = raw.comboConfig ?? raw.config;
+  if (!id && config === undefined)
+    return error(
+      "COMBO_CONFIG_REQUIRED",
+      "Combo mới phải có ít nhất một cấu hình Group hợp lệ.",
+      422,
+    );
+  if (config !== undefined) {
+    // Kiểm tra rule và Variant trước khi tạo Product để không sinh bản ghi mồ côi.
+    const prepared = await validateAdminComboConfigInput(
+      config,
+      id ?? "pending-combo",
+      env,
+    );
+    if (prepared.response) return prepared.response;
+  }
+  const baseResponse = await saveAdminProduct(
+    new Request(request.url, {
+      method: id ? "PUT" : "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(basePayload),
+    }),
+    env,
+    id,
+    true,
+  );
+  if (!baseResponse.ok) return baseResponse;
+  const baseBody = (await baseResponse.json()) as { id?: string };
+  const productId = id ?? baseBody.id;
+  if (!productId) return error("COMBO_SAVE_FAILED", "Chưa thể tạo Combo.", 409);
+  if (config === undefined) return baseResponse;
+  const configResponse = await saveAdminComboConfig(
+    new Request(request.url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    }),
+    productId,
+    env,
+  );
+  if (!configResponse.ok) return configResponse;
+  const product = await readAdminProductData(
+    productId,
+    env,
+    getProductImageUrlStrategy(env.ENVIRONMENT),
+  );
+  return json({ success: true, id: productId, product });
+}
+
 async function evaluateCart(
   request: Request,
   env: Env,
@@ -229,23 +337,53 @@ async function evaluateCart(
   if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 50)
     return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
   const seen = new Set<string>();
-  const items = [] as Array<{ variantId: string; quantity: number }>;
+  const items: PromotionCartRequestItem[] = [];
   for (const rawItem of rawItems) {
     if (!rawItem || typeof rawItem !== "object")
       return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
     const row = rawItem as Record<string, unknown>;
-    const variantId = typeof row.variantId === "string" ? row.variantId.trim() : "";
     const quantity = Number(row.quantity);
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99)
+      return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+    const displayedPrice =
+      row.displayedPrice === undefined ? undefined : Number(row.displayedPrice);
     if (
-      !variantId ||
-      seen.has(variantId) ||
-      !Number.isSafeInteger(quantity) ||
-      quantity < 1 ||
-      quantity > 99
+      displayedPrice !== undefined &&
+      (!Number.isSafeInteger(displayedPrice) || displayedPrice < 0)
     )
       return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+    if (row.lineType === "COMBO") {
+      const comboProductId =
+        typeof row.comboProductId === "string" ? row.comboProductId.trim() : "";
+      const comboVersion = Number(row.comboVersion);
+      const selection = row.selection ?? row.comboSelection;
+      if (
+        !comboProductId ||
+        !Number.isSafeInteger(comboVersion) ||
+        comboVersion < 1 ||
+        !selection ||
+        typeof selection !== "object"
+      )
+        return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+      const lineId = comboLineId(comboProductId, selection as ComboSelection);
+      if (seen.has(lineId))
+        return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
+      seen.add(lineId);
+      items.push({
+        lineType: "COMBO",
+        comboProductId,
+        comboVersion,
+        selection: selection as ComboSelection,
+        quantity,
+        displayedPrice,
+      });
+      continue;
+    }
+    const variantId = typeof row.variantId === "string" ? row.variantId.trim() : "";
+    if (!variantId || seen.has(variantId))
+      return error("VALIDATION_ERROR", "Thông tin giỏ hàng chưa hợp lệ.", 422);
     seen.add(variantId);
-    items.push({ variantId, quantity });
+    items.push({ variantId, quantity, displayedPrice });
   }
   try {
     // Dọn lazy để tồn kho khả dụng không bị khóa bởi reservation đã quá hạn khi cron trễ.
@@ -667,7 +805,8 @@ type ProductRow = {
   minAgeMonths: number | null;
   isBestSeller: number;
   bestSellerRank: number | null;
-  archivedAt: string | null;
+  productType: "STANDARD" | "COMBO" | string;
+  basePriceVnd: number | null;
   shortDescription: string;
   description: string;
   descriptionContent?: string | null;
@@ -751,6 +890,7 @@ async function hydrateProducts(
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
   ]);
+  const comboSchema = await hasComboSchema(env);
   const tagGroupSchema = await hasTagGroupSchema(env);
   const descriptionSchema =
     includeDescription && (await hasProductDescriptionSchema(env));
@@ -827,8 +967,19 @@ async function hydrateProducts(
     current.push(asset);
     descriptionAssetsByProduct.set(asset.productId, current);
   });
+  const comboConfigs = comboSchema
+    ? await getComboConfigs(
+        rows
+          .filter((row) => row.productType === "COMBO")
+          .map((row) => row.id),
+        env,
+      )
+    : new Map();
   return rows.map((product) => ({
     ...product,
+    ...(comboConfigs.has(product.id)
+      ? { comboConfig: comboConfigs.get(product.id) }
+      : {}),
     variants: variants.results
       .filter((variant) => variant.productId === product.id)
       .map(({ productId: _productId, ...variant }) => ({
@@ -911,6 +1062,7 @@ async function hydrateProducts(
 }
 
 type ProductListStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
+type ProductListType = "ALL" | "STANDARD" | "COMBO";
 type ProductListSort =
   | "default"
   | "newest"
@@ -978,6 +1130,10 @@ function parseAdminStatus(value: string | null): ProductListStatus {
   return "ALL";
 }
 
+function parseAdminProductType(value: string | null): ProductListType {
+  return value === "STANDARD" || value === "COMBO" ? value : "ALL";
+}
+
 function buildProductListQuery({
   q,
   categories,
@@ -990,8 +1146,10 @@ function buildProductListQuery({
   sort,
   includeHidden,
   status,
+  productType = "ALL",
   inventorySchema,
   variantRetirementSchema,
+  comboSchema = false,
   variantTagGroups = [],
   tagGroupSchema = false,
 }: {
@@ -1006,8 +1164,10 @@ function buildProductListQuery({
   sort: ProductListSort;
   includeHidden: boolean;
   status: ProductListStatus;
+  productType?: ProductListType;
   inventorySchema: boolean;
   variantRetirementSchema: boolean;
+  comboSchema?: boolean;
   variantTagGroups?: string[][];
   tagGroupSchema?: boolean;
 }): ProductListQuery {
@@ -1017,13 +1177,30 @@ function buildProductListQuery({
     ? ["1 = 1"]
     : [
         "p.status != 'HIDDEN'",
-        "p.archived_at IS NULL",
-        `EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN'${activeVariantPredicate("pv")})`,
+        comboSchema
+          ? `(
+              (COALESCE(p.product_type, 'STANDARD') = 'COMBO'
+                AND EXISTS (SELECT 1 FROM combo_configs cc WHERE cc.product_id = p.id))
+              OR
+              (COALESCE(p.product_type, 'STANDARD') = 'STANDARD'
+                AND EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN'${activeVariantPredicate("pv")}))
+            )`
+          : `EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.availability != 'HIDDEN'${activeVariantPredicate("pv")})`,
       ];
   const values: Array<string | number> = [];
   if (includeHidden && status !== "ALL") {
     where.push("p.status = ?");
     values.push(status);
+  }
+  if (productType !== "ALL") {
+    if (!comboSchema) {
+      if (productType === "COMBO") where.push("0 = 1");
+    } else {
+      where.push(
+        `COALESCE(p.product_type, 'STANDARD') = ?`,
+      );
+      values.push(productType);
+    }
   }
   if (q) {
     where.push(
@@ -1098,9 +1275,30 @@ function buildProductListQuery({
   }
   if (available)
     where.push(
-      inventorySchema
-        ? `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity)${activeVariantPredicate("av")})`
-        : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`,
+      comboSchema
+        ? `(
+            (COALESCE(p.product_type, 'STANDARD') = 'COMBO'
+              AND EXISTS (
+                SELECT 1
+                FROM combo_groups cag
+                JOIN combo_group_items cagi ON cagi.group_id = cag.id
+                JOIN product_variants cav ON cav.id = cagi.variant_id
+                JOIN products cap ON cap.id = cav.product_id
+                WHERE cag.combo_product_id = p.id
+                  AND cap.status = 'AVAILABLE'
+                  AND cav.availability = 'AVAILABLE'
+                  AND ${inventorySchema ? "(cav.track_inventory = 0 OR cav.stock_on_hand > cav.reserved_quantity)" : "1 = 1"}
+                  ${activeVariantPredicate("cav")}
+              ))
+            OR
+            (COALESCE(p.product_type, 'STANDARD') = 'STANDARD'
+              AND ${inventorySchema
+                ? `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity)${activeVariantPredicate("av")})`
+                : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`})
+          )`
+        : inventorySchema
+          ? `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE' AND (av.track_inventory = 0 OR av.stock_on_hand > av.reserved_quantity)${activeVariantPredicate("av")})`
+          : `EXISTS (SELECT 1 FROM product_variants av WHERE av.product_id = p.id AND av.availability = 'AVAILABLE'${activeVariantPredicate("av")})`,
     );
 
   const eligiblePricePredicate = inventorySchema
@@ -1108,6 +1306,7 @@ function buildProductListQuery({
     : "sv.availability = 'AVAILABLE'";
   const price =
     `COALESCE(
+      ${comboSchema ? "CASE WHEN COALESCE(p.product_type, 'STANDARD') = 'COMBO' THEN p.base_price_vnd END," : ""}
       (SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND ${eligiblePricePredicate}${activeVariantPredicate("sv")}),
       (SELECT MIN(sv.price_vnd) FROM product_variants sv WHERE sv.product_id = p.id AND sv.availability != 'HIDDEN'${activeVariantPredicate("sv")}),
       0
@@ -1144,6 +1343,7 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
   const categories = csvQueryValue(url.searchParams.get("category"));
   const brands = csvQueryValue(url.searchParams.get("brand"));
   const sortValue = url.searchParams.get("sort");
+  const productType = parseAdminProductType(url.searchParams.get("productType"));
   if (
     q === null ||
     tag === null ||
@@ -1167,10 +1367,11 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
       "Bộ sưu tập nổi bật không hợp lệ.",
       422,
     );
-  const [inventorySchema, variantRetirementSchema, tagGroupSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, tagGroupSchema, comboSchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
     hasTagGroupSchema(env),
+    hasComboSchema(env),
   ]);
   const featuredSystemKey = featuredValue
     ? FEATURED_COLLECTIONS[featuredValue as keyof typeof FEATURED_COLLECTIONS]
@@ -1234,8 +1435,10 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     sort: parseProductSort(sortValue),
     includeHidden,
     status: parseAdminStatus(url.searchParams.get("status")),
+    productType,
     inventorySchema,
     variantRetirementSchema,
+    comboSchema,
     variantTagGroups,
     tagGroupSchema,
   });
@@ -1255,7 +1458,9 @@ async function listProducts(request: Request, env: Env, includeHidden = false) {
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
-      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      ${comboSchema ? "COALESCE(p.product_type, 'STANDARD')" : "'STANDARD'"} AS productType,
+      ${comboSchema ? "p.base_price_vnd" : "NULL"} AS basePriceVnd,
+      p.short_description AS shortDescription,
       p.description, p.status, p.featured, p.sort_order AS sortOrder,
       (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
         WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order, c.id LIMIT 1) AS categorySlug
@@ -1305,22 +1510,29 @@ async function getProduct(
     return error("VALIDATION_ERROR", "Định danh sản phẩm quá dài.", 422);
   await cleanupExpiredReservations(env);
   const descriptionSchema = await hasProductDescriptionSchema(env);
+  const comboSchema = await hasComboSchema(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
-      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      ${comboSchema ? "COALESCE(p.product_type, 'STANDARD')" : "'STANDARD'"} AS productType,
+      ${comboSchema ? "p.base_price_vnd" : "NULL"} AS basePriceVnd,
+      p.short_description AS shortDescription,
       p.description, ${descriptionSchema ? "p.description_content" : "NULL"} AS descriptionContent,
       p.status, p.featured, p.sort_order AS sortOrder,
       (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
         WHERE pc.product_id = p.id AND c.is_active = 1 ORDER BY c.sort_order LIMIT 1) AS categorySlug
      FROM products p LEFT JOIN brands b ON b.id = p.brand_id
-     WHERE p.slug = ? AND p.status != 'HIDDEN' AND p.archived_at IS NULL`,
+     WHERE p.slug = ? AND p.status != 'HIDDEN'`,
   )
     .bind(slug)
     .first<ProductRow>();
   if (!product)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  if (product.productType === "COMBO") {
+    const comboConfig = await getComboConfig(product.id, env);
+    if (!comboConfig) return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  }
   const [hydrated] = await hydrateProducts(
     [product],
     env,
@@ -1343,11 +1555,14 @@ async function listCuratedVariantSection(
   const tagGroupSchema = await hasTagGroupSchema(env);
   if (!tagGroupSchema) return [];
   const variantRetirementSchema = await hasVariantRetirementSchema(env);
+  const productTypeSchema = await hasProductTypeSchema(env);
   const result = await env.DB.prepare(
     `SELECT DISTINCT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
        p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
        p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
-       p.archived_at AS archivedAt, p.short_description AS shortDescription,
+       ${productTypeSchema ? "COALESCE(p.product_type, 'STANDARD')" : "'STANDARD'"} AS productType,
+       ${productTypeSchema ? "p.base_price_vnd" : "NULL"} AS basePriceVnd,
+       p.short_description AS shortDescription,
        p.description, p.status, p.featured, p.sort_order AS sortOrder,
        pv.id AS featuredVariantId,
        (SELECT c.slug FROM product_categories pc JOIN categories c ON c.id = pc.category_id
@@ -1362,7 +1577,6 @@ async function listCuratedVariantSection(
        AND t.is_active = 1
        AND tg.is_active = 1
        AND p.status != 'HIDDEN'
-       AND p.archived_at IS NULL
        AND pv.availability != 'HIDDEN'
        ${variantRetirementSchema ? "AND pv.archived_at IS NULL" : ""}
      ORDER BY pv.sort_order, pv.id
@@ -1464,6 +1678,7 @@ async function getAdminRequests(request: Request, env: Env) {
 async function getAdminRequest(id: string, env: Env) {
   await cleanupExpiredReservations(env);
   const inventorySchema = await hasInventorySchema(env);
+  const comboSchema = await hasComboSchema(env);
   const cartRequest = await env.DB.prepare(
     `SELECT id, public_code AS publicCode, customer_name AS customerName,
       customer_phone AS customerPhone, customer_contact AS customerContact,
@@ -1491,10 +1706,41 @@ async function getAdminRequest(id: string, env: Env) {
   if (!cartRequest)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy giỏ hàng.", 404);
   const items = await env.DB.prepare(
-    "SELECT id, product_id AS productId, variant_id AS variantId, product_name_snapshot AS productName, variant_name_snapshot AS variantName, sku_snapshot AS sku, image_key_snapshot AS imageKey, unit_price_vnd AS priceVnd, quantity, line_total_vnd AS lineTotalVnd, created_at AS createdAt FROM cart_request_items WHERE cart_request_id = ? ORDER BY created_at",
+    `SELECT id, product_id AS productId, variant_id AS variantId,
+       product_name_snapshot AS productName, variant_name_snapshot AS variantName,
+       sku_snapshot AS sku, image_key_snapshot AS imageKey,
+       unit_price_vnd AS priceVnd, quantity, line_total_vnd AS lineTotalVnd,
+       created_at AS createdAt${comboSchema
+         ? ", line_type AS lineType, combo_product_id AS comboProductId, combo_version AS comboVersion, combo_selection_json AS comboSelectionJson"
+         : ""}
+     FROM cart_request_items WHERE cart_request_id = ? ORDER BY created_at, id`,
   )
     .bind(id)
     .all<CartItemSnapshotRow>();
+  const comboComponentsByItem = new Map<string, CartComboComponentSnapshot[]>();
+  if (comboSchema && items.results.length) {
+    const itemIds = items.results.map((item) => item.id);
+    const componentRows = await env.DB.prepare(
+      `SELECT id, cart_request_item_id AS cartRequestItemId,
+         group_id AS groupId, group_name_snapshot AS groupName,
+         group_item_id AS groupItemId, variant_id AS variantId,
+         product_id AS productId, product_name_snapshot AS productName,
+         variant_name_snapshot AS variantName, sku_snapshot AS sku,
+         image_key_snapshot AS imageKey, quantity,
+         price_adjustment_vnd AS priceAdjustmentVnd, created_at AS createdAt
+       FROM cart_request_combo_components
+       WHERE cart_request_item_id IN (${itemIds.map(() => "?").join(",")})
+       ORDER BY created_at, id`,
+    )
+      .bind(...itemIds)
+      .all<CartComboComponentSnapshot & { cartRequestItemId: string }>();
+    componentRows.results.forEach((component) => {
+      const current = comboComponentsByItem.get(component.cartRequestItemId) ?? [];
+      const { cartRequestItemId: _cartRequestItemId, ...snapshot } = component;
+      current.push(snapshot);
+      comboComponentsByItem.set(component.cartRequestItemId, current);
+    });
+  }
   const [reservations, promotionReservations, promotionSchema, promotionHistory] = await Promise.all([
     listActiveReservations(id, env),
     listPromotionReservations(id, env),
@@ -1515,7 +1761,14 @@ async function getAdminRequest(id: string, env: Env) {
       serverNow: new Date().toISOString(),
       reservations,
       promotionReservations,
-      items: items.results.map(mapCartItemSnapshot),
+      items: items.results.map((item) =>
+        mapCartItemSnapshot({
+          ...item,
+          ...(comboSchema
+            ? { comboComponents: comboComponentsByItem.get(item.id) ?? [] }
+            : {}),
+        }),
+      ),
     },
   });
 }
@@ -1645,6 +1898,8 @@ async function uploadDescriptionImage(request: Request, env: Env) {
 }
 
 type AdminProductInput = {
+  productType?: "STANDARD" | "COMBO" | string;
+  basePriceVnd?: number | string | null;
   name?: string;
   slug?: string;
   brand?: string;
@@ -1743,13 +1998,21 @@ function validateAdminProduct(input: unknown) {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const slugInput = typeof body.slug === "string" ? body.slug.trim() : "";
   const slug = normalizeSlug(slugInput || name);
+  const productType = body.productType === undefined ? "STANDARD" : body.productType;
+  const rawBasePrice = body.basePriceVnd;
+  const basePriceVnd =
+    rawBasePrice === null || rawBasePrice === undefined || (typeof rawBasePrice === "string" && !rawBasePrice.trim())
+      ? null
+      : Number(rawBasePrice);
   const statuses = ["AVAILABLE", "OUT_OF_STOCK", "HIDDEN"];
   if (
     !name ||
     name.length > 180 ||
     !slug ||
     !statuses.includes(body.status ?? "AVAILABLE") ||
-    !Array.isArray(body.variants)
+    !["STANDARD", "COMBO"].includes(productType) ||
+    !Array.isArray(body.variants) ||
+    (productType === "COMBO" && (!Number.isSafeInteger(basePriceVnd) || (basePriceVnd as number) < 0))
   )
     invalid();
   const rawVariants = body.variants!;
@@ -2001,6 +2264,8 @@ function validateAdminProduct(input: unknown) {
     images,
     descriptionContent,
     descriptionUploadSessionId,
+    productType,
+    basePriceVnd,
     legacyProductFieldsProvided,
     legacyProductTaxonomyProvided,
   };
@@ -2013,11 +2278,14 @@ async function readAdminProductData(
 ) {
   await cleanupExpiredReservations(env);
   const descriptionSchema = await hasProductDescriptionSchema(env);
+  const comboSchema = await hasComboSchema(env);
   const product = await env.DB.prepare(
     `SELECT p.id, p.name, p.slug, COALESCE(b.name, p.brand) AS brand,
       p.brand_id AS brandId, b.slug AS brandSlug, p.min_age_months AS minAgeMonths,
       p.is_best_seller AS isBestSeller, p.best_seller_rank AS bestSellerRank,
-      p.archived_at AS archivedAt, p.short_description AS shortDescription,
+      ${comboSchema ? "COALESCE(p.product_type, 'STANDARD')" : "'STANDARD'"} AS productType,
+      ${comboSchema ? "p.base_price_vnd" : "NULL"} AS basePriceVnd,
+      p.short_description AS shortDescription,
       p.description, ${descriptionSchema ? "p.description_content" : "NULL"} AS descriptionContent,
       p.status, p.featured, p.sort_order AS sortOrder
      FROM products p LEFT JOIN brands b ON b.id = p.brand_id WHERE p.id = ?`,
@@ -2088,8 +2356,12 @@ async function readAdminProductData(
         productId: id,
       }),
     );
+  const comboConfig = comboSchema && product.productType === "COMBO"
+    ? await getComboConfig(id, env)
+    : null;
   return {
     ...product,
+    ...(comboConfig ? { comboConfig } : {}),
     descriptionContent,
     descriptionAssets: mapProductDescriptionAssets(
       descriptionAssetRows,
@@ -2140,6 +2412,7 @@ async function saveAdminProduct(
   request: Request,
   env: Env,
   id?: string,
+  allowComboEndpoint = false,
 ) {
   let body: ReturnType<typeof validateAdminProduct>;
   try {
@@ -2168,10 +2441,25 @@ async function saveAdminProduct(
     return error("VALIDATION_ERROR", "Thông tin sản phẩm chưa hợp lệ.", 422);
   }
   const productId = id ?? crypto.randomUUID();
+  const productTypeSchema = await hasProductTypeSchema(env);
+  if (body.productType === "COMBO" && !productTypeSchema)
+    return error(
+      "COMBO_SCHEMA_UNAVAILABLE",
+      "Cấu hình Combo chưa sẵn sàng trên cơ sở dữ liệu.",
+      409,
+    );
+  if (body.productType === "COMBO" && !allowComboEndpoint)
+    return error(
+      "COMBO_ENDPOINT_REQUIRED",
+      "Hãy dùng endpoint quản lý Combo để tạo hoặc sửa Combo.",
+      422,
+    );
   const existingProduct = id
     ? await env.DB.prepare(
         `SELECT id, min_age_months AS minAgeMonths,
-           is_best_seller AS isBestSeller, best_seller_rank AS bestSellerRank
+           is_best_seller AS isBestSeller, best_seller_rank AS bestSellerRank,
+           ${productTypeSchema ? "COALESCE(product_type, 'STANDARD')" : "'STANDARD'"} AS productType,
+           ${productTypeSchema ? "base_price_vnd" : "NULL"} AS basePriceVnd
          FROM products WHERE id = ?`,
       )
         .bind(id)
@@ -2180,10 +2468,18 @@ async function saveAdminProduct(
           minAgeMonths: number | null;
           isBestSeller: number;
           bestSellerRank: number | null;
+          productType: string;
+          basePriceVnd: number | null;
         }>()
     : null;
   if (id && !existingProduct)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
+  if (id && existingProduct && existingProduct.productType !== body.productType)
+    return error(
+      "PRODUCT_TYPE_IMMUTABLE",
+      "Không thể đổi loại Product sau khi đã tạo.",
+      409,
+    );
 
   const descriptionContentProvided = body.descriptionContent !== undefined;
   const descriptionSchema = descriptionContentProvided
@@ -2229,12 +2525,18 @@ async function saveAdminProduct(
     }
   }
 
-  const [inventorySchema, variantRetirementSchema, variantMediaSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, variantMediaSchema, detachedVariantHistorySchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
     hasVariantMediaSchema(env),
+    hasDetachedVariantHistorySchema(env),
   ]);
+  const comboSchema = await hasComboSchema(env);
   const tagGroupSchema = await hasTagGroupSchema(env);
+  const promotionGiftHistorySchema = await hasDatabaseTable(
+    env,
+    "cart_request_promotion_gifts",
+  );
   const variantMediaRequested = body.variants.some(
     (variant) => Boolean(variant.packageSize) || Boolean(variant.images?.length),
   );
@@ -2296,20 +2598,40 @@ async function saveAdminProduct(
     existingVariants.results.map((variant) => variant.id),
   );
   const deletedVariantIds = new Set(body.deletedVariantIds);
+  const affectedComboProductIds =
+    comboSchema && deletedVariantIds.size
+      ? (
+          await env.DB.prepare(
+            `SELECT DISTINCT g.combo_product_id AS productId
+             FROM combo_group_items i
+             JOIN combo_groups g ON g.id = i.group_id
+             WHERE i.variant_id IN (${[...deletedVariantIds].map(() => "?").join(",")})`,
+          )
+            .bind(...deletedVariantIds)
+            .all<{ productId: string }>()
+        ).results.map((row) => row.productId)
+      : [];
   const historicalVariantIds = new Set<string>();
   if (variantRetirementSchema && id && deletedVariantIds.size) {
     const placeholders = [...deletedVariantIds].map(() => "?").join(",");
+    const historicalSources = [
+      ...(inventorySchema
+        ? [
+            "SELECT variant_id FROM inventory_movements",
+            "SELECT variant_id FROM inventory_reservations",
+          ]
+        : []),
+      "SELECT variant_id FROM cart_request_items",
+      ...(promotionGiftHistorySchema
+        ? ["SELECT variant_id FROM cart_request_promotion_gifts"]
+        : []),
+      ...(comboSchema
+        ? ["SELECT variant_id FROM cart_request_combo_components"]
+        : []),
+    ];
     const historical = await env.DB.prepare(
       `SELECT DISTINCT variant_id AS variantId
-       FROM (
-         SELECT variant_id FROM inventory_movements
-         UNION ALL
-         SELECT variant_id FROM inventory_reservations
-         UNION ALL
-         SELECT variant_id FROM cart_request_items
-         UNION ALL
-         SELECT variant_id FROM cart_request_promotion_gifts
-       ) AS history
+       FROM (${historicalSources.join(" UNION ALL ")}) AS history
        WHERE variant_id IN (${placeholders})`,
     )
       .bind(...deletedVariantIds)
@@ -2416,7 +2738,7 @@ async function saveAdminProduct(
   ).length;
   const finalVariantCount =
     activeExistingVariantIds.size - deletedActiveVariantCount + newVariantCount;
-  if (finalVariantCount < 1)
+  if (body.productType === "STANDARD" && finalVariantCount < 1)
     return error(
       "AT_LEAST_ONE_VARIANT",
       "Sản phẩm cần có ít nhất một phân loại.",
@@ -2451,6 +2773,40 @@ async function saveAdminProduct(
         return error(
           "INVALID_CATEGORY",
           "Nhóm sản phẩm không tồn tại hoặc đang bị ẩn.",
+          422,
+        );
+    }
+  }
+  if (body.tagIds !== undefined) {
+    const existing = id
+      ? await env.DB.prepare(
+          "SELECT tag_id AS id FROM product_tags WHERE product_id = ?",
+        )
+          .bind(productId)
+          .all<{ id: string }>()
+      : { results: [] as Array<{ id: string }> };
+    const existingIds = new Set(existing.results.map((item) => item.id));
+    const uniqueTagIds = [...new Set(body.tagIds)];
+    if (uniqueTagIds.length !== body.tagIds.length)
+      return error(
+        "INVALID_TAG",
+        "Danh sách nhãn Product không được trùng.",
+        422,
+      );
+    if (uniqueTagIds.length) {
+      const placeholders = uniqueTagIds.map(() => "?").join(",");
+      const rows = await env.DB.prepare(
+        `SELECT id, is_active AS isActive FROM tags WHERE id IN (${placeholders})`,
+      )
+        .bind(...uniqueTagIds)
+        .all<{ id: string; isActive: number }>();
+      if (
+        rows.results.length !== uniqueTagIds.length ||
+        rows.results.some((item) => !item.isActive && !existingIds.has(item.id))
+      )
+        return error(
+          "INVALID_TAG",
+          "Nhãn Product không tồn tại hoặc đang bị ẩn.",
           422,
         );
     }
@@ -2491,7 +2847,10 @@ async function saveAdminProduct(
       .bind(...skuValues)
       .all<{ id: string; productId: string; sku: string }>();
     for (const row of skuRows.results) {
-      if (deletedVariantIds.has(row.id) && !historicalVariantIds.has(row.id))
+      if (
+        deletedVariantIds.has(row.id) &&
+        (!historicalVariantIds.has(row.id) || detachedVariantHistorySchema)
+      )
         continue;
       const incoming = body.variants.find((variant) => variant.sku === row.sku);
       const isSameVariant =
@@ -2616,7 +2975,6 @@ async function saveAdminProduct(
         ? ["description_content = ?"]
         : []),
       "status = ?",
-      "archived_at = CASE WHEN ? != 'HIDDEN' THEN NULL ELSE archived_at END",
       "featured = ?",
       "sort_order = ?",
       "updated_at = ?",
@@ -2628,12 +2986,15 @@ async function saveAdminProduct(
         ? [richDescriptionJson]
         : []),
       body.status,
-      body.status,
       body.featured,
       body.sortOrder,
       now,
       productId,
     );
+    if (productTypeSchema) {
+      setClauses.splice(4, 0, "product_type = ?", "base_price_vnd = ?");
+      values.splice(4, 0, body.productType, body.basePriceVnd);
+    }
     productStatement = env.DB.prepare(
       `UPDATE products SET ${setClauses.join(", ")} WHERE id = ?`,
     ).bind(...values);
@@ -2642,6 +3003,7 @@ async function saveAdminProduct(
       "id",
       "name",
       "slug",
+      ...(productTypeSchema ? ["product_type", "base_price_vnd"] : []),
       "brand_id",
       "min_age_months",
       "is_best_seller",
@@ -2661,6 +3023,7 @@ async function saveAdminProduct(
       productId,
       body.name,
       body.slug,
+      ...(productTypeSchema ? [body.productType, body.basePriceVnd] : []),
       body.brandId,
       legacyMinAgeMonths,
       legacyIsBestSeller,
@@ -2720,19 +3083,41 @@ async function saveAdminProduct(
       ),
     );
   }
-  // Chỉ xóa cứng variant chưa từng được tham chiếu; lịch sử phải giữ FK hợp lệ.
+  // DB mới tách FK lịch sử để Variant có thể xóa cứng; DB cũ vẫn retire mềm an toàn.
   [...deletedVariantIds].forEach((variantId) => {
-    if (historicalVariantIds.has(variantId))
+    if (historicalVariantIds.has(variantId) && !detachedVariantHistorySchema)
       statements.push(
         env.DB.prepare(
           "UPDATE product_variants SET availability = 'HIDDEN', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ? AND product_id = ?",
         ).bind(now, now, variantId, productId),
       );
-    else
+    else {
+      // Gỡ liên kết hiển thị nhưng giữ nguyên snapshot đơn hàng/quà tặng.
+      statements.push(
+        env.DB.prepare(
+          "UPDATE cart_request_items SET variant_id = NULL WHERE variant_id = ?",
+        ).bind(variantId),
+        ...(promotionGiftHistorySchema
+          ? [
+              env.DB.prepare(
+                "UPDATE cart_request_promotion_gifts SET variant_id = NULL WHERE variant_id = ?",
+              ).bind(variantId),
+            ]
+          : []),
+      );
       statements.push(
         env.DB.prepare(
           "DELETE FROM product_variants WHERE id = ? AND product_id = ?",
         ).bind(variantId, productId),
+      );
+    }
+    if (comboSchema)
+      statements.push(
+        // Gỡ membership hiện tại và tách FK lịch sử trước khi Variant bị xóa cứng.
+        env.DB.prepare(
+          "UPDATE cart_request_combo_components SET variant_id = NULL WHERE variant_id = ?",
+        ).bind(variantId),
+        env.DB.prepare("DELETE FROM combo_group_items WHERE variant_id = ?").bind(variantId),
       );
   });
   body.variants.forEach((variant, variantIndex) => {
@@ -2748,13 +3133,8 @@ async function saveAdminProduct(
         stockOnHand !== current.stockOnHand
       )
         statements.push(
-          env.DB.prepare(
-            `INSERT INTO inventory_movements (
-              id, variant_id, movement_type, quantity_delta,
-              stock_before, stock_after, note, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(
-            crypto.randomUUID(),
+          buildInventoryMovementStatement(
+            (sql) => env.DB.prepare(sql),
             variant.id,
             stockOnHand > current.stockOnHand ? "RESTOCK" : "MANUAL_ADJUSTMENT",
             stockOnHand - current.stockOnHand,
@@ -2762,6 +3142,7 @@ async function saveAdminProduct(
             stockOnHand,
             "Điều chỉnh tồn kho từ Admin.",
             now,
+            detachedVariantHistorySchema,
           ),
         );
       statements.push(
@@ -2903,18 +3284,16 @@ async function saveAdminProduct(
       );
       if (inventorySchema)
         statements.push(
-          env.DB.prepare(
-            `INSERT INTO inventory_movements (
-              id, variant_id, movement_type, quantity_delta,
-              stock_before, stock_after, note, created_at
-            ) VALUES (?, ?, 'INITIAL_STOCK', ?, 0, ?, ?, ?)`,
-          ).bind(
-            crypto.randomUUID(),
+          buildInventoryMovementStatement(
+            (sql) => env.DB.prepare(sql),
             persistedVariantId,
+            "INITIAL_STOCK",
             stockOnHand,
+            0,
             stockOnHand,
             "Tồn kho ban đầu từ Admin.",
             now,
+            detachedVariantHistorySchema,
           ),
         );
     }
@@ -3018,6 +3397,13 @@ async function saveAdminProduct(
       409,
     );
   }
+  const revalidatedCombos = comboSchema
+    ? await Promise.all(
+        [...new Set(affectedComboProductIds)].map((comboProductId) =>
+          revalidateComboProduct(comboProductId, env),
+        ),
+      )
+    : [];
   const persistedProduct = await readAdminProductData(
     productId,
     env,
@@ -3029,6 +3415,7 @@ async function saveAdminProduct(
       id: productId,
       slug: body.slug,
       product: persistedProduct,
+      affectedCombos: revalidatedCombos,
     },
     id ? 200 : 201,
   );
@@ -3040,9 +3427,10 @@ async function duplicateAdminProduct(id: string, env: Env) {
     .first<Record<string, unknown>>();
   if (!source)
     return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
-  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+  const [inventorySchema, variantRetirementSchema, detachedVariantHistorySchema] = await Promise.all([
     hasInventorySchema(env),
     hasVariantRetirementSchema(env),
+    hasDetachedVariantHistorySchema(env),
   ]);
   const tagGroupSchema = await hasTagGroupSchema(env);
   const variants = await env.DB.prepare(
@@ -3118,18 +3506,16 @@ async function duplicateAdminProduct(id: string, env: Env) {
       );
       if (inventorySchema)
         statements.push(
-          env.DB.prepare(
-            `INSERT INTO inventory_movements (
-              id, variant_id, movement_type, quantity_delta,
-              stock_before, stock_after, note, created_at
-            ) VALUES (?, ?, 'INITIAL_STOCK', ?, 0, ?, ?, ?)`,
-          ).bind(
-            crypto.randomUUID(),
+          buildInventoryMovementStatement(
+            (sql) => env.DB.prepare(sql),
             variantId,
-            variant.stock_on_hand ?? 0,
-            variant.stock_on_hand ?? 0,
+            "INITIAL_STOCK",
+            Number(variant.stock_on_hand ?? 0),
+            0,
+            Number(variant.stock_on_hand ?? 0),
             "Tồn kho ban đầu của sản phẩm sao chép.",
             now,
+            detachedVariantHistorySchema,
           ),
         );
       if (tagGroupSchema)
@@ -3146,24 +3532,6 @@ async function duplicateAdminProduct(id: string, env: Env) {
   );
   await env.DB.batch(statements);
   return json({ success: true, id: newId }, 201);
-}
-
-async function archiveAdminProduct(id: string, env: Env) {
-  const exists = await env.DB.prepare("SELECT id FROM products WHERE id = ?")
-    .bind(id)
-    .first();
-  if (!exists)
-    return error("PRODUCT_NOT_FOUND", "Không tìm thấy sản phẩm.", 404);
-  const now = new Date().toISOString();
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE products SET status = 'HIDDEN', archived_at = COALESCE(archived_at, ?), updated_at = ? WHERE id = ?",
-    ).bind(now, now, id),
-    env.DB.prepare(
-      "UPDATE product_variants SET availability = 'HIDDEN', updated_at = ? WHERE product_id = ?",
-    ).bind(now, id),
-  ]);
-  return json({ success: true, id, archivedAt: now });
 }
 
 async function getAdminCategory(id: string, env: Env) {
@@ -3720,9 +4088,91 @@ async function handleApi(
       decodeURIComponent(promotionStatusMatch[1]),
       env,
     );
+  if (request.method === "GET" && path === "/api/admin/combo-variants")
+    return listAdminComboVariants(request, env);
+  if (request.method === "POST" && path === "/api/admin/combos")
+    return saveAdminComboProduct(request, env);
+  const adminComboMatch = path.match(/^\/api\/admin\/combos\/([^/]+)$/);
+  const adminComboConfigMatch = path.match(
+    /^\/api\/admin\/combos\/([^/]+)\/config$/,
+  );
+  const adminComboGroupsMatch = path.match(
+    /^\/api\/admin\/combos\/([^/]+)\/groups$/,
+  );
+  const adminComboGroupMatch = path.match(
+    /^\/api\/admin\/combos\/([^/]+)\/groups\/([^/]+)$/,
+  );
+  if (request.method === "GET" && adminComboMatch)
+    return getAdminProduct(
+      decodeURIComponent(adminComboMatch[1]),
+      env,
+      getProductImageUrlStrategy(env.ENVIRONMENT),
+    );
+  if ((request.method === "PUT" || request.method === "PATCH") && adminComboMatch)
+    return saveAdminComboProduct(request, env, decodeURIComponent(adminComboMatch[1]));
+  if ((request.method === "PUT" || request.method === "PATCH") && adminComboConfigMatch)
+    return saveAdminComboConfig(
+      request,
+      decodeURIComponent(adminComboConfigMatch[1]),
+      env,
+    );
+  if (request.method === "POST" && adminComboGroupsMatch)
+    return saveAdminComboGroup(
+      request,
+      decodeURIComponent(adminComboGroupsMatch[1]),
+      env,
+    );
+  if ((request.method === "PUT" || request.method === "PATCH") && adminComboGroupMatch)
+    return saveAdminComboGroup(
+      request,
+      decodeURIComponent(adminComboGroupMatch[1]),
+      env,
+      decodeURIComponent(adminComboGroupMatch[2]),
+    );
+  if (request.method === "DELETE" && adminComboGroupMatch)
+    return deleteAdminComboGroup(decodeURIComponent(adminComboGroupMatch[2]), env);
+  const adminComboGroupStandaloneMatch = path.match(
+    /^\/api\/admin\/combo-groups\/([^/]+)$/,
+  );
+  const adminComboGroupItemsMatch = path.match(
+    /^\/api\/admin\/combo-groups\/([^/]+)\/items$/,
+  );
+  if ((request.method === "PUT" || request.method === "PATCH") && adminComboGroupStandaloneMatch)
+    return saveAdminComboGroup(
+      request,
+      "",
+      env,
+      decodeURIComponent(adminComboGroupStandaloneMatch[1]),
+    );
+  if (request.method === "POST" && adminComboGroupItemsMatch)
+    return saveAdminComboItem(
+      request,
+      decodeURIComponent(adminComboGroupItemsMatch[1]),
+      env,
+    );
+  if (request.method === "DELETE" && adminComboGroupStandaloneMatch)
+    return deleteAdminComboGroup(
+      decodeURIComponent(adminComboGroupStandaloneMatch[1]),
+      env,
+    );
+  const adminComboItemMatch = path.match(
+    /^\/api\/admin\/combo-group-items\/([^/]+)$/,
+  );
+  if ((request.method === "PUT" || request.method === "PATCH") && adminComboItemMatch)
+    return saveAdminComboItem(
+      request,
+      "",
+      env,
+      decodeURIComponent(adminComboItemMatch[1]),
+    );
+  if (request.method === "DELETE" && adminComboItemMatch)
+    return deleteAdminComboItem(decodeURIComponent(adminComboItemMatch[1]), env);
   if (request.method === "GET" && path === "/api/admin/products")
     return listProducts(request, env, true);
   const productMatch = path.match(/^\/api\/admin\/products\/([^/]+)$/);
+  const productDeletePreflightMatch = path.match(
+    /^\/api\/admin\/products\/([^/]+)\/delete-preflight$/,
+  );
   const duplicateMatch = path.match(
     /^\/api\/admin\/products\/([^/]+)\/duplicate$/,
   );
@@ -3734,10 +4184,20 @@ async function handleApi(
       env,
       getProductImageUrlStrategy(env.ENVIRONMENT),
     );
+  if (request.method === "GET" && productDeletePreflightMatch)
+    return getProductDeletePreflight(
+      decodeURIComponent(productDeletePreflightMatch[1]),
+      env,
+    );
   if (request.method === "PUT" && productMatch)
     return saveAdminProduct(request, env, productMatch[1]);
   if (request.method === "DELETE" && productMatch)
-    return archiveAdminProduct(productMatch[1], env);
+    return hardDeleteProduct(
+      decodeURIComponent(productMatch[1]),
+      env,
+      ctx,
+      await readProductDeleteConfirmation(request),
+    );
   if (request.method === "POST" && duplicateMatch)
     return duplicateAdminProduct(duplicateMatch[1], env);
   if (request.method === "GET" && path === "/api/admin/categories")
@@ -3995,6 +4455,16 @@ export default {
       console.error(
         JSON.stringify({
           message: "product description asset cleanup failed",
+          errorType: caught instanceof Error ? caught.name : "UNKNOWN",
+        }),
+      );
+    }
+    try {
+      await processProductStorageCleanup(env);
+    } catch (caught) {
+      console.error(
+        JSON.stringify({
+          event: "product_storage_cleanup_queue_failed",
           errorType: caught instanceof Error ? caught.name : "UNKNOWN",
         }),
       );

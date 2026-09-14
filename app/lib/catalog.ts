@@ -7,6 +7,7 @@ import {
   type CatalogTag,
   type FeaturedCollection,
 } from "../../shared/tag-groups";
+import type { ComboConfig, ComboSelection } from "../../shared/combos";
 
 export type Availability = "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
 export type InventoryAvailability = "AVAILABLE" | "OUT_OF_STOCK";
@@ -70,13 +71,18 @@ export type Product = {
   minAgeMonths?: number | null;
   isBestSeller?: boolean;
   bestSellerRank?: number | null;
-  archivedAt?: string | null;
+  productType?: "STANDARD" | "COMBO";
+  basePriceVnd?: number | null;
+  comboConfig?: ComboConfig | null;
+  status?: Availability;
   tags: string[];
   tagSlugs?: string[];
   featured?: boolean;
   matchedVariantId?: string | null;
   variants: Variant[];
 };
+
+export type ComboCartSelection = ComboSelection;
 
 export type Category = {
   id: string;

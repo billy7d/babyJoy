@@ -18,6 +18,7 @@ import "./storefront-product-media.css";
 import "./product-description.css";
 import "./product-description-heading.css";
 import "./product-detail.css";
+import "./combo.css";
 import { StoreSettingsProvider } from "./lib/store-settings";
 
 export const links: Route.LinksFunction = () => [

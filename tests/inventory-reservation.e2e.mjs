@@ -20,8 +20,9 @@ let requestAId = "";
 let requestAPrepareRetryId = "";
 let requestARetryId = "";
 let requestBId = "";
-const inventoryPromotionName = "E2E Reservation Promotion";
-const inventoryPromotionDescription = "Promotion dùng để kiểm tra reservation.";
+const inventoryPromotionSuffix = randomUUID().slice(0, 8);
+const inventoryPromotionName = "E2E Reservation Promotion " + inventoryPromotionSuffix;
+const inventoryPromotionDescription = "Promotion dùng để kiểm tra reservation " + inventoryPromotionSuffix + ".";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -669,7 +670,7 @@ try {
   if (promotionId)
     await jsonRequest("DELETE", "/api/admin/promotions/" + promotionId).catch(() => undefined);
   if (productId)
-    await jsonRequest("DELETE", "/api/admin/products/" + productId).catch(() => undefined);
+    await jsonRequest("DELETE", "/api/admin/products/" + productId, { confirmation: "DELETE" }).catch(() => undefined);
   await api.dispose();
   await browser.close();
 }

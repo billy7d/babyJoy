@@ -235,13 +235,16 @@ export function ProductCard({
   product: Product;
   compact?: boolean;
 }) {
+  const isCombo = product.productType === "COMBO";
   const matchedVariant = getMatchedVariant(product);
   const displayVariant = getDisplayVariant(product) ?? matchedVariant;
   const cardVariant = product.matchedVariantId ? matchedVariant : displayVariant;
   const visibleVariants = product.variants.filter(
     (item) => getVariantStatus(item) !== "HIDDEN",
   );
-  const unavailable = !cardVariant || !isVariantPurchasable(cardVariant);
+  const unavailable = isCombo
+    ? product.status === "HIDDEN" || !product.comboConfig
+    : !cardVariant || !isVariantPurchasable(cardVariant);
   const variantTags = cardVariant?.tags ?? [];
   const hasVariantTagPayload = cardVariant?.tags !== undefined;
   const cardTags = variantTags.length
@@ -271,6 +274,7 @@ export function ProductCard({
           loading="lazy"
         />
         <span className="product-tags">
+          {isCombo && <Tag tone="primary">COMBO</Tag>}
           {cardTags.map((tag) => (
             <Tag key={tag.id} tone={tag.showBadge ? "primary" : "secondary"}>
               {tag.displayName ?? tag.name}
@@ -293,12 +297,18 @@ export function ProductCard({
         <div className="product-foot">
           {visibleVariants.length > 1 && !product.matchedVariantId && <small className="price-prefix">Từ</small>}
           <span className="product-card-price">
-            <Price value={cardVariant?.priceVnd ?? 0} />
-            {cardVariant?.compareAtPriceVnd && cardVariant.compareAtPriceVnd > cardVariant.priceVnd && (
+            <Price value={isCombo ? product.basePriceVnd ?? 0 : cardVariant?.priceVnd ?? 0} />
+            {!isCombo && cardVariant?.compareAtPriceVnd && cardVariant.compareAtPriceVnd > cardVariant.priceVnd && (
               <del>{formatVnd(cardVariant.compareAtPriceVnd)}</del>
             )}
           </span>
-          <InlineCartControl product={product} variant={cardVariant} />
+          {isCombo ? (
+            <Link className="inline-cart-add" to={productLink}>
+              {unavailable ? "Chưa sẵn sàng" : "Xem Combo"}
+            </Link>
+          ) : (
+            <InlineCartControl product={product} variant={cardVariant} />
+          )}
         </div>
       </div>
     </article>
@@ -404,6 +414,7 @@ export function QuantityStepper({
 
 const adminLinks = [
   ["/admin/products", "restaurant_menu", "Sản phẩm"],
+  ["/admin/combos/new", "tune", "Combo"],
   ["/admin/promotions", "local_offer", "Khuyến mãi"],
   ["/admin/content-pages", "article", "Trang nội dung"],
   ["/admin/categories", "category", "Danh mục"],
@@ -640,6 +651,43 @@ export function cartDetails(
   products: Product[],
 ) {
   return items.flatMap((line) => {
+    if (line.lineType === "COMBO") {
+      const combo = products.find((product) => product.id === line.comboProductId);
+      const variant: Variant = {
+        id: line.variantId,
+        name: line.variantName ?? "Combo",
+        sku: line.sku ?? "",
+        priceVnd: line.priceVnd ?? combo?.basePriceVnd ?? 0,
+        availability:
+          combo?.status === "HIDDEN" || !combo?.comboConfig
+            ? "HIDDEN"
+            : combo.status === "OUT_OF_STOCK"
+              ? "OUT_OF_STOCK"
+              : "AVAILABLE",
+      };
+      const product: Product = combo ?? {
+        id: line.comboProductId ?? line.productId ?? `removed-${line.variantId}`,
+        slug: "",
+        name: line.productName ?? "Combo không còn tồn tại",
+        brand: "",
+        shortDescription: "",
+        description: "",
+        image: line.imageUrl ?? PRODUCT_IMAGE_PLACEHOLDER,
+        category: "",
+        age: "",
+        tags: [],
+        variants: [],
+        productType: "COMBO",
+        basePriceVnd: line.priceVnd ?? 0,
+      };
+      return [{
+        product,
+        variant,
+        ...line,
+        unavailable: variant.availability !== "AVAILABLE",
+        lineTotal: variant.priceVnd * line.quantity,
+      }];
+    }
     const found = findVariantInProducts(products, line.variantId);
     if (found)
       return [

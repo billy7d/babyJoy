@@ -6,6 +6,7 @@ import { CatalogProvider } from "../lib/catalog-context";
 import { AccessRequiredPage } from "../components/access-required";
 import { CartPage, CartShareGuidePage, CategoriesPage, HomePage, ProductDetailPage, ProductListPage, PublicCartSharePage, SuccessPage } from "../components/public-pages";
 import { AdminCartRequestDetailPage, AdminCartRequestsPage, AdminProductsPage, AdminSettingsPage, AdminTaxonomyPage, ProductEditorPage } from "../components/admin-pages";
+import { ComboEditorPage } from "../components/combo-admin-pages";
 import { AdminAccessLinksPage } from "../components/admin-access-links";
 import { AdminPromotionsPage, PromotionEditorPage } from "../components/promotion-pages";
 import {
@@ -63,6 +64,7 @@ function RoutedContent() {
     return <AdminContentPageEditorPage />;
   if (pathname === "/admin/products") return <AdminProductsPage />;
   if (pathname === "/admin/products/new" || /^\/admin\/products\/[^/]+\/edit$/.test(pathname)) return <ProductEditorPage />;
+  if (pathname === "/admin/combos/new" || /^\/admin\/combos\/[^/]+\/edit$/.test(pathname)) return <ComboEditorPage />;
   if (pathname === "/admin/promotions") return <AdminPromotionsPage />;
   if (pathname === "/admin/promotions/new" || /^\/admin\/promotions\/[^/]+\/edit$/.test(pathname)) return <PromotionEditorPage />;
   if (pathname === "/admin/categories") return <AdminTaxonomyPage type="categories" />;

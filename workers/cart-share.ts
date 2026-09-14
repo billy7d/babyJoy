@@ -1,17 +1,25 @@
 import { getPublicImageUrl, normalizeR2Key } from "../shared/images";
-import { generatePublicCode, type PricedItem } from "./services";
+import {
+  generatePublicCode,
+  type CartComboComponentSnapshot,
+  type PricedItem,
+} from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
 import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 import { loadStoreSettings } from "./store-settings";
 import {
+  buildCartRequestItemStatements,
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
   hasPromotionSchema,
   loadPromotionHistory,
   PromotionCartError,
   type AuthoritativeCartEvaluation,
+  type PromotionCartRequestItem,
 } from "./promotions";
+import { comboLineId, type ComboSelection } from "../shared/combos";
+import { hasComboSchema } from "./combos";
 import {
   buildInventoryReservationStatements,
   buildPromotionReservationStatements,
@@ -20,6 +28,7 @@ import {
   getActiveReservationUsage,
   getCheckoutReservationConfig,
   getReservationAbuseConfig,
+  hasDetachedVariantHistorySchema,
   hasInventorySchema,
   mapInventoryError,
 } from "./inventory";
@@ -61,7 +70,7 @@ export type SellerContact = {
 export type CartSharePrepareBody = {
   submissionToken: string;
   acceptCurrentPrices: boolean;
-  items: Array<{ variantId: string; quantity: number; displayedPrice?: number }>;
+  items: PromotionCartRequestItem[];
 };
 
 export type CartShareActivateBody = CartSharePrepareBody;
@@ -89,6 +98,11 @@ type ShareLinkRow = {
 };
 
 type SnapshotRow = {
+  id: string;
+  lineType?: "STANDARD" | "COMBO";
+  comboProductId?: string | null;
+  comboVersion?: number | null;
+  comboSelectionJson?: string | null;
   variantId?: string | null;
   productName: string;
   variantName: string;
@@ -96,6 +110,7 @@ type SnapshotRow = {
   unitPriceVnd: number;
   quantity: number;
   lineTotalVnd: number;
+  comboComponents?: CartComboComponentSnapshot[];
 };
 
 function json(data: unknown, status = 200, headers = jsonHeaders) {
@@ -214,9 +229,6 @@ export function validateCartSharePrepare(value: unknown): CartSharePrepareBody {
   const items = body.items.map((item) => {
     if (!item || typeof item !== "object") throw new Error("VALIDATION_ERROR");
     const row = item as Record<string, unknown>;
-    const variantId = requiredString(row.variantId, 120);
-    if (seen.has(variantId)) throw new Error("VALIDATION_ERROR");
-    seen.add(variantId);
     const quantity = Number(row.quantity);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99)
       throw new Error("VALIDATION_ERROR");
@@ -227,6 +239,32 @@ export function validateCartSharePrepare(value: unknown): CartSharePrepareBody {
       (!Number.isInteger(displayedPrice) || displayedPrice < 0)
     )
       throw new Error("VALIDATION_ERROR");
+    if (row.lineType === "COMBO") {
+      const comboProductId = requiredString(row.comboProductId, 120);
+      const comboVersion = Number(row.comboVersion);
+      const selection = row.selection ?? row.comboSelection;
+      if (
+        !Number.isSafeInteger(comboVersion) ||
+        comboVersion < 1 ||
+        !selection ||
+        typeof selection !== "object"
+      )
+        throw new Error("VALIDATION_ERROR");
+      const key = comboLineId(comboProductId, selection as ComboSelection);
+      if (seen.has(key)) throw new Error("VALIDATION_ERROR");
+      seen.add(key);
+      return {
+        lineType: "COMBO" as const,
+        comboProductId,
+        comboVersion,
+        selection: selection as ComboSelection,
+        quantity,
+        displayedPrice,
+      };
+    }
+    const variantId = requiredString(row.variantId, 120);
+    if (seen.has(variantId)) throw new Error("VALIDATION_ERROR");
+    seen.add(variantId);
     return { variantId, quantity, displayedPrice };
   });
   return {
@@ -309,7 +347,16 @@ function formatVnd(value: number) {
 export function composeCartShareText(input: {
   code: string;
   storeDisplayName?: string;
-  items: Array<Pick<PricedItem, "productName" | "variantName" | "quantity" | "lineTotalVnd">>;
+  items: Array<
+    Pick<PricedItem, "productName" | "variantName" | "quantity" | "lineTotalVnd"> & {
+      comboComponents?: Array<
+        Pick<
+          CartComboComponentSnapshot,
+          "groupName" | "productName" | "variantName" | "quantity"
+        >
+      >;
+    }
+  >;
   subtotalVnd: number;
   url: string;
   promotionDiscountVnd?: number;
@@ -328,8 +375,16 @@ export function composeCartShareText(input: {
       lines.push(
         `• ${item.productName} — ${item.variantName} × ${item.quantity}`,
         `  ${formatVnd(item.lineTotalVnd)}`,
-        "",
       );
+      if (item.comboComponents?.length) {
+        lines.push("  Thành phần Combo:");
+        item.comboComponents.forEach((component) =>
+          lines.push(
+            `  • ${component.groupName}: ${component.productName} — ${component.variantName} × ${component.quantity}`,
+          ),
+        );
+      }
+      lines.push("");
     });
     if (input.items.length > count)
       lines.push(`+ ${input.items.length - count} sản phẩm khác`, "");
@@ -464,15 +519,45 @@ async function loadLink(cartRequestId: string, env: Env) {
 }
 
 async function loadSnapshots(cartRequestId: string, env: Env) {
+  const comboSchema = await hasComboSchema(env);
   const rows = await env.DB.prepare(
-    `SELECT variant_id AS variantId, product_name_snapshot AS productName,
+    `SELECT id, variant_id AS variantId, product_name_snapshot AS productName,
       variant_name_snapshot AS variantName, image_key_snapshot AS imageKey,
       unit_price_vnd AS unitPriceVnd, quantity, line_total_vnd AS lineTotalVnd
+      ${comboSchema
+        ? ", id, line_type AS lineType, combo_product_id AS comboProductId, combo_version AS comboVersion, combo_selection_json AS comboSelectionJson"
+        : ""}
      FROM cart_request_items WHERE cart_request_id = ? ORDER BY created_at, id`,
   )
     .bind(cartRequestId)
     .all<SnapshotRow>();
-  return rows.results;
+  if (!comboSchema || !rows.results.length) return rows.results;
+  const itemIds = rows.results.map((row) => row.id);
+  const componentRows = await env.DB.prepare(
+    `SELECT id, cart_request_item_id AS cartRequestItemId,
+       group_id AS groupId, group_name_snapshot AS groupName,
+       group_item_id AS groupItemId, variant_id AS variantId,
+       product_id AS productId, product_name_snapshot AS productName,
+       variant_name_snapshot AS variantName, sku_snapshot AS sku,
+       image_key_snapshot AS imageKey, quantity,
+       price_adjustment_vnd AS priceAdjustmentVnd, created_at AS createdAt
+     FROM cart_request_combo_components
+     WHERE cart_request_item_id IN (${itemIds.map(() => "?").join(",")})
+     ORDER BY created_at, id`,
+  )
+    .bind(...itemIds)
+    .all<CartComboComponentSnapshot & { cartRequestItemId: string }>();
+  const byItem = new Map<string, CartComboComponentSnapshot[]>();
+  componentRows.results.forEach((component) => {
+    const current = byItem.get(component.cartRequestItemId) ?? [];
+    const { cartRequestItemId: _cartRequestItemId, ...snapshot } = component;
+    current.push(snapshot);
+    byItem.set(component.cartRequestItemId, current);
+  });
+  return rows.results.map((row) => ({
+    ...row,
+    comboComponents: byItem.get(row.id) ?? [],
+  }));
 }
 
 async function buildPreparedResponse(
@@ -501,6 +586,7 @@ async function buildPreparedResponse(
       variantName: item.variantName,
       quantity: item.quantity,
       lineTotalVnd: item.lineTotalVnd,
+      comboComponents: item.comboComponents,
     })),
     subtotalVnd: row.subtotalVnd,
     url,
@@ -585,6 +671,7 @@ export async function prepareCartShare(
   if (!secret || secret.length < 32)
     return failure("CART_SHARE_NOT_CONFIGURED", "Chia sẻ giỏ hàng chưa được cấu hình.", 503);
   const inventorySchema = await hasInventorySchema(env);
+  const comboSchema = await hasComboSchema(env);
   await cleanupExpiredReservations(env);
 
   const existing = await findShareRequest(body.submissionToken, env);
@@ -722,30 +809,15 @@ export async function prepareCartShare(
           ...(storefront.bindingSchema ? [storefront.sessionId] : []),
         ),
   ];
-  loaded.pricedItems.forEach((item) => {
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO cart_request_items (
-          id, cart_request_id, product_id, variant_id, product_name_snapshot,
-          variant_name_snapshot, sku_snapshot, image_key_snapshot,
-          unit_price_vnd, quantity, line_total_vnd, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        crypto.randomUUID(),
-        id,
-        item.productId,
-        item.variantId,
-        item.productName,
-        item.variantName,
-        item.sku,
-        item.imageKey,
-        item.priceVnd,
-        item.quantity,
-        item.lineTotalVnd,
-        createdAt,
-      ),
-    );
-  });
+  statements.push(
+    ...buildCartRequestItemStatements(
+      (sql) => env.DB.prepare(sql),
+      id,
+      createdAt,
+      loaded.pricedItems,
+      comboSchema,
+    ),
+  );
   statements.push(
     ...promotionStatements.snapshots,
     ...promotionStatements.gifts,
@@ -831,13 +903,37 @@ function sameCartItems(
   items: CartShareActivateBody["items"],
 ) {
   const current = new Map(
-    items.map((item) => [item.variantId, item.quantity]),
+    items.map((item) => [
+      item.lineType === "COMBO"
+        ? comboLineId(item.comboProductId, item.selection)
+        : item.variantId,
+      item.quantity,
+    ]),
   );
   if (snapshots.length !== current.size) return false;
   return snapshots.every(
-    (snapshot) =>
-      snapshot.variantId && current.get(snapshot.variantId) === snapshot.quantity,
+    (snapshot) => {
+      if (snapshot.lineType === "COMBO") {
+        if (!snapshot.comboProductId || !snapshot.comboSelectionJson) return false;
+        const selection = parseComboSelection(snapshot.comboSelectionJson);
+        if (!selection) return false;
+        return current.get(comboLineId(snapshot.comboProductId, selection)) === snapshot.quantity;
+      }
+      return Boolean(snapshot.variantId) && current.get(snapshot.variantId as string) === snapshot.quantity;
+    },
   );
+}
+
+function parseComboSelection(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as ComboSelection
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function promotionEvaluationChanged(
@@ -934,17 +1030,41 @@ export async function activateCartShare(
       "Giỏ hàng đã thay đổi. Vui lòng quay lại chốt lại giỏ hàng.",
       409,
     );
-  if (snapshots.some((snapshot) => !snapshot.variantId))
+  if (
+    snapshots.some(
+      (snapshot) =>
+        snapshot.lineType === "COMBO"
+          ? !snapshot.comboProductId || !snapshot.comboVersion || !parseComboSelection(snapshot.comboSelectionJson)
+          : !snapshot.variantId,
+    )
+  )
     return failure(
       "INVENTORY_CONFLICT",
       "Giỏ hàng không còn đủ thông tin để giữ hàng. Vui lòng chốt lại.",
       409,
     );
-  const activationItems = snapshots.map((snapshot) => ({
-    variantId: snapshot.variantId as string,
-    quantity: snapshot.quantity,
-    displayedPrice: snapshot.unitPriceVnd,
-  }));
+  const snapshotSelections = snapshots.map((snapshot) =>
+    snapshot.lineType === "COMBO"
+      ? parseComboSelection(snapshot.comboSelectionJson)
+      : null,
+  );
+  const activationItems: PromotionCartRequestItem[] = snapshots.map((snapshot, index) => {
+    if (snapshot.lineType === "COMBO") {
+      return {
+        lineType: "COMBO",
+        comboProductId: snapshot.comboProductId as string,
+        comboVersion: snapshot.comboVersion as number,
+        selection: snapshotSelections[index] as ComboSelection,
+        quantity: snapshot.quantity,
+        displayedPrice: snapshot.unitPriceVnd,
+      };
+    }
+    return {
+      variantId: snapshot.variantId as string,
+      quantity: snapshot.quantity,
+      displayedPrice: snapshot.unitPriceVnd,
+    };
+  });
   let loaded: AuthoritativeCartEvaluation;
   try {
     loaded = await evaluateAuthoritativeCart(activationItems, env);
@@ -1010,7 +1130,7 @@ export async function activateCartShare(
       new Date(),
     );
     const incomingReservedUnits = countReservedUnits(
-      loaded.pricedItems,
+      loaded.inventoryItems,
       loaded.evaluation.gifts,
     );
     if (usage.activeCartCount >= quota.maxActiveReservationsPerSession)
@@ -1043,13 +1163,16 @@ export async function activateCartShare(
     loaded,
     { consumeUsage: false },
   );
+  const comboSchema = await hasComboSchema(env);
+  const detachedVariantHistorySchema = await hasDetachedVariantHistorySchema(env);
   const inventoryStatements = buildInventoryReservationStatements(
     (sql) => env.DB.prepare(sql),
     existing.id,
     reservationStartedAt,
     reservationExpiresAt,
-    loaded.pricedItems,
+    loaded.inventoryItems,
     loaded.evaluation.gifts,
+    detachedVariantHistorySchema,
   );
   const promotionReservationStatements = buildPromotionReservationStatements(
     (sql) => env.DB.prepare(sql),
@@ -1084,28 +1207,13 @@ export async function activateCartShare(
     env.DB.prepare("DELETE FROM cart_request_promotions WHERE cart_request_id = ?").bind(existing.id),
     env.DB.prepare("DELETE FROM cart_request_promotion_gifts WHERE cart_request_id = ?").bind(existing.id),
   ];
-  loaded.pricedItems.forEach((item) =>
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO cart_request_items (
-          id, cart_request_id, product_id, variant_id, product_name_snapshot,
-          variant_name_snapshot, sku_snapshot, image_key_snapshot,
-          unit_price_vnd, quantity, line_total_vnd, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        crypto.randomUUID(),
-        existing.id,
-        item.productId,
-        item.variantId,
-        item.productName,
-        item.variantName,
-        item.sku,
-        item.imageKey,
-        item.priceVnd,
-        item.quantity,
-        item.lineTotalVnd,
-        reservationStartedAt,
-      ),
+  statements.push(
+    ...buildCartRequestItemStatements(
+      (sql) => env.DB.prepare(sql),
+      existing.id,
+      reservationStartedAt,
+      loaded.pricedItems,
+      comboSchema,
     ),
   );
   statements.push(
@@ -1270,15 +1378,30 @@ export async function getPublicCartShare(
       finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
       freeShipping: history.freeShipping,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
-      items: items.map((item) => ({
-        productName: item.productName,
-        variantName: item.variantName,
-        imageUrl: getPublicImageUrl(item.imageKey),
-        unitPriceVnd: item.unitPriceVnd,
-        quantity: item.quantity,
-        lineTotalVnd: item.lineTotalVnd,
-      })).concat(
-        history.gifts.map((gift) => ({
+      items: [
+        ...items.map((item) => ({
+          productName: item.productName,
+          variantName: item.variantName,
+          imageUrl: getPublicImageUrl(item.imageKey),
+          unitPriceVnd: item.unitPriceVnd,
+          quantity: item.quantity,
+          lineTotalVnd: item.lineTotalVnd,
+          ...(item.lineType ? { lineType: item.lineType } : {}),
+          ...(item.comboComponents?.length
+            ? {
+                comboComponents: item.comboComponents.map((component) => ({
+                  groupName: component.groupName,
+                  productName: component.productName,
+                  variantName: component.variantName,
+                  sku: component.sku,
+                  imageUrl: getPublicImageUrl(component.imageKey),
+                  quantity: component.quantity,
+                  priceAdjustmentVnd: component.priceAdjustmentVnd,
+                })),
+              }
+            : {}),
+        })),
+        ...history.gifts.map((gift) => ({
           productName: gift.productName,
           variantName: gift.variantName,
           imageUrl: gift.imageUrl,
@@ -1288,7 +1411,7 @@ export async function getPublicCartShare(
           isPromotionGift: true,
           promotionId: gift.promotionId,
         })),
-      ),
+      ],
     },
     200,
     publicShareHeaders,

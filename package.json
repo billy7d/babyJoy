@@ -17,6 +17,7 @@
     "test:e2e:cart-summary": "node tests/cart-summary.e2e.mjs",
     "test:e2e:mobile-cart": "node tests/mobile-cart.e2e.mjs",
     "test:e2e:cart-promotions": "node tests/cart-promotions.e2e.mjs",
+    "test:e2e:combo": "node tests/combo-hard-delete.e2e.mjs",
     "test:e2e:category": "node tests/admin-category-reactivation.e2e.mjs",
     "test:e2e:cart-requests": "node tests/admin-cart-requests.e2e.mjs",
     "test:e2e:empty": "node tests/empty-catalog.e2e.mjs",

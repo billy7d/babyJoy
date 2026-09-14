@@ -106,6 +106,7 @@ import {
 } from "../../shared/store-settings";
 
 type AdminProductStatus = "ALL" | "AVAILABLE" | "OUT_OF_STOCK" | "HIDDEN";
+type AdminProductType = "ALL" | "STANDARD" | "COMBO";
 type AdminProductRow = Parameters<typeof mapApiProduct>[0] & { status?: string };
 type AdminProduct = Product & { adminStatus: string };
 type VariantErrors = Record<string, VariantFieldErrors>;
@@ -134,10 +135,12 @@ export function buildAdminProductsUrl(
   page: number,
   query: string,
   status: AdminProductStatus = "ALL",
+  productType: AdminProductType = "ALL",
 ) {
   const params = new URLSearchParams({ limit: "24", page: String(Math.max(1, page)) });
   if (query.trim()) params.set("q", query.trim());
   if (status !== "ALL") params.set("status", status);
+  if (productType !== "ALL") params.set("productType", productType);
   return `/api/admin/products?${params.toString()}`;
 }
 
@@ -152,6 +155,7 @@ export function AdminProductsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [statusFilter, setStatusFilter] = useState<AdminProductStatus>("ALL");
+  const [productTypeFilter, setProductTypeFilter] = useState<AdminProductType>("ALL");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationMeta | null>(null);
@@ -190,7 +194,10 @@ export function AdminProductsPage() {
     setLoadError("");
     setProducts([]);
     setPagination(null);
-    void fetch(buildAdminProductsUrl(page, query, statusFilter), {
+    const productUrl = productTypeFilter === "ALL"
+      ? buildAdminProductsUrl(page, query, statusFilter)
+      : buildAdminProductsUrl(page, query, statusFilter, productTypeFilter);
+    void fetch(productUrl, {
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
@@ -218,7 +225,7 @@ export function AdminProductsPage() {
     return () => {
       cancelled = true;
     };
-  }, [page, query, statusFilter]);
+  }, [page, query, statusFilter, productTypeFilter]);
   const statusTabs: Array<[AdminProductStatus, string]> = [
     ["ALL", "Tất cả"],
     ["AVAILABLE", "Đang bán"],
@@ -232,9 +239,14 @@ export function AdminProductsPage() {
           <h1>Sản phẩm</h1>
           <p>Quản lý thực đơn ăn dặm cho bé</p>
         </div>
-        <Link className="btn primary" to="/admin/products/new">
-          <Icon>add</Icon> THÊM SẢN PHẨM
-        </Link>
+        <div className="admin-heading-actions">
+          <Link className="btn secondary-btn" to="/admin/combos/new">
+            <Icon>tune</Icon> TẠO COMBO
+          </Link>
+          <Link className="btn primary" to="/admin/products/new">
+            <Icon>add</Icon> THÊM SẢN PHẨM
+          </Link>
+        </div>
       </div>
       <section className="admin-table-card admin-products-table-card">
         <div className="admin-table-tools">
@@ -246,6 +258,26 @@ export function AdminProductsPage() {
                 onClick={() => {
                   setPage(1);
                   setStatusFilter(value);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="admin-tabs" aria-label="Lọc loại sản phẩm">
+            {([
+              ["ALL", "Tất cả loại"],
+              ["STANDARD", "Sản phẩm thường"],
+              ["COMBO", "Combo"],
+            ] as Array<[AdminProductType, string]>).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={productTypeFilter === value ? "active" : ""}
+                aria-pressed={productTypeFilter === value}
+                onClick={() => {
+                  setPage(1);
+                  setProductTypeFilter(value);
                 }}
               >
                 {label}
@@ -282,6 +314,7 @@ export function AdminProductsPage() {
               {products.length
                 ? products.map((product) => {
                     const variant = getDisplayVariant(product);
+                    const isCombo = product.productType === "COMBO";
                     const stockOnHand = getAdminProductStockOnHand(product);
                     return (
                       <tr key={product.id}>
@@ -295,7 +328,7 @@ export function AdminProductsPage() {
                         <td>
                           <b>{product.name}</b>
                           <small>
-                            {variant?.name ?? "Chưa có phân loại"}, {product.shortDescription}
+                            {isCombo ? "Combo" : (variant?.name ?? "Chưa có phân loại")}, {product.shortDescription}
                           </small>
                         </td>
                         <td>
@@ -306,7 +339,7 @@ export function AdminProductsPage() {
                               .join(", ") || "Chưa phân loại"}
                           </Tag>
                         </td>
-                        <td>{product.variants.length} vị</td>
+                        <td>{isCombo ? <Tag tone="secondary">COMBO</Tag> : `${product.variants.length} vị`}</td>
                         <td
                           className="admin-stock-cell"
                           title={stockOnHand === null ? "Không theo dõi tồn kho" : undefined}
@@ -315,7 +348,7 @@ export function AdminProductsPage() {
                           {stockOnHand === null ? "—" : stockOnHand.toLocaleString("vi-VN")}
                         </td>
                         <td>
-                          <Price value={variant?.priceVnd ?? 0} />
+                          <Price value={isCombo ? (product.basePriceVnd ?? 0) : (variant?.priceVnd ?? 0)} />
                         </td>
                         <td>
                           <StatusBadge status={product.adminStatus} />
@@ -323,7 +356,7 @@ export function AdminProductsPage() {
                         <td>
                           <div className="row-actions">
                             <Link
-                              to={`/admin/products/${product.id}/edit`}
+                              to={isCombo ? `/admin/combos/${product.id}/edit` : `/admin/products/${product.id}/edit`}
                               aria-label="Sửa"
                             >
                               <Icon>edit</Icon>
@@ -948,13 +981,78 @@ export function ProductEditorPage() {
                 className="btn"
                 type="button"
                 onClick={async () => {
-                  if (!window.confirm("Lưu trữ sản phẩm này? Sản phẩm sẽ không còn xuất hiện trên catalog.")) return;
-                  const response = await fetch(`/api/admin/products/${id}`, { method: "DELETE" });
-                  if (response.ok) navigate("/admin/products");
-                  else setMessage("Chưa thể lưu trữ sản phẩm.");
+                  // Preflight giúp Admin nhìn thấy phạm vi ảnh hưởng trước thao tác không thể hoàn tác.
+                  const preflightResponse = await fetch(
+                    `/api/admin/products/${id}/delete-preflight`,
+                    { headers: { accept: "application/json" } },
+                  );
+                  const preflight = (await preflightResponse.json().catch(() => ({}))) as {
+                    data?: {
+                      product?: { name?: string };
+                      counts?: {
+                        variants?: number;
+                        activeCarts?: number;
+                        historicalCartLines?: number;
+                        comboMemberships?: number;
+                        promotionRelationships?: number;
+                      };
+                      affectedCombos?: Array<{ name?: string }>;
+                      r2KeyCount?: number;
+                    };
+                    error?: { message?: string };
+                  };
+                  if (!preflightResponse.ok || !preflight.data) {
+                    setMessage(
+                      preflight.error?.message ??
+                        "Chưa thể kiểm tra phạm vi xóa sản phẩm.",
+                    );
+                    return;
+                  }
+                  const counts = preflight.data.counts ?? {};
+                  const affectedCombos = (preflight.data.affectedCombos ?? [])
+                    .map((combo) => combo.name)
+                    .filter(Boolean)
+                    .join(", ");
+                  const impact = [
+                    `Variant: ${counts.variants ?? 0}`,
+                    `giỏ đang chờ: ${counts.activeCarts ?? 0}`,
+                    `dòng lịch sử giữ lại snapshot: ${counts.historicalCartLines ?? 0}`,
+                    `liên kết Combo sẽ gỡ: ${counts.comboMemberships ?? 0}`,
+                    `khuyến mãi cần rà soát: ${counts.promotionRelationships ?? 0}`,
+                    `key ảnh R2 cần dọn sau commit: ${preflight.data.r2KeyCount ?? 0}`,
+                  ].join("; ");
+                  const comboNote = affectedCombos
+                    ? `\nCombo bị ảnh hưởng: ${affectedCombos}.`
+                    : "";
+                  if (
+                    !window.confirm(
+                      `XÓA VĨNH VIỄN “${preflight.data.product?.name ?? "sản phẩm này"}”?\n\n${impact}.${comboNote}\n\nGiỏ đang chờ sẽ bị hủy, lịch sử đơn vẫn giữ snapshot. Hành động này không thể hoàn tác.`,
+                    )
+                  )
+                    return;
+                  setSaving(true);
+                  try {
+                    const response = await fetch(`/api/admin/products/${id}`, {
+                      method: "DELETE",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ confirmation: "DELETE" }),
+                    });
+                    const body = (await response.json().catch(() => ({}))) as {
+                      error?: { message?: string };
+                    };
+                    if (response.ok) navigate("/admin/products");
+                    else
+                      setMessage(
+                        body.error?.message ?? "Chưa thể xóa vĩnh viễn sản phẩm.",
+                      );
+                  } catch {
+                    setMessage("Chưa thể xóa vĩnh viễn sản phẩm. Vui lòng thử lại.");
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
               >
-                LƯU TRỮ
+                <Icon>delete_forever</Icon> XÓA VĨNH VIỄN
               </button>
             )}
           </div>
@@ -1123,8 +1221,8 @@ export function ProductEditorPage() {
                                     )}
                                   </fieldset>
                                 );
-                              })}
-                            </div>
+            })}
+          </div>
                           )}
                           <div className="variant-image-editor">
                             <b>Hình ảnh phân loại</b>
@@ -2079,6 +2177,15 @@ export function AdminCartRequestDetailPage() {
       priceVnd: number;
       quantity: number;
       lineTotalVnd: number;
+      lineType?: "STANDARD" | "COMBO";
+      comboComponents?: Array<{
+        groupName: string;
+        productName: string;
+        variantName: string;
+        sku: string | null;
+        quantity: number;
+        priceAdjustmentVnd: number;
+      }>;
     }>;
   } | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -2215,10 +2322,20 @@ export function AdminCartRequestDetailPage() {
             {detail.items.map((item) => (
                 <div className="interest-line" key={item.id}>
                   <ProductImage r2Key={item.imageKey} url={item.imageUrl} alt="" />
-                  <p>
+                  <div className="request-line-copy">
                     <b>{item.productName}</b>
                     <span>{item.variantName}</span>
-                  </p>
+                    {item.lineType === "COMBO" && item.comboComponents?.length ? (
+                      <ul className="request-combo-components">
+                        {item.comboComponents.map((component, componentIndex) => (
+                          <li key={`${component.groupName}-${component.productName}-${component.variantName}-${componentIndex}`}>
+                            <b>{component.groupName}</b>
+                            <span>{component.productName} — {component.variantName} × {component.quantity}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
                   <p>
                     <Price value={item.lineTotalVnd} />
                     <span>x{item.quantity}</span>

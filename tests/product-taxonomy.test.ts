@@ -88,11 +88,13 @@ describe("BabyJoy product taxonomy v1", () => {
     expect(after).toBe(before);
   });
 
-  it("Worker giữ archive và historical snapshot tách biệt", () => {
+  it("Worker hard-delete product và historical snapshot tách biệt", () => {
     const appSource = readFileSync("workers/app.ts", "utf8");
+    const deleteSource = readFileSync("workers/product-delete.ts", "utf8");
     const cartShareSource = readFileSync("workers/cart-share.ts", "utf8");
-    expect(appSource).toContain("archived_at IS NULL");
-    expect(appSource).toContain("UPDATE products SET status = 'HIDDEN'");
+    expect(appSource).toContain("hardDeleteProduct");
+    expect(deleteSource).toContain("DELETE_CONFIRMATION_REQUIRED");
+    expect(appSource).not.toContain("archiveAdminProduct");
     expect(cartShareSource).toContain("product_name_snapshot AS productName");
   });
 

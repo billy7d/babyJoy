@@ -1,4 +1,5 @@
 import type { CartLine } from "./cart";
+import { comboLineId, type ComboSelection } from "../../shared/combos";
 
 export const preparedCartShareKey = "babyjoy.preparedCartShare.v1";
 export const cartShareSubmissionKey = "babyjoy.cartShareSubmission.v1";
@@ -55,6 +56,13 @@ export type PreparedCartShare = {
 
 export type CartShareRequestItem = {
   variantId: string;
+  quantity: number;
+  displayedPrice?: number;
+} | {
+  lineType: "COMBO";
+  comboProductId: string;
+  comboVersion: number;
+  selection: ComboSelection;
   quantity: number;
   displayedPrice?: number;
 };
@@ -198,9 +206,15 @@ export async function copyCartText(
 
 export function cartShareFingerprint(items: CartLine[]) {
   return items
-    .map((item) => ({ variantId: item.variantId, quantity: item.quantity }))
-    .sort((left, right) => left.variantId.localeCompare(right.variantId))
-    .map((item) => `${item.variantId}:${item.quantity}`)
+    .map((item) => ({
+      lineId:
+        item.lineType === "COMBO" && item.comboProductId && item.comboSelection
+          ? comboLineId(item.comboProductId, item.comboSelection)
+          : item.variantId,
+      quantity: item.quantity,
+    }))
+    .sort((left, right) => left.lineId.localeCompare(right.lineId))
+    .map((item) => `${item.lineId}:${item.quantity}`)
     .join("|");
 }
 

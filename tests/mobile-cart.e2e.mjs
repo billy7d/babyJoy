@@ -227,6 +227,8 @@ try {
   if (fixtureProductId) {
     await fetch(`${baseUrl}/api/admin/products/${encodeURIComponent(fixtureProductId)}`, {
       method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmation: "DELETE" }),
     }).catch(() => undefined);
   }
 }
