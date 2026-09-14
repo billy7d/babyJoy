@@ -84,9 +84,28 @@ jobs:
           exit 1
 
       - name: Targeted Combo browser E2E
+        id: combo_e2e
+        continue-on-error: true
         env:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
-        run: npm run test:e2e:combo
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:e2e:combo 2>&1 | tee combo-ui-e2e.log
+
+      - name: Upload Combo E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-ui-e2e-diagnostics
+          path: |
+            combo-ui-e2e.log
+            /tmp/babyjoy-combo-ui.log
+          if-no-files-found: warn
+
+      - name: Fail on targeted E2E failure
+        if: steps.combo_e2e.outcome == 'failure'
+        run: exit 1
 
       - name: Commit validated source changes
         shell: bash
