@@ -9,6 +9,7 @@ import {
 
 import type { Route } from "./+types/root";
 import "./app.css";
+import "./category-image-upload.css";
 import "./admin-cart-requests.css";
 import "./mobile-cart.css";
 import "./cart-summary.css";
