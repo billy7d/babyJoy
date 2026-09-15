@@ -89,6 +89,8 @@ export type Category = {
   name: string;
   slug: string;
   image: string;
+  imageKey?: string | null;
+  imageUrl?: string | null;
   description?: string;
   sortOrder?: number;
   isActive?: boolean;

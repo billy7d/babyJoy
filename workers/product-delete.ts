@@ -1,4 +1,5 @@
 import { hasProductTypeSchema, revalidateComboProducts } from "./combos";
+import { isManagedImageKey } from "../shared/images";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -305,11 +306,11 @@ type StorageCleanupResult = {
   pending: string[];
 };
 
-async function cleanupStorageKeys(
+export async function cleanupStorageKeys(
   keys: string[],
   env: Env,
 ): Promise<StorageCleanupResult> {
-  const uniqueKeys = [...new Set(keys.filter(Boolean))];
+  const uniqueKeys = [...new Set(keys.filter((key) => isManagedImageKey(key)))];
   if (
     !uniqueKeys.length ||
     !env.PRODUCT_IMAGES ||
@@ -318,20 +319,24 @@ async function cleanupStorageKeys(
     return { deleted: [], pending: uniqueKeys };
   try {
     const placeholders = uniqueKeys.map(() => "?").join(",");
-    const mediaTables = [
-      "product_images",
-      "product_variant_images",
-      "product_description_assets",
+    const mediaSources = [
+      { table: "categories", column: "image_key" },
+      { table: "product_images", column: "r2_key" },
+      { table: "product_variant_images", column: "r2_key" },
+      { table: "product_description_assets", column: "r2_key" },
     ];
-    const availableMediaTables: string[] = [];
-    for (const tableName of mediaTables)
-      if (await hasTable(env, tableName)) availableMediaTables.push(tableName);
-    if (!availableMediaTables.length)
+    const availableMediaQueries: string[] = [];
+    for (const source of mediaSources)
+      if (await hasTable(env, source.table))
+        availableMediaQueries.push(
+          `SELECT ${source.column} AS r2Key FROM ${source.table}`,
+        );
+    if (!availableMediaQueries.length)
       return { deleted: [], pending: uniqueKeys };
     const references = await env.DB.prepare(
-      `SELECT r2_key AS r2Key FROM (
-         ${availableMediaTables.map((tableName) => `SELECT r2_key FROM ${tableName}`).join(" UNION ALL ")}
-       ) WHERE r2_key IN (${placeholders})`,
+      `SELECT r2Key FROM (
+         ${availableMediaQueries.join(" UNION ALL ")}
+       ) WHERE r2Key IN (${placeholders})`,
     )
       .bind(...uniqueKeys)
       .all<{ r2Key: string }>();
@@ -353,6 +358,31 @@ async function cleanupStorageKeys(
     );
     return { deleted: [], pending: uniqueKeys };
   }
+}
+
+export async function enqueueStorageCleanup(
+  keys: string[],
+  env: Env,
+  now = new Date().toISOString(),
+): Promise<boolean> {
+  const uniqueKeys = [...new Set(keys.filter((key) => isManagedImageKey(key)))];
+  if (!uniqueKeys.length || !(await hasTable(env, "product_storage_cleanup")))
+    return false;
+  const statements: D1PreparedStatement[] = [];
+  for (let offset = 0; offset < uniqueKeys.length; offset += 100) {
+    const chunk = uniqueKeys.slice(offset, offset + 100);
+    statements.push(
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO product_storage_cleanup
+           (id, r2_key, created_at, updated_at)
+         VALUES ${chunk.map(() => "(?, ?, ?, ?)").join(", ")}`,
+      ).bind(
+        ...chunk.flatMap((r2Key) => [crypto.randomUUID(), r2Key, now, now]),
+      ),
+    );
+  }
+  await env.DB.batch(statements);
+  return true;
 }
 
 async function settleStorageCleanupQueue(

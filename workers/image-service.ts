@@ -2,7 +2,10 @@ import {
   MAX_STORED_IMAGE_BYTES,
   createImmutableImageKey,
   isAllowedImageType,
+  isImmutableCategoryImageKey,
   isImmutableProductImageKey,
+  isLegacyCategoryImageKey,
+  normalizeR2Key,
   type AllowedImageType,
 } from "../shared/images";
 
@@ -119,13 +122,34 @@ export async function validateAssociatedImages(
     throw new Error("INVALID_IMAGE_REFERENCE");
 }
 
+export async function validateCategoryImageReference(
+  imageKey: string,
+  bucket: R2Bucket,
+): Promise<void> {
+  const normalized = normalizeR2Key(imageKey);
+  if (
+    !normalized ||
+    (!isLegacyCategoryImageKey(normalized) && !isImmutableCategoryImageKey(normalized))
+  )
+    throw new Error("INVALID_IMAGE_REFERENCE");
+  // Asset public legacy không nằm trong R2; chỉ kiểm tra object với key do pipeline quản lý.
+  if (isLegacyCategoryImageKey(normalized)) return;
+  const object = await bucket.head(normalized);
+  if (
+    !object ||
+    object.size > MAX_STORED_IMAGE_BYTES ||
+    !isAllowedImageType(object.httpMetadata?.contentType ?? "")
+  )
+    throw new Error("INVALID_IMAGE_REFERENCE");
+}
+
 export async function uploadImmutableProductImage(
   request: Request,
   bucket: R2Bucket,
   options: {
     now?: Date;
     createUuid?: () => string;
-    purpose?: "product-gallery" | "product-description";
+    purpose?: "product-gallery" | "product-description" | "category-representative";
   } = {},
 ): Promise<{ key: string }> {
   const contentType =

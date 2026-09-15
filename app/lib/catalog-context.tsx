@@ -6,7 +6,11 @@ import {
   useMemo,
   useState,
 } from "react";
-import { getPublicImageUrl, PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
+import {
+  getCategoryImageUrl,
+  getProductImageUrlStrategy,
+  PRODUCT_IMAGE_PLACEHOLDER,
+} from "../../shared/images";
 import type { PaginatedResponse, PaginationMeta } from "../../shared/pagination";
 import {
   getVariantStatus,
@@ -64,6 +68,7 @@ type ApiCategory = {
   slug: string;
   description?: string;
   imageKey?: string | null;
+  imageUrl?: string | null;
   sortOrder?: number;
   isActive?: number | boolean;
   productCount?: number;
@@ -375,9 +380,16 @@ function mapApiCategory(row: ApiCategory): Category {
     id: row.id,
     name: row.name,
     slug: row.slug,
-    image: row.imageKey
-      ? getPublicImageUrl(row.imageKey)
-      : (fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER),
+    imageKey: row.imageKey ?? null,
+    imageUrl: row.imageUrl ?? null,
+    image:
+      row.imageUrl ??
+      (row.imageKey
+        ? getCategoryImageUrl(
+            row.imageKey,
+            getProductImageUrlStrategy(import.meta.env.MODE),
+          )
+        : (fallback?.image ?? PRODUCT_IMAGE_PLACEHOLDER)),
     description: row.description ?? "",
     sortOrder: row.sortOrder ?? 0,
     isActive: row.isActive === undefined ? true : Boolean(row.isActive),

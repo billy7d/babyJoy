@@ -13,6 +13,7 @@ import {
   normalizeProductImages,
   normalizeVariantImages,
   uploadImmutableProductImage,
+  validateCategoryImageReference,
   validateAssociatedImages,
 } from "./image-service";
 import {
@@ -28,9 +29,13 @@ import {
   type ProductDescriptionAssetRow,
 } from "./product-description-assets";
 import {
+  getCategoryImageUrl,
   getProductImageUrl,
   getProductImageUrlStrategy,
   getPublicImageUrl,
+  isImmutableCategoryImageKey,
+  isLegacyCategoryImageKey,
+  normalizeR2Key,
   type ProductImageUrlStrategy,
 } from "../shared/images";
 import {
@@ -162,6 +167,8 @@ import {
   validateAdminComboConfigInput,
 } from "./combos";
 import {
+  cleanupStorageKeys,
+  enqueueStorageCleanup,
   getProductDeletePreflight,
   hardDeleteProduct,
   processProductStorageCleanup,
@@ -433,8 +440,21 @@ async function listCategories(env: Env, includeInactive = false) {
       (SELECT COUNT(*) FROM product_categories pc WHERE pc.category_id = c.id) AS productCount
      FROM categories c ${includeInactive ? "" : "WHERE c.is_active = 1"}
      ORDER BY c.sort_order, c.name`,
-  ).all();
-  return json({ data: result.results });
+  ).all<Record<string, unknown>>();
+  const imageUrlStrategy = getProductImageUrlStrategy(env.ENVIRONMENT);
+  return json({
+    data: result.results.map((row) => {
+      const imageKey =
+        typeof row.imageKey === "string" ? row.imageKey : null;
+      return {
+        ...row,
+        imageKey,
+        imageUrl: imageKey
+          ? getCategoryImageUrl(imageKey, imageUrlStrategy)
+          : null,
+      };
+    }),
+  });
 }
 
 async function listBrands(env: Env, includeInactive = false) {
@@ -1825,27 +1845,73 @@ async function uploadImage(request: Request, env: Env) {
       201,
     );
   } catch (caught) {
-    if (caught instanceof ImageUploadError) {
-      const status =
-        caught.code === "UNSUPPORTED_TYPE"
-          ? 415
-          : caught.code === "TOO_LARGE"
-            ? 413
-            : caught.code === "KEY_COLLISION"
-              ? 409
-              : 422;
-      const message =
-        caught.code === "UNSUPPORTED_TYPE"
-          ? "Định dạng ảnh không được hỗ trợ."
-          : caught.code === "TOO_LARGE"
-            ? "Không thể tối ưu ảnh này để tải lên. Vui lòng thử ảnh khác hoặc giảm kích thước ảnh."
-            : caught.code === "KEY_COLLISION"
-              ? "Không thể tạo khóa ảnh duy nhất."
-              : "Tệp ảnh đang trống.";
-      return error(caught.code, message, status);
-    }
-    throw caught;
+    return imageUploadErrorResponse(caught);
   }
+}
+
+function imageUploadErrorResponse(caught: unknown): Response {
+  if (!(caught instanceof ImageUploadError)) throw caught;
+  const status =
+    caught.code === "UNSUPPORTED_TYPE"
+      ? 415
+      : caught.code === "TOO_LARGE"
+        ? 413
+        : caught.code === "KEY_COLLISION"
+          ? 409
+          : 422;
+  const message =
+    caught.code === "UNSUPPORTED_TYPE"
+      ? "Định dạng ảnh không được hỗ trợ."
+      : caught.code === "TOO_LARGE"
+        ? "Không thể tối ưu ảnh này để tải lên. Vui lòng thử ảnh khác hoặc giảm kích thước ảnh."
+        : caught.code === "KEY_COLLISION"
+          ? "Không thể tạo khóa ảnh duy nhất."
+          : "Tệp ảnh đang trống.";
+  return error(caught.code, message, status);
+}
+
+async function uploadCategoryImage(request: Request, env: Env) {
+  try {
+    const result = await uploadImmutableProductImage(
+      request,
+      env.PRODUCT_IMAGES,
+      { purpose: "category-representative" },
+    );
+    return json(
+      {
+        success: true,
+        ...result,
+        url: getProductImageUrl(
+          result.key,
+          getProductImageUrlStrategy(env.ENVIRONMENT),
+        ),
+      },
+      201,
+    );
+  } catch (caught) {
+    return imageUploadErrorResponse(caught);
+  }
+}
+
+async function discardCategoryImage(key: string, env: Env) {
+  let normalized: string | null = null;
+  try {
+    normalized = normalizeR2Key(decodeURIComponent(key));
+  } catch {
+    return error(
+      "INVALID_CATEGORY_IMAGE",
+      "Ảnh đại diện danh mục không hợp lệ.",
+      422,
+    );
+  }
+  if (!normalized || !isImmutableCategoryImageKey(normalized))
+    return error(
+      "INVALID_CATEGORY_IMAGE",
+      "Ảnh đại diện danh mục không hợp lệ.",
+      422,
+    );
+  await cleanupCategoryImageKeys([normalized], env);
+  return json({ success: true, key: normalized, discarded: true });
 }
 
 async function uploadDescriptionImage(request: Request, env: Env) {
@@ -3545,7 +3611,20 @@ async function getAdminCategory(id: string, env: Env) {
     .first<Record<string, unknown>>();
   if (!category)
     return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
-  return json({ data: category });
+  const imageKey =
+    typeof category.imageKey === "string" ? category.imageKey : null;
+  return json({
+    data: {
+      ...category,
+      imageKey,
+      imageUrl: imageKey
+        ? getCategoryImageUrl(
+            imageKey,
+            getProductImageUrlStrategy(env.ENVIRONMENT),
+          )
+        : null,
+    },
+  });
 }
 
 async function listAdminCategoryProducts(
@@ -3658,11 +3737,139 @@ async function deactivateAdminCategory(id: string, env: Env) {
 
 type TaxonomyKind = "categories" | "tags";
 
-async function deleteTaxonomy(id: string, env: Env, kind: TaxonomyKind) {
-  if (kind === "categories") {
-    const category = await env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+function normalizeCategoryImageKey(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw new Error("INVALID_CATEGORY_IMAGE");
+  const key = normalizeR2Key(value);
+  if (
+    !key ||
+    (!isLegacyCategoryImageKey(key) && !isImmutableCategoryImageKey(key))
+  )
+    throw new Error("INVALID_CATEGORY_IMAGE");
+  return key;
+}
+
+async function cleanupCategoryImageKeys(
+  keys: Array<string | null | undefined>,
+  env: Env,
+  ctx?: ExecutionContext,
+) {
+  const managedKeys = [
+    ...new Set(
+      keys
+        .map((key) => normalizeR2Key(key))
+        .filter(
+          (key): key is string =>
+            Boolean(key && isImmutableCategoryImageKey(key)),
+        ),
+    ),
+  ];
+  if (!managedKeys.length) return;
+
+  const cleanup = async () => {
+    try {
+      let queued = false;
+      try {
+        queued = await enqueueStorageCleanup(managedKeys, env);
+      } catch (caught) {
+        console.error(
+          JSON.stringify({
+            event: "category_image_cleanup_queue_failed",
+            keyCount: managedKeys.length,
+            errorType: caught instanceof Error ? caught.name : "UNKNOWN",
+          }),
+        );
+      }
+      if (queued) {
+        await processProductStorageCleanup(env);
+        return;
+      }
+      const result = await cleanupStorageKeys(managedKeys, env);
+      if (result.pending.length)
+        console.error(
+          JSON.stringify({
+            event: "category_image_cleanup_pending",
+            keyCount: result.pending.length,
+          }),
+        );
+    } catch (caught) {
+      console.error(
+        JSON.stringify({
+          event: "category_image_cleanup_failed",
+          keyCount: managedKeys.length,
+          errorType: caught instanceof Error ? caught.name : "UNKNOWN",
+        }),
+      );
+    }
+  };
+
+  if (ctx && typeof ctx.waitUntil === "function") {
+    // Chờ nền của Worker tiếp tục cleanup sau khi API đã trả response.
+    ctx.waitUntil(cleanup());
+    return;
+  }
+  await cleanup();
+}
+
+async function deleteAdminCategoryImage(
+  id: string,
+  env: Env,
+  ctx?: ExecutionContext,
+) {
+  const category = await env.DB.prepare(
+    "SELECT id, image_key AS imageKey FROM categories WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; imageKey: string | null }>();
+  if (!category)
+    return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+  if (!category.imageKey)
+    return json({ success: true, id, imageKey: null, imageUrl: null });
+
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    "UPDATE categories SET image_key = NULL, updated_at = ? WHERE id = ? AND image_key = ?",
+  )
+    .bind(now, id, category.imageKey)
+    .run();
+  if (!result.meta.changes) {
+    const current = await env.DB.prepare(
+      "SELECT image_key AS imageKey FROM categories WHERE id = ?",
+    )
       .bind(id)
-      .first<{ id: string }>();
+      .first<{ imageKey: string | null }>();
+    if (!current)
+      return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+    if (!current.imageKey)
+      return json({ success: true, id, imageKey: null, imageUrl: null });
+    return error(
+      "CATEGORY_IMAGE_CONFLICT",
+      "Ảnh danh mục đã thay đổi. Vui lòng tải lại trang rồi thử lại.",
+      409,
+    );
+  }
+  await cleanupCategoryImageKeys([category.imageKey], env, ctx);
+  return json({
+    success: true,
+    id,
+    imageKey: null,
+    imageUrl: null,
+    cleanupScheduled: isImmutableCategoryImageKey(category.imageKey),
+  });
+}
+
+async function deleteTaxonomy(
+  id: string,
+  env: Env,
+  kind: TaxonomyKind,
+  ctx?: ExecutionContext,
+) {
+  if (kind === "categories") {
+    const category = await env.DB.prepare(
+      "SELECT id, image_key AS imageKey FROM categories WHERE id = ?",
+    )
+      .bind(id)
+      .first<{ id: string; imageKey: string | null }>();
     if (!category)
       return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
 
@@ -3700,6 +3907,7 @@ async function deleteTaxonomy(id: string, env: Env, kind: TaxonomyKind) {
         );
       return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
     }
+    await cleanupCategoryImageKeys([category.imageKey], env, ctx);
     return json({ success: true, id, deleted: true });
   }
 
@@ -3732,6 +3940,7 @@ async function saveTaxonomy(
   env: Env,
   kind: "categories" | "tags",
   id?: string,
+  ctx?: ExecutionContext,
 ) {
   const body = (await readBoundedJson(request)) as {
     name?: string;
@@ -3750,6 +3959,34 @@ async function saveTaxonomy(
   const rowId = id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   if (kind === "categories") {
+    let imageKey: string | null;
+    try {
+      imageKey = normalizeCategoryImageKey(body.imageKey);
+    } catch {
+      return error(
+        "INVALID_CATEGORY_IMAGE",
+        "Ảnh đại diện danh mục không hợp lệ.",
+        422,
+      );
+    }
+    const previousCategory = id
+      ? await env.DB.prepare(
+          "SELECT image_key AS imageKey FROM categories WHERE id = ?",
+        )
+          .bind(id)
+          .first<{ imageKey: string | null }>()
+      : null;
+    if (imageKey && !isLegacyCategoryImageKey(imageKey)) {
+      try {
+        await validateCategoryImageReference(imageKey, env.PRODUCT_IMAGES);
+      } catch {
+        return error(
+          "INVALID_CATEGORY_IMAGE",
+          "Ảnh đại diện danh mục không tồn tại hoặc không hợp lệ.",
+          422,
+        );
+      }
+    }
     const statement = env.DB.prepare(
       id
         ? "UPDATE categories SET name = ?, slug = ?, description = ?, image_key = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?"
@@ -3760,7 +3997,7 @@ async function saveTaxonomy(
               name,
               slug,
               body.description ?? "",
-              body.imageKey?.trim() || null,
+              imageKey,
               body.sortOrder ?? 0,
               body.isActive === false ? 0 : 1,
               now,
@@ -3771,18 +4008,27 @@ async function saveTaxonomy(
               name,
               slug,
               body.description ?? "",
-              body.imageKey?.trim() || null,
+              imageKey,
               body.sortOrder ?? 0,
               body.isActive === false ? 0 : 1,
               now,
               now,
             ]),
-      );
+    );
     try {
       const result = await statement.run();
-      if (id && !result.meta.changes)
+      if (id && !result.meta.changes) {
+        await cleanupCategoryImageKeys([imageKey], env);
         return error("CATEGORY_NOT_FOUND", "Không tìm thấy nhóm sản phẩm.", 404);
+      }
+      if (
+        previousCategory?.imageKey &&
+        previousCategory.imageKey !== imageKey
+      )
+        await cleanupCategoryImageKeys([previousCategory.imageKey], env, ctx);
     } catch (caught) {
+      if (imageKey && imageKey !== (previousCategory?.imageKey ?? null))
+        await cleanupCategoryImageKeys([imageKey], env);
       if (caught instanceof Error && caught.message.includes("UNIQUE"))
         return error("SLUG_CONFLICT", `Slug "${slug}" đã tồn tại.`, 409);
       throw caught;
@@ -4277,7 +4523,7 @@ async function handleApi(
     /^\/api\/admin\/(categories|tags)\/([^/]+)\/permanent$/,
   );
   if (request.method === "POST" && path === "/api/admin/categories")
-    return saveTaxonomy(request, env, "categories");
+    return saveTaxonomy(request, env, "categories", undefined, ctx);
   if (request.method === "GET" && categoryProductsMatch)
     return listAdminCategoryProducts(request, categoryProductsMatch[1], env);
   if (request.method === "PUT" && categoryProductsMatch)
@@ -4293,11 +4539,28 @@ async function handleApi(
       permanentTaxonomyMatch[2],
       env,
       permanentTaxonomyMatch[1] === "categories" ? "categories" : "tags",
+      ctx,
+    );
+  const categoryImageObjectMatch = path.match(
+    /^\/api\/admin\/category-images\/(.+)$/,
+  );
+  if (request.method === "POST" && path === "/api/admin/category-images")
+    return uploadCategoryImage(request, env);
+  if (request.method === "DELETE" && categoryImageObjectMatch)
+    return discardCategoryImage(categoryImageObjectMatch[1], env);
+  const categoryImageMatch = path.match(
+    /^\/api\/admin\/categories\/([^/]+)\/image$/,
+  );
+  if (request.method === "DELETE" && categoryImageMatch)
+    return deleteAdminCategoryImage(
+      decodeURIComponent(categoryImageMatch[1]),
+      env,
+      ctx,
     );
   if (request.method === "GET" && categoryMatch)
     return getAdminCategory(categoryMatch[1], env);
   if (request.method === "PUT" && categoryMatch)
-    return saveTaxonomy(request, env, "categories", categoryMatch[1]);
+    return saveTaxonomy(request, env, "categories", categoryMatch[1], ctx);
   if (request.method === "DELETE" && categoryMatch)
     return deactivateAdminCategory(categoryMatch[1], env);
   if (request.method === "POST" && path === "/api/admin/tags")

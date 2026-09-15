@@ -4,9 +4,13 @@ import { mapApiProduct } from "../app/lib/catalog-context";
 import {
   MAX_STORED_IMAGE_BYTES,
   PRODUCT_IMAGE_PLACEHOLDER,
+  createImmutableImageKey,
+  getCategoryImageUrl,
   getProductImageUrl,
   getProductImageUrlStrategy,
   getPublicImageUrl,
+  isImmutableCategoryImageKey,
+  isLegacyCategoryImageKey,
 } from "../shared/images";
 import {
   ImageUploadError,
@@ -84,6 +88,24 @@ describe("resolver ảnh R2", () => {
     );
     expect(getPublicImageUrl(null)).toBe(PRODUCT_IMAGE_PLACEHOLDER);
   });
+
+  it("resolve ảnh category legacy và key immutable theo đúng nguồn", () => {
+    const legacyKey = "images/category-cereal.jpg";
+    const immutableKey = createImmutableImageKey(
+      "image/webp",
+      new Date("2026-08-26T01:02:03Z"),
+      "123e4567-e89b-42d3-a456-426614174000",
+      "category-representative",
+    );
+    expect(isLegacyCategoryImageKey(legacyKey)).toBe(true);
+    expect(getCategoryImageUrl(legacyKey, "local")).toBe(
+      "/images/category-cereal.jpg",
+    );
+    expect(isImmutableCategoryImageKey(immutableKey)).toBe(true);
+    expect(getCategoryImageUrl(immutableKey, "local")).toBe(
+      "/media/categories/2026-08-26/123e4567-e89b-42d3-a456-426614174000.webp",
+    );
+  });
 });
 
 describe("upload ảnh immutable", () => {
@@ -130,6 +152,27 @@ describe("upload ảnh immutable", () => {
         bucket,
       ),
     ).rejects.toMatchObject<ImageUploadError>({ code: "UNSUPPORTED_TYPE" });
+  });
+
+  it("tạo key categories khi upload qua cùng pipeline immutable", async () => {
+    const { bucket, puts } = fakeBucket();
+    const result = await uploadImmutableProductImage(
+      new Request("https://example.test/api/admin/category-images", {
+        method: "POST",
+        headers: { "content-type": "image/webp" },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      bucket,
+      {
+        now: new Date("2026-08-26T01:02:03Z"),
+        createUuid: () => "123e4567-e89b-42d3-a456-426614174000",
+        purpose: "category-representative",
+      },
+    );
+    expect(result.key).toBe(
+      "categories/2026-08-26/123e4567-e89b-42d3-a456-426614174000.webp",
+    );
+    expect(puts).toHaveLength(1);
   });
 
   it("đưa bounded ReadableStream vào R2.put và đếm đủ body", async () => {
