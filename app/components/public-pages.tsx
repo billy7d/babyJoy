@@ -1335,6 +1335,10 @@ function ComboSelectionBuilder({
   };
   const validation = validateComboSelection(config, selection);
   const unitPrice = Math.max(0, (product.basePriceVnd ?? 0) + validation.priceAdjustment);
+  const compareUnitPrice =
+    config.compareAtPriceVnd == null
+      ? null
+      : Math.max(0, config.compareAtPriceVnd + validation.priceAdjustment);
   const selectedGroup = config.groupMode === "ONE_OF_GROUPS"
     ? config.groups.find((group) => group.id === selectedGroupId)
     : undefined;
@@ -1360,7 +1364,12 @@ function ComboSelectionBuilder({
     <div className="combo-builder" aria-label="Tùy chọn Combo">
       <div className="combo-base-price">
         <span>Giá Combo</span>
-        <Price value={unitPrice} />
+        <span className="combo-price-values">
+          <Price value={unitPrice} />
+          {compareUnitPrice !== null && compareUnitPrice > unitPrice && (
+            <del>{formatVnd(compareUnitPrice)}</del>
+          )}
+        </span>
       </div>
       {config.groupMode === "ONE_OF_GROUPS" && (
         <div className="combo-group-picker" role="tablist" aria-label="Chọn Group">

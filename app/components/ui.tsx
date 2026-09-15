@@ -262,6 +262,12 @@ export function ProductCard({
   const productLink = product.matchedVariantId
     ? `/product/${product.slug}?variant=${encodeURIComponent(product.matchedVariantId)}`
     : `/product/${product.slug}`;
+  const cardPriceVnd = isCombo
+    ? product.basePriceVnd ?? 0
+    : cardVariant?.priceVnd ?? 0;
+  const cardCompareAtPriceVnd = isCombo
+    ? product.comboConfig?.compareAtPriceVnd ?? null
+    : cardVariant?.compareAtPriceVnd ?? null;
   return (
     <article
       className={`product-card ${compact ? "compact" : ""} ${unavailable ? "unavailable" : ""}`}
@@ -297,9 +303,9 @@ export function ProductCard({
         <div className="product-foot">
           {visibleVariants.length > 1 && !product.matchedVariantId && <small className="price-prefix">Từ</small>}
           <span className="product-card-price">
-            <Price value={isCombo ? product.basePriceVnd ?? 0 : cardVariant?.priceVnd ?? 0} />
-            {!isCombo && cardVariant?.compareAtPriceVnd && cardVariant.compareAtPriceVnd > cardVariant.priceVnd && (
-              <del>{formatVnd(cardVariant.compareAtPriceVnd)}</del>
+            <Price value={cardPriceVnd} />
+            {cardCompareAtPriceVnd !== null && cardCompareAtPriceVnd > cardPriceVnd && (
+              <del>{formatVnd(cardCompareAtPriceVnd)}</del>
             )}
           </span>
           {isCombo ? (

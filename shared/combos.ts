@@ -45,6 +45,7 @@ export type ComboConfig = {
   productId: string;
   groupMode: ComboGroupMode;
   configVersion: number;
+  compareAtPriceVnd?: number | null;
   groups: ComboGroup[];
   createdAt?: string;
   updatedAt?: string;
@@ -125,6 +126,12 @@ export function validateComboConfig(config: ComboConfig): ComboConfigValidation 
     errors.push("Quan hệ giữa các Group không hợp lệ.");
   if (!Number.isSafeInteger(config.configVersion) || config.configVersion < 1)
     errors.push("Phiên bản cấu hình Combo không hợp lệ.");
+  if (
+    config.compareAtPriceVnd !== undefined &&
+    config.compareAtPriceVnd !== null &&
+    !isSafeNonNegativeInteger(config.compareAtPriceVnd)
+  )
+    errors.push("Giá so sánh Combo phải là số nguyên không âm.");
   if (!Array.isArray(config.groups) || config.groups.length === 0)
     errors.push("Combo phải có ít nhất một Group.");
   const groupIds = new Set<string>();

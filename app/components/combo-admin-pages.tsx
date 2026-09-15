@@ -141,6 +141,7 @@ export function ComboEditorPage() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [basePriceVnd, setBasePriceVnd] = useState("0");
+  const [compareAtPriceVnd, setCompareAtPriceVnd] = useState("");
   const [shortDescription, setShortDescription] = useState("");
   const [descriptionContent, setDescriptionContent] =
     useState<ProductDescriptionDocument>(() => legacyDescriptionToDocument(""));
@@ -294,6 +295,11 @@ export function ComboEditorPage() {
         setName(product.name);
         setSlug(product.slug);
         setBasePriceVnd(String(product.basePriceVnd ?? 0));
+        setCompareAtPriceVnd(
+          product.comboConfig?.compareAtPriceVnd == null
+            ? ""
+            : String(product.comboConfig.compareAtPriceVnd),
+        );
         setShortDescription(product.shortDescription ?? "");
         setDescriptionContent(
           product.descriptionContent ??
@@ -417,6 +423,9 @@ export function ComboEditorPage() {
   const comboConfig = useMemo(
     () => ({
       groupMode,
+      compareAtPriceVnd: compareAtPriceVnd.trim()
+        ? Number(compareAtPriceVnd)
+        : null,
       groups: groups.map((group, groupIndex) => ({
         id: group.id,
         name: group.name,
@@ -436,7 +445,7 @@ export function ComboEditorPage() {
         })),
       })),
     }),
-    [groupMode, groups],
+    [compareAtPriceVnd, groupMode, groups],
   );
 
   const updateGroup = (groupId: string, patch: Partial<EditableComboGroup>) => {
@@ -556,8 +565,18 @@ export function ComboEditorPage() {
     event.preventDefault();
     if (saving || loading || !taxonomyReady) return;
     const parsedPrice = Number(basePriceVnd);
+    const parsedCompareAtPrice = compareAtPriceVnd.trim()
+      ? Number(compareAtPriceVnd)
+      : null;
     if (!name.trim() || !Number.isSafeInteger(parsedPrice) || parsedPrice < 0) {
-      setMessage("Tên Combo và giá cơ bản phải hợp lệ.");
+      setMessage("Tên Combo và giá bán thực tế phải hợp lệ.");
+      return;
+    }
+    if (
+      parsedCompareAtPrice !== null &&
+      (!Number.isSafeInteger(parsedCompareAtPrice) || parsedCompareAtPrice < 0)
+    ) {
+      setMessage("Giá gốc / giá so sánh phải là số nguyên không âm.");
       return;
     }
     setSaving(true);
@@ -591,7 +610,10 @@ export function ComboEditorPage() {
             bestSellerRank: preservedFields.bestSellerRank,
             featured: preservedFields.featured,
             sortOrder: preservedFields.sortOrder,
-            comboConfig,
+            comboConfig: {
+              ...comboConfig,
+              compareAtPriceVnd: parsedCompareAtPrice,
+            },
           }),
         },
       );
@@ -736,11 +758,19 @@ export function ComboEditorPage() {
                     </select>
                   </label>
                 </div>
-                <div className="form-grid">
-                  <label>
-                    Giá cơ bản (₫) *
+                <div className="combo-price-fields">
+                  <label className="combo-price-field combo-price-field-sale">
+                    <span>Giá bán thực tế (₫) *</span>
                     <input type="number" min="0" step="1" value={basePriceVnd} onChange={(event) => setBasePriceVnd(event.target.value)} required />
+                    <small className="field-help">Giá khách thực trả trước phần điều chỉnh giá từ lựa chọn trong Combo.</small>
                   </label>
+                  <label className="combo-price-field">
+                    <span>Giá gốc / giá so sánh (₫)</span>
+                    <input type="number" min="0" step="1" value={compareAtPriceVnd} onChange={(event) => setCompareAtPriceVnd(event.target.value)} placeholder="Không bắt buộc" />
+                    <small className="field-help">Nếu lớn hơn giá bán thực tế, storefront sẽ hiển thị giá này dạng gạch ngang như Variant.</small>
+                  </label>
+                </div>
+                <div className="form-grid">
                   <label>
                     Trạng thái
                     <select value={status} onChange={(event) => setStatus(event.target.value)}>
@@ -1125,7 +1155,8 @@ export function ComboEditorPage() {
                 </div>
                 <ul>
                   <li>Combo chỉ lưu Variant của Product thường.</li>
-                  <li>Giá và rule được server xác thực lại khi thêm vào giỏ.</li>
+                  <li>Giá bán thực tế và rule được server xác thực lại khi thêm vào giỏ.</li>
+                  <li>Giá gốc / giá so sánh chỉ dùng để trình bày ưu đãi, không thay đổi số tiền checkout.</li>
                   <li>Tồn kho được trừ theo từng component thực tế.</li>
                   <li>Combo chưa đủ cấu hình sẽ tự ẩn khỏi storefront.</li>
                 </ul>

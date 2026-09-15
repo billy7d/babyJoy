@@ -14,6 +14,7 @@ type ComboConfigRow = {
   productId: string;
   groupMode: ComboGroupMode;
   configVersion: number;
+  compareAtPriceVnd: number | null;
   configCreatedAt: string;
   configUpdatedAt: string;
 };
@@ -56,7 +57,7 @@ export type ComboRevalidationResult = {
 
 export async function hasComboSchema(env: Env) {
   try {
-    const [table, typeColumn, priceColumn] = await Promise.all([
+    const [table, typeColumn, priceColumn, comparePriceColumn] = await Promise.all([
       env.DB.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'combo_configs'",
       ).first<{ name: string }>(),
@@ -66,8 +67,16 @@ export async function hasComboSchema(env: Env) {
       env.DB.prepare(
         "SELECT name FROM pragma_table_info('products') WHERE name = 'base_price_vnd'",
       ).first<{ name: string }>(),
+      env.DB.prepare(
+        "SELECT name FROM pragma_table_info('combo_configs') WHERE name = 'compare_at_price_vnd'",
+      ).first<{ name: string }>(),
     ]);
-    return Boolean(table?.name && typeColumn?.name && priceColumn?.name);
+    return Boolean(
+      table?.name &&
+      typeColumn?.name &&
+      priceColumn?.name &&
+      comparePriceColumn?.name
+    );
   } catch {
     return false;
   }
@@ -177,6 +186,8 @@ function mapConfigRows(config: ComboConfigRow, rows: ComboGroupRow[]) {
     productId: config.productId,
     groupMode: config.groupMode,
     configVersion: Number(config.configVersion),
+    compareAtPriceVnd:
+      config.compareAtPriceVnd == null ? null : Number(config.compareAtPriceVnd),
     createdAt: config.configCreatedAt,
     updatedAt: config.configUpdatedAt,
     groups: [...groups.values()]
@@ -197,8 +208,9 @@ export async function getComboConfig(
   if (!(await hasComboSchema(env))) return null;
   const config = await env.DB.prepare(
     `SELECT product_id AS productId, group_mode AS groupMode,
-       config_version AS configVersion, created_at AS configCreatedAt,
-       updated_at AS configUpdatedAt
+       config_version AS configVersion,
+       compare_at_price_vnd AS compareAtPriceVnd,
+       created_at AS configCreatedAt, updated_at AS configUpdatedAt
      FROM combo_configs WHERE product_id = ?`,
   )
     .bind(productId)
@@ -297,6 +309,12 @@ function normalizeConfigInput(value: unknown, productId: string, version: number
     throw new Error("CONFIG_REQUIRED");
   const raw = value as Record<string, unknown>;
   const groupMode = raw.groupMode as ComboGroupMode;
+  const compareAtPriceVnd =
+    raw.compareAtPriceVnd === null ||
+    raw.compareAtPriceVnd === undefined ||
+    (typeof raw.compareAtPriceVnd === "string" && !raw.compareAtPriceVnd.trim())
+      ? null
+      : Number(raw.compareAtPriceVnd);
   const groups = Array.isArray(raw.groups)
     ? raw.groups.map((group, index) =>
         normalizeGroupInput(
@@ -307,7 +325,13 @@ function normalizeConfigInput(value: unknown, productId: string, version: number
       )
     : [];
   groups.forEach((group) => group.items.forEach((item) => (item.groupId = group.id)));
-  return { productId, groupMode, configVersion: version, groups };
+  return {
+    productId,
+    groupMode,
+    configVersion: version,
+    compareAtPriceVnd,
+    groups,
+  };
 }
 
 async function verifyComboProduct(productId: string, env: Env) {
@@ -393,11 +417,22 @@ export async function saveAdminComboConfig(
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
-      `INSERT INTO combo_configs (product_id, group_mode, config_version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO combo_configs (
+         product_id, group_mode, config_version, compare_at_price_vnd,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(product_id) DO UPDATE SET group_mode = excluded.group_mode,
-         config_version = excluded.config_version, updated_at = excluded.updated_at`,
-    ).bind(productId, config.groupMode, version, now, now),
+         config_version = excluded.config_version,
+         compare_at_price_vnd = excluded.compare_at_price_vnd,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      productId,
+      config.groupMode,
+      version,
+      config.compareAtPriceVnd ?? null,
+      now,
+      now,
+    ),
     env.DB.prepare("DELETE FROM combo_groups WHERE combo_product_id = ?").bind(productId),
   ];
   for (const group of config.groups) {
