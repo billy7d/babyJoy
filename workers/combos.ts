@@ -109,6 +109,18 @@ function safeNumber(value: unknown, fallback = 0) {
   return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
 }
 
+/** Giữ tương thích với numeric string của Variant nhưng loại bỏ boolean/object khỏi giá. */
+function optionalPriceNumber(value: unknown) {
+  if (
+    value === undefined ||
+    value === null ||
+    (typeof value === "string" && !value.trim())
+  )
+    return null;
+  if (typeof value !== "number" && typeof value !== "string") return Number.NaN;
+  return Number(value);
+}
+
 function comboError(message: string) {
   return new Response(
     JSON.stringify({
@@ -309,12 +321,7 @@ function normalizeConfigInput(value: unknown, productId: string, version: number
     throw new Error("CONFIG_REQUIRED");
   const raw = value as Record<string, unknown>;
   const groupMode = raw.groupMode as ComboGroupMode;
-  const compareAtPriceVnd =
-    raw.compareAtPriceVnd === null ||
-    raw.compareAtPriceVnd === undefined ||
-    (typeof raw.compareAtPriceVnd === "string" && !raw.compareAtPriceVnd.trim())
-      ? null
-      : Number(raw.compareAtPriceVnd);
+  const compareAtPriceVnd = optionalPriceNumber(raw.compareAtPriceVnd);
   const groups = Array.isArray(raw.groups)
     ? raw.groups.map((group, index) =>
         normalizeGroupInput(

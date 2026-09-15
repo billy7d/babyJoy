@@ -82,6 +82,11 @@ function newId() {
   return crypto.randomUUID();
 }
 
+/** Parse giá admin mà không biến ô bắt buộc đang trống thành số 0. */
+function parseAdminPrice(value: string) {
+  return value.trim() ? Number(value) : Number.NaN;
+}
+
 function createGroup(displayOrder: number): EditableComboGroup {
   return {
     id: newId(),
@@ -564,7 +569,7 @@ export function ComboEditorPage() {
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saving || loading || !taxonomyReady) return;
-    const parsedPrice = Number(basePriceVnd);
+    const parsedPrice = parseAdminPrice(basePriceVnd);
     const parsedCompareAtPrice = compareAtPriceVnd.trim()
       ? Number(compareAtPriceVnd)
       : null;
@@ -762,12 +767,12 @@ export function ComboEditorPage() {
                   <label className="combo-price-field combo-price-field-sale">
                     <span>Giá bán thực tế (₫) *</span>
                     <input type="number" min="0" step="1" value={basePriceVnd} onChange={(event) => setBasePriceVnd(event.target.value)} required />
-                    <small className="field-help">Giá khách thực trả trước phần điều chỉnh giá từ lựa chọn trong Combo.</small>
+                    <small className="field-help">Giá khách thực trả trước phần điều chỉnh giá từ các lựa chọn trong Combo.</small>
                   </label>
                   <label className="combo-price-field">
                     <span>Giá gốc / giá so sánh (₫)</span>
                     <input type="number" min="0" step="1" value={compareAtPriceVnd} onChange={(event) => setCompareAtPriceVnd(event.target.value)} placeholder="Không bắt buộc" />
-                    <small className="field-help">Nếu lớn hơn giá bán thực tế, storefront sẽ hiển thị giá này dạng gạch ngang như Variant.</small>
+                    <small className="field-help">Không bắt buộc. Khi giá này lớn hơn giá bán thực tế, storefront sẽ hiển thị dạng giá gạch ngang.</small>
                   </label>
                 </div>
                 <div className="form-grid">

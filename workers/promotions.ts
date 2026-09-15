@@ -15,6 +15,7 @@ import {
 } from "../shared/promotions";
 import {
   comboLineId,
+  calculateComboSalePrice,
   validateComboConfig,
   validateComboSelection,
   type ComboSelection,
@@ -533,9 +534,9 @@ async function loadCanonicalComboLines(
         404,
         [entry.item.comboProductId],
       );
-    const priceVnd = Math.max(
-      0,
-      Number(product?.basePriceVnd ?? 0) + entry.validation.priceAdjustment,
+    const priceVnd = calculateComboSalePrice(
+      Number(product?.basePriceVnd ?? 0),
+      entry.validation.priceAdjustment,
     );
     const lineQuantity = entry.item.quantity;
     let lineUnavailable = !product || product.status !== "AVAILABLE";

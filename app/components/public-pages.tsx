@@ -111,6 +111,7 @@ import {
 import { FREE_SHIPPING_LABEL } from "../../shared/promotions";
 import {
   formatComboGroupSelectionRule,
+  getComboDisplayPrices,
   validateComboSelection,
   type ComboConfig,
   type ComboGroup,
@@ -1334,11 +1335,12 @@ function ComboSelectionBuilder({
       }),
   };
   const validation = validateComboSelection(config, selection);
-  const unitPrice = Math.max(0, (product.basePriceVnd ?? 0) + validation.priceAdjustment);
-  const compareUnitPrice =
-    config.compareAtPriceVnd == null
-      ? null
-      : Math.max(0, config.compareAtPriceVnd + validation.priceAdjustment);
+  const { salePriceVnd: unitPrice, compareAtPriceVnd: compareUnitPrice } =
+    getComboDisplayPrices(
+      product.basePriceVnd ?? 0,
+      config.compareAtPriceVnd,
+      validation.priceAdjustment,
+    );
   const selectedGroup = config.groupMode === "ONE_OF_GROUPS"
     ? config.groups.find((group) => group.id === selectedGroupId)
     : undefined;

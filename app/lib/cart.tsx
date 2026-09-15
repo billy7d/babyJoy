@@ -9,6 +9,7 @@ import {
 import { useCatalog } from "./catalog-context";
 import {
   comboLineId,
+  calculateComboSalePrice,
   validateComboSelection,
   type ComboSelection,
 } from "../../shared/combos";
@@ -172,7 +173,7 @@ function comboUnitPrice(product: Product, selection: ComboSelection) {
   const config = product.comboConfig;
   if (!config) return product.basePriceVnd ?? 0;
   const validation = validateComboSelection(config, selection);
-  return Math.max(0, (product.basePriceVnd ?? 0) + validation.priceAdjustment);
+  return calculateComboSalePrice(product.basePriceVnd ?? 0, validation.priceAdjustment);
 }
 
 function snapshotComboLine(

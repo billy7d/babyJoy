@@ -80,6 +80,36 @@ export type ComboConfigValidation = {
   errors: string[];
 };
 
+export type ComboDisplayPrices = {
+  salePriceVnd: number;
+  compareAtPriceVnd: number | null;
+};
+
+/** Tính giá bán authoritative của Combo; compare price không tham gia phép tính này. */
+export function calculateComboSalePrice(basePriceVnd: number, priceAdjustment = 0) {
+  return Math.max(0, basePriceVnd + priceAdjustment);
+}
+
+/** Tính dữ liệu giá để render, giữ compare price ngoài dòng tiền checkout. */
+export function getComboDisplayPrices(
+  basePriceVnd: number,
+  compareAtPriceVnd: number | null | undefined,
+  priceAdjustment = 0,
+): ComboDisplayPrices {
+  const salePriceVnd = calculateComboSalePrice(basePriceVnd, priceAdjustment);
+  const adjustedCompareAtPrice =
+    compareAtPriceVnd == null
+      ? null
+      : Math.max(0, compareAtPriceVnd + priceAdjustment);
+  return {
+    salePriceVnd,
+    compareAtPriceVnd:
+      adjustedCompareAtPrice !== null && adjustedCompareAtPrice > salePriceVnd
+        ? adjustedCompareAtPrice
+        : null,
+  };
+}
+
 /** Tạo khóa deterministic để cùng một cấu hình Combo được gộp thành một dòng giỏ hàng. */
 export function comboLineId(productId: string, selection: ComboSelection) {
   const items = [...(selection.items ?? [])]

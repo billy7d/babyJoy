@@ -128,6 +128,7 @@ describe("Combo và hard-delete Product", () => {
       status: "AVAILABLE",
       categoryIds: ["cat-cereal"],
       comboConfig: {
+        compareAtPriceVnd: 249000,
         groupMode: "ALL_GROUPS",
         groups: [{
           id: "combo-group-gerber",
@@ -159,6 +160,7 @@ describe("Combo và hard-delete Product", () => {
         basePriceVnd: 130000,
         comboConfig: {
           configVersion: 1,
+          compareAtPriceVnd: 249000,
           groups: [{ items: [{ variantId: "source-variant" }] }],
         },
       },
@@ -166,10 +168,11 @@ describe("Combo và hard-delete Product", () => {
 
     const comboList = await api(env, "/api/admin/products?productType=COMBO");
     const comboListBody = (await comboList.json()) as {
-      data?: Array<{ id: string; productType?: string }>;
+      data?: Array<{ id: string; productType?: string; comboConfig?: { compareAtPriceVnd?: number | null } }>;
     };
     expect(comboList.status).toBe(200);
     expect(comboListBody.data?.some((product) => product.id === created.id)).toBe(true);
+    expect(comboListBody.data?.find((product) => product.id === created.id)?.comboConfig?.compareAtPriceVnd).toBe(249000);
 
     const availableList = await api(env, "/api/products?available=1");
     const availableListBody = (await availableList.json()) as {
@@ -201,6 +204,50 @@ describe("Combo và hard-delete Product", () => {
       priceVnd: 135000,
     });
     expect(body.items[0]?.comboComponents).toHaveLength(1);
+
+    const testEnv = env as unknown as Record<string, unknown>;
+    testEnv.DIRECT_SELLER_SHARE_ENABLED = "true";
+    testEnv.CART_SHARE_SECRET = "combo-checkout-secret-that-is-long-enough-123";
+    const updatedAt = new Date().toISOString();
+    database
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at) VALUES
+          ('seller_display_name', 'Nguyễn A', ?),
+          ('seller_contact_label', 'Người bán BabyJoy', ?),
+          ('seller_messenger_url', 'https://m.me/nguyena', ?),
+          ('seller_avatar_key', '', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(updatedAt, updatedAt, updatedAt, updatedAt);
+    const checkout = await api(env, "/api/cart/share/prepare", jsonInit("POST", {
+      submissionToken: "combo-checkout-snapshot",
+      items: [{
+        lineType: "COMBO",
+        comboProductId: created.id,
+        comboVersion: 1,
+        selection,
+        quantity: 1,
+        displayedPrice: 135000,
+      }],
+      acceptCurrentPrices: false,
+    }));
+    expect(checkout.status).toBe(201);
+    expect(
+      database.prepare(
+        `SELECT subtotal_vnd AS subtotalVnd
+         FROM cart_requests WHERE submission_token = 'combo-checkout-snapshot'`,
+      ).get(),
+    ).toEqual({ subtotalVnd: 135000 });
+    expect(
+      database.prepare(
+        `SELECT line_type AS lineType, unit_price_vnd AS unitPriceVnd,
+                line_total_vnd AS lineTotalVnd
+         FROM cart_request_items
+         WHERE cart_request_id = (
+           SELECT id FROM cart_requests WHERE submission_token = 'combo-checkout-snapshot'
+         )`,
+      ).get(),
+    ).toEqual({ lineType: "COMBO", unitPriceVnd: 135000, lineTotalVnd: 135000 });
   });
 
   it("không tạo Product mồ côi khi Combo có Variant không hợp lệ", async () => {

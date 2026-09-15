@@ -24,6 +24,7 @@ import { useCart } from "../lib/cart";
 import { ProductImage } from "./product-image";
 import type { CartLine } from "../lib/cart";
 import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
+import { getComboDisplayPrices } from "../../shared/combos";
 import { useStoreSettings } from "../lib/store-settings";
 import {
   buildCronHealthData,
@@ -262,11 +263,17 @@ export function ProductCard({
   const productLink = product.matchedVariantId
     ? `/product/${product.slug}?variant=${encodeURIComponent(product.matchedVariantId)}`
     : `/product/${product.slug}`;
+  const comboDisplayPrices = isCombo
+    ? getComboDisplayPrices(
+        product.basePriceVnd ?? 0,
+        product.comboConfig?.compareAtPriceVnd,
+      )
+    : null;
   const cardPriceVnd = isCombo
-    ? product.basePriceVnd ?? 0
+    ? comboDisplayPrices?.salePriceVnd ?? 0
     : cardVariant?.priceVnd ?? 0;
   const cardCompareAtPriceVnd = isCombo
-    ? product.comboConfig?.compareAtPriceVnd ?? null
+    ? comboDisplayPrices?.compareAtPriceVnd ?? null
     : cardVariant?.compareAtPriceVnd ?? null;
   return (
     <article
