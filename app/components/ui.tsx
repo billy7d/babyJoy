@@ -24,6 +24,7 @@ import { useCart } from "../lib/cart";
 import { ProductImage } from "./product-image";
 import type { CartLine } from "../lib/cart";
 import { PRODUCT_IMAGE_PLACEHOLDER } from "../../shared/images";
+import { getComboDisplayPrices } from "../../shared/combos";
 import { useStoreSettings } from "../lib/store-settings";
 import {
   buildCronHealthData,
@@ -262,6 +263,18 @@ export function ProductCard({
   const productLink = product.matchedVariantId
     ? `/product/${product.slug}?variant=${encodeURIComponent(product.matchedVariantId)}`
     : `/product/${product.slug}`;
+  const comboDisplayPrices = isCombo
+    ? getComboDisplayPrices(
+        product.basePriceVnd ?? 0,
+        product.comboConfig?.compareAtPriceVnd,
+      )
+    : null;
+  const cardPriceVnd = isCombo
+    ? comboDisplayPrices?.salePriceVnd ?? 0
+    : cardVariant?.priceVnd ?? 0;
+  const cardCompareAtPriceVnd = isCombo
+    ? comboDisplayPrices?.compareAtPriceVnd ?? null
+    : cardVariant?.compareAtPriceVnd ?? null;
   return (
     <article
       className={`product-card ${compact ? "compact" : ""} ${unavailable ? "unavailable" : ""}`}
@@ -297,9 +310,9 @@ export function ProductCard({
         <div className="product-foot">
           {visibleVariants.length > 1 && !product.matchedVariantId && <small className="price-prefix">Từ</small>}
           <span className="product-card-price">
-            <Price value={isCombo ? product.basePriceVnd ?? 0 : cardVariant?.priceVnd ?? 0} />
-            {!isCombo && cardVariant?.compareAtPriceVnd && cardVariant.compareAtPriceVnd > cardVariant.priceVnd && (
-              <del>{formatVnd(cardVariant.compareAtPriceVnd)}</del>
+            <Price value={cardPriceVnd} />
+            {cardCompareAtPriceVnd !== null && cardCompareAtPriceVnd > cardPriceVnd && (
+              <del>{formatVnd(cardCompareAtPriceVnd)}</del>
             )}
           </span>
           {isCombo ? (

@@ -45,6 +45,7 @@ export type ComboConfig = {
   productId: string;
   groupMode: ComboGroupMode;
   configVersion: number;
+  compareAtPriceVnd?: number | null;
   groups: ComboGroup[];
   createdAt?: string;
   updatedAt?: string;
@@ -78,6 +79,36 @@ export type ComboConfigValidation = {
   ok: boolean;
   errors: string[];
 };
+
+export type ComboDisplayPrices = {
+  salePriceVnd: number;
+  compareAtPriceVnd: number | null;
+};
+
+/** Tính giá bán authoritative của Combo; compare price không tham gia phép tính này. */
+export function calculateComboSalePrice(basePriceVnd: number, priceAdjustment = 0) {
+  return Math.max(0, basePriceVnd + priceAdjustment);
+}
+
+/** Tính dữ liệu giá để render, giữ compare price ngoài dòng tiền checkout. */
+export function getComboDisplayPrices(
+  basePriceVnd: number,
+  compareAtPriceVnd: number | null | undefined,
+  priceAdjustment = 0,
+): ComboDisplayPrices {
+  const salePriceVnd = calculateComboSalePrice(basePriceVnd, priceAdjustment);
+  const adjustedCompareAtPrice =
+    compareAtPriceVnd == null
+      ? null
+      : Math.max(0, compareAtPriceVnd + priceAdjustment);
+  return {
+    salePriceVnd,
+    compareAtPriceVnd:
+      adjustedCompareAtPrice !== null && adjustedCompareAtPrice > salePriceVnd
+        ? adjustedCompareAtPrice
+        : null,
+  };
+}
 
 /** Tạo khóa deterministic để cùng một cấu hình Combo được gộp thành một dòng giỏ hàng. */
 export function comboLineId(productId: string, selection: ComboSelection) {
@@ -125,6 +156,12 @@ export function validateComboConfig(config: ComboConfig): ComboConfigValidation 
     errors.push("Quan hệ giữa các Group không hợp lệ.");
   if (!Number.isSafeInteger(config.configVersion) || config.configVersion < 1)
     errors.push("Phiên bản cấu hình Combo không hợp lệ.");
+  if (
+    config.compareAtPriceVnd !== undefined &&
+    config.compareAtPriceVnd !== null &&
+    !isSafeNonNegativeInteger(config.compareAtPriceVnd)
+  )
+    errors.push("Giá so sánh Combo phải là số nguyên không âm.");
   if (!Array.isArray(config.groups) || config.groups.length === 0)
     errors.push("Combo phải có ít nhất một Group.");
   const groupIds = new Set<string>();

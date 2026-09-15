@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chromium, request } from "playwright";
+import { chromium, request, webkit } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 const baseHost = new URL(baseUrl).hostname;
@@ -19,9 +19,10 @@ let comboProductId = "";
 const api = await request.newContext({
   extraHTTPHeaders: { accept: "application/json" },
 });
-const browser = await chromium.launch({
+const browserEngine = process.argv.includes("--browser=webkit") ? webkit : chromium;
+const browser = await browserEngine.launch({
   headless: true,
-  ...(process.env.CHROME_EXECUTABLE_PATH
+  ...(browserEngine === chromium && process.env.CHROME_EXECUTABLE_PATH
     ? { executablePath: process.env.CHROME_EXECUTABLE_PATH }
     : {}),
 });
@@ -80,6 +81,7 @@ async function createFixtures() {
       tagIds: [],
       images: [],
       comboConfig: {
+        compareAtPriceVnd: 249000,
         groupMode: "ALL_GROUPS",
         groups: [{
           id: groupId,
@@ -125,6 +127,11 @@ async function inspectStorefront(viewport) {
     const card = page.locator(".product-card").filter({ hasText: comboName }).first();
     await card.waitFor({ state: "visible", timeout: 10000 });
     assert((await card.innerText()).includes("COMBO"), `Card Combo thiếu nhãn ở ${viewport.width}px`);
+    const cardText = await card.innerText();
+    assert(
+      cardText.includes("130.000") && cardText.includes("249.000"),
+      `Card Combo thiếu sale/compare price ở ${viewport.width}px: ${cardText}`,
+    );
     const comboCta = card.getByRole("link", { name: "Xem Combo" });
     assert(
       await comboCta.count() === 1,
@@ -152,6 +159,12 @@ async function inspectStorefront(viewport) {
     await page.getByRole("heading", { name: comboName }).waitFor({ state: "visible", timeout: 10000 });
     const builder = page.getByLabel("Tùy chọn Combo");
     await builder.waitFor({ state: "visible", timeout: 10000 });
+    const initialPriceText = await builder.locator(".combo-price-values").innerText();
+    assert(
+      initialPriceText.includes("130.000") && initialPriceText.includes("249.000") &&
+        await builder.locator(".combo-price-values del").count() === 1,
+      `Combo detail thiếu sale/compare price ở ${viewport.width}px: ${initialPriceText}`,
+    );
     assert(await builder.getByText("Món chính").count() >= 1, `Combo detail thiếu Group ở ${viewport.width}px`);
     assert(
       (await builder.locator(".field-heading small").first().innerText()) ===
@@ -249,6 +262,11 @@ try {
     const builder = mobilePage.getByLabel("Tùy chọn Combo");
     await builder.locator('.combo-item-stepper button[aria-label="Tăng số lượng"]').click();
     await mobilePage.waitForFunction(() => !document.querySelector(".combo-builder .combo-errors"));
+    const adjustedPriceText = await builder.locator(".combo-price-values").innerText();
+    assert(
+      adjustedPriceText.includes("135.000") && adjustedPriceText.includes("254.000"),
+      `Adjustment chưa cập nhật cả sale/compare price: ${adjustedPriceText}`,
+    );
     assert(
       await builder.locator(".combo-errors").count() === 0,
       `Alert vẫn hiện sau khi hoàn thành điều kiện Combo: ${await builder.innerText()}`,
@@ -296,6 +314,11 @@ try {
   const desktopPage = await inspectStorefront({ width: 1024, height: 900 });
   await desktopPage.context().close();
 
+  for (const width of [320, 360, 375, 412, 430, 768, 1440]) {
+    const page = await inspectStorefront({ width, height: width <= 639 ? 844 : 900 });
+    await page.context().close();
+  }
+
   const adminContext = await browser.newContext({ viewport: { width: 1024, height: 900 }, locale: "vi-VN" });
   const adminPage = await adminContext.newPage();
   const dialogMessages = [];
@@ -317,6 +340,11 @@ try {
     assert(
       await richEditor.getByLabel("Thanh công cụ mô tả chi tiết").count() === 1,
       "Combo Admin chưa dùng Rich Editor của Product thường.",
+    );
+    assert(
+      await adminPage.locator(".combo-price-field-sale input").inputValue() === "130000" &&
+        await adminPage.locator(".combo-price-field:not(.combo-price-field-sale) input").inputValue() === "249000",
+      "Admin Combo không load lại đúng sale/compare price.",
     );
     const variantSearch = adminPage.getByPlaceholder("Tìm kiếm...");
     await variantSearch.fill(componentSku);

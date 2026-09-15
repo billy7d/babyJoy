@@ -17,10 +17,25 @@
   border-bottom: 1px solid var(--outline-variant);
 }
 
+.combo-price-values {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .combo-base-price .price {
   color: var(--primary);
   font-size: 28px;
   font-weight: 700;
+}
+
+.combo-price-values del {
+  color: var(--on-variant);
+  font-size: 15px;
+  font-weight: 500;
 }
 
 .combo-group-picker,
@@ -182,8 +197,16 @@
     margin-top: 16px;
   }
 
+  .combo-price-values {
+    gap: 7px;
+  }
+
   .combo-base-price .price {
     font-size: 22px;
+  }
+
+  .combo-price-values del {
+    font-size: 13px;
   }
 
   .combo-group-picker {
@@ -321,6 +344,38 @@
 .combo-admin-grid {
   width: min(100%, 1240px);
   margin-inline: auto;
+}
+
+.combo-price-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+}
+
+.combo-price-field {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  background: var(--surface-low);
+}
+
+.combo-price-field-sale {
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--outline-variant));
+  background: color-mix(in srgb, var(--primary) 5%, var(--surface-lowest));
+}
+
+.combo-price-field > span {
+  font-weight: 700;
+}
+
+.combo-price-field .field-help {
+  margin: 0;
+  line-height: 1.4;
 }
 
 .combo-rule-card {
@@ -514,6 +569,15 @@
 
   .admin-heading-actions .btn {
     flex: 1;
+  }
+
+  .combo-price-fields {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .combo-price-field {
+    padding: 12px;
   }
 
   .combo-admin-item,
