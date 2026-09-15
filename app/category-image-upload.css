@@ -1,0 +1,40 @@
+/* Chỉ thu gọn nút upload khi danh mục chưa có ảnh; không thay đổi các control media khác. */
+.taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty {
+  min-height: 44px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 10px 16px;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  border-style: solid;
+  text-align: left;
+}
+
+.taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty .material-symbols-outlined {
+  font-size: 20px;
+}
+
+.taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty span {
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty small {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+@media (max-width: 359px) {
+  .taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty {
+    padding-inline: 13px;
+    gap: 6px;
+  }
+
+  .taxonomy-image-control > .taxonomy-image-picker.taxonomy-image-empty small {
+    font-size: 10px;
+  }
+}
