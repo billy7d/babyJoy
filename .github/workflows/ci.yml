@@ -108,6 +108,11 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
         run: npm run test:e2e
 
+      - name: Category image E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+        run: npm run test:e2e:category-image
+
       - name: Show server log on failure
         if: failure()
         run: cat /tmp/babyjoy-dev.log || true
@@ -185,6 +190,12 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
           BABYJOY_BROWSER: webkit
         run: npm run test:e2e:featured-cross-browser
+
+      - name: Category image WebKit E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: webkit
+        run: npm run test:e2e:category-image
 
       - name: Show WebKit server log on failure
         if: failure()

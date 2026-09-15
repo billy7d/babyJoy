@@ -128,6 +128,27 @@ import {
   Tag,
 } from "./ui";
 
+function CategoryImage({
+  category,
+  alt = "",
+  className = "",
+}: {
+  category: Category;
+  alt?: string;
+  className?: string;
+}) {
+  return (
+    <ProductImage
+      className={className}
+      r2Key={category.imageKey}
+      url={category.imageUrl}
+      legacySrc={category.image}
+      alt={alt}
+      loading="lazy"
+    />
+  );
+}
+
 export function HomePage() {
   const { products, categories } = useCatalog();
   const { displayName } = useStoreSettings();
@@ -200,7 +221,10 @@ export function HomePage() {
         <div className="category-row">
           {categories.map((category) => (
             <Link key={category.id} to={`/category/${category.slug}`}>
-              <img src={category.image} alt="" />
+              <CategoryImage
+                category={category}
+                className="storefront-product-media category-row-image"
+              />
               <span>{category.name}</span>
             </Link>
           ))}
@@ -1250,7 +1274,13 @@ export function CategoriesPage() {
         <div className="category-overview">
           {categories.map((category) => (
             <Link key={category.id} to={`/category/${category.slug}`}>
-              <img src={category.image} alt={category.name} />
+              <div className="category-card-media">
+                <CategoryImage
+                  category={category}
+                  alt={category.name}
+                  className="storefront-product-media"
+                />
+              </div>
               <h2>{category.name}</h2>
               <span>
                 Xem sản phẩm <Icon>arrow_forward</Icon>

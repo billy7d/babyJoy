@@ -20,4 +20,19 @@ describe("Admin category visibility UI", () => {
     expect(source).toContain('StatusBadge status={product.status}');
     expect(source).toContain("Danh mục đang bị ẩn khỏi storefront nhưng dữ liệu và quan hệ sản phẩm vẫn được giữ lại.");
   });
+
+  it("quản lý ảnh category qua pipeline upload và không cho nhập raw R2 key", () => {
+    expect(source).toContain('endpoint: "/api/admin/category-images"');
+    expect(source).toContain('fetch(`/api/admin/categories/${editing.id}/image`');
+    expect(source).toContain('className="taxonomy-image-control"');
+    expect(source).toContain('className="taxonomy-image-preview"');
+    expect(source).toContain('name="file"');
+    expect(source).toContain("validateProductImageFiles([file])");
+    expect(source).toContain('"selecting"');
+    expect(source).toContain('"validating"');
+    expect(source).toContain('"uploading"');
+    expect(source).toContain('"processing"');
+    expect(source).toContain('"deleting"');
+    expect(source).not.toContain("R2 image key");
+  });
 });

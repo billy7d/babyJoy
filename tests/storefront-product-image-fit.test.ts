@@ -47,4 +47,14 @@ describe("storefront product image fit contract", () => {
     expect(mediaStyles).toContain(".storefront-product-media.product-image-placeholder");
     expect(mediaStyles).toContain("padding: 16%");
   });
+
+  it("category overview dùng cùng wrapper contain và resolver ảnh authoritative", () => {
+    expect(publicPagesSource).toContain("category-card-media");
+    expect(publicPagesSource).toContain("r2Key={category.imageKey}");
+    expect(publicPagesSource).toContain("url={category.imageUrl}");
+    expect(appStyles).toContain(".category-card-media>.storefront-product-media");
+    expect(appStyles).toContain("object-fit:contain");
+    expect(appStyles).toContain("object-position:center");
+    expect(appStyles).toContain(".category-row .category-row-image");
+  });
 });

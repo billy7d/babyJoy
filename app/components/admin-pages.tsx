@@ -2505,12 +2505,22 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   if (type === "tags") return <AdminTagGroupsPage />;
   const isCategories = type === "categories";
   type CategoryStatusFilter = "ALL" | "ACTIVE" | "HIDDEN";
+  type CategoryImagePhase =
+    | "idle"
+    | "selecting"
+    | "validating"
+    | "uploading"
+    | "processing"
+    | "success"
+    | "error"
+    | "deleting";
   type TaxonomyRow = {
     id: string;
     name: string;
     slug: string;
     description?: string;
     imageKey?: string | null;
+    imageUrl?: string | null;
     sortOrder: number;
     isActive: number | boolean;
     productCount?: number;
@@ -2528,6 +2538,28 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
   const [categoryProducts, setCategoryProducts] = useState<CategoryProduct[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [categoryImageKey, setCategoryImageKey] = useState<string | null>(null);
+  const [categoryImageUrl, setCategoryImageUrl] = useState<string | null>(null);
+  const [categoryImagePhase, setCategoryImagePhase] =
+    useState<CategoryImagePhase>("idle");
+  const pendingCategoryImageKeysRef = useRef(new Set<string>());
+  const isCategoryImageBusy = [
+    "selecting",
+    "validating",
+    "uploading",
+    "processing",
+    "deleting",
+  ].includes(categoryImagePhase);
+  const categoryImagePhaseLabels: Record<CategoryImagePhase, string> = {
+    idle: "",
+    selecting: "Đang chọn ảnh...",
+    validating: "Đang kiểm tra định dạng và kích thước ảnh...",
+    uploading: "Đang tải ảnh lên kho lưu trữ...",
+    processing: "Đang tối ưu ảnh...",
+    success: "Ảnh đã sẵn sàng. Hãy lưu danh mục để áp dụng.",
+    error: "Chưa thể xử lý ảnh. Vui lòng thử lại.",
+    deleting: "Đang xóa ảnh...",
+  };
   const [categoryStatusFilter, setCategoryStatusFilter] =
     useState<CategoryStatusFilter>("ALL");
   const categoryStatusOptions: Array<[CategoryStatusFilter, string]> = [
@@ -2535,6 +2567,37 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
     ["ACTIVE", "Đang hoạt động"],
     ["HIDDEN", "Đã ẩn"],
   ];
+  const setCategoryImageState = (row: TaxonomyRow | null) => {
+    setCategoryImageKey(row?.imageKey ?? null);
+    setCategoryImageUrl(row?.imageUrl ?? null);
+    setCategoryImagePhase("idle");
+  };
+  const releasePendingCategoryImages = useCallback(
+    async (keys?: readonly string[]) => {
+      const targetKeys = [
+        ...new Set(keys?.length ? keys : pendingCategoryImageKeysRef.current),
+      ];
+      for (const key of targetKeys) {
+        try {
+          const response = await fetch(
+            `/api/admin/category-images/${encodeURIComponent(key)}`,
+            { method: "DELETE" },
+          );
+          if (response.ok) pendingCategoryImageKeysRef.current.delete(key);
+        } catch {
+          // Giữ key trong bộ nhớ để lần chuyển màn hình kế tiếp có thể thử cleanup lại.
+        }
+      }
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      // Dọn các object đã upload nhưng người dùng chưa lưu danh mục khi rời màn hình.
+      void releasePendingCategoryImages();
+    },
+    [releasePendingCategoryImages],
+  );
   const loadRows = async () => {
     const response = await fetch(`/api/admin/${type}`);
     if (!response.ok) throw new Error("TAXONOMY_LOAD_FAILED");
@@ -2550,7 +2613,10 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
     void loadRows().catch(() => setMessage("Không tải được dữ liệu phân loại từ D1."));
   }, [type]);
   const openCategory = async (row: TaxonomyRow) => {
+    if (busy || isCategoryImageBusy) return;
+    await releasePendingCategoryImages();
     setEditing(row);
+    setCategoryImageState(row);
     if (!isCategories) return;
     const response = await fetch(`/api/admin/categories/${row.id}/products`);
     if (!response.ok) {
@@ -2561,8 +2627,16 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
     const body = (await response.json()) as { data?: CategoryProduct[] };
     setCategoryProducts(body.data ?? []);
   };
+  const startNewCategory = async () => {
+    if (busy || isCategoryImageBusy) return;
+    await releasePendingCategoryImages();
+    setEditing(null);
+    setCategoryProducts([]);
+    setCategoryImageState(null);
+    setMessage("");
+  };
   const toggleCategoryVisibility = async (row: TaxonomyRow) => {
-    if (!isCategories || busy) return;
+    if (!isCategories || busy || isCategoryImageBusy) return;
     const isActive = Boolean(row.isActive);
     const confirmation = isActive
       ? `Ẩn danh mục "${row.name}"?\n\nDanh mục sẽ không còn hiển thị trên storefront.\nCác sản phẩm thuộc danh mục vẫn được giữ nguyên và có thể khôi phục khi kích hoạt lại.`
@@ -2571,6 +2645,11 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
 
     setBusy(true);
     setMessage(isActive ? "Đang ẩn danh mục..." : "Đang kích hoạt lại danh mục...");
+    const stagedImageKey =
+      editing?.id === row.id && categoryImageKey &&
+      pendingCategoryImageKeysRef.current.has(categoryImageKey)
+        ? categoryImageKey
+        : null;
     try {
       const response = await fetch(`/api/admin/categories/${row.id}`, {
         method: isActive ? "DELETE" : "PUT",
@@ -2582,7 +2661,10 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
                 name: row.name,
                 slug: row.slug,
                 description: row.description ?? "",
-                imageKey: row.imageKey ?? null,
+                imageKey:
+                  editing?.id === row.id
+                    ? categoryImageKey
+                    : row.imageKey ?? null,
                 sortOrder: row.sortOrder,
                 isActive: true,
               }),
@@ -2599,10 +2681,17 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
         return;
       }
 
+      if (isActive && stagedImageKey)
+        await releasePendingCategoryImages([stagedImageKey]);
+      else if (!isActive && stagedImageKey)
+        pendingCategoryImageKeysRef.current.delete(stagedImageKey);
+
       // Luôn đọc lại danh sách authoritative sau khi đổi trạng thái category.
       const refreshedRows = await loadRows();
       if (editing?.id === row.id) {
-        setEditing(refreshedRows.find((item) => item.id === row.id) ?? null);
+        const refreshed = refreshedRows.find((item) => item.id === row.id) ?? null;
+        setEditing(refreshed);
+        setCategoryImageState(refreshed);
       }
       setMessage(isActive ? "Đã ẩn danh mục." : "Đã kích hoạt lại danh mục.");
     } catch {
@@ -2615,9 +2704,104 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
       setBusy(false);
     }
   };
+  const uploadCategoryImage = async (file: File | undefined) => {
+    if (!isCategories || !file || busy || isCategoryImageBusy) return;
+    setCategoryImagePhase("selecting");
+    setBusy(true);
+    try {
+      setCategoryImagePhase("validating");
+      validateProductImageFiles([file]);
+      const { response, optimized } = await optimizeAndUploadProductImage(file, {
+        endpoint: "/api/admin/category-images",
+        onPhase: (phase, result) => {
+          if (phase === "optimizing") {
+            setCategoryImagePhase("processing");
+            return;
+          }
+          setCategoryImagePhase("uploading");
+          setMessage(
+            `Đã tối ưu ${formatProductImageBytes(result?.originalBytes ?? 0)} → ${formatProductImageBytes(result?.optimizedBytes ?? 0)}. Đang tải ảnh lên...`,
+          );
+        },
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        key?: string;
+        url?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.key || !body.url)
+        throw new Error(body.error?.message ?? "Tải ảnh đại diện thất bại.");
+
+      const previousPendingKey = categoryImageKey &&
+        pendingCategoryImageKeysRef.current.has(categoryImageKey)
+        ? categoryImageKey
+        : null;
+      pendingCategoryImageKeysRef.current.add(body.key);
+      setCategoryImageKey(body.key);
+      setCategoryImageUrl(body.url);
+      setCategoryImagePhase("success");
+      setMessage(
+        `Đã tải ảnh ${formatProductImageBytes(optimized.originalBytes)} → ${formatProductImageBytes(optimized.optimizedBytes)} (${optimized.width}×${optimized.height}). Hãy lưu danh mục để áp dụng.`,
+      );
+      if (previousPendingKey && previousPendingKey !== body.key)
+        await releasePendingCategoryImages([previousPendingKey]);
+    } catch (caught) {
+      setCategoryImagePhase("error");
+      setMessage(
+        caught instanceof Error
+          ? caught.message
+          : "Tải ảnh đại diện thất bại. Vui lòng thử lại.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const deleteCategoryImage = async () => {
+    if (!isCategories || busy || isCategoryImageBusy || !categoryImageKey) return;
+    const pendingKey = pendingCategoryImageKeysRef.current.has(categoryImageKey)
+      ? categoryImageKey
+      : null;
+    if (pendingKey) {
+      await releasePendingCategoryImages([pendingKey]);
+      setCategoryImageState(editing);
+      setMessage("Đã hủy ảnh mới; ảnh hiện tại của danh mục vẫn được giữ lại.");
+      return;
+    }
+    if (!editing) {
+      setCategoryImageState(null);
+      return;
+    }
+    setBusy(true);
+    setCategoryImagePhase("deleting");
+    setMessage("Đang xóa ảnh...");
+    try {
+      const response = await fetch(`/api/admin/categories/${editing.id}/image`, {
+        method: "DELETE",
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      if (!response.ok)
+        throw new Error(body.error?.message ?? "Chưa thể xóa ảnh đại diện.");
+      const refreshedRows = await loadRows();
+      const refreshed = refreshedRows.find((row) => row.id === editing.id) ?? null;
+      setEditing(refreshed);
+      setCategoryImageState(refreshed);
+      setMessage("Đã xóa ảnh đại diện danh mục.");
+    } catch (caught) {
+      setCategoryImagePhase("error");
+      setMessage(
+        caught instanceof Error
+          ? caught.message
+          : "Chưa thể xóa ảnh đại diện. Vui lòng thử lại.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
   const saveTaxonomyRow = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || isCategoryImageBusy) return;
     const form = new FormData(event.currentTarget);
     setBusy(true);
     setMessage("");
@@ -2631,7 +2815,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
             name: form.get("name"),
             slug: form.get("slug"),
             description: form.get("description"),
-            imageKey: form.get("imageKey") || null,
+            imageKey: isCategories ? categoryImageKey : null,
             sortOrder: Number(form.get("sortOrder")),
             isActive: form.get("isActive") === "on",
             groupType: form.get("groupType") || null,
@@ -2644,7 +2828,17 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
       };
       if (!response.ok) {
         setMessage(body.error?.message ?? "Chưa thể lưu phân loại.");
+        if (isCategories) {
+          await releasePendingCategoryImages();
+          setCategoryImageState(editing);
+          setCategoryImagePhase("error");
+        }
         return;
+      }
+      if (isCategories) {
+        // Sau khi D1 đã lưu, key không còn là ảnh tạm; không gọi discard để tránh một round-trip thừa.
+        if (categoryImageKey)
+          pendingCategoryImageKeysRef.current.delete(categoryImageKey);
       }
       if (isCategories && editing) {
         const relationResponse = await fetch(
@@ -2665,15 +2859,21 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
       setMessage("Đã lưu phân loại và quan hệ sản phẩm.");
       setEditing(null);
       setCategoryProducts([]);
+      setCategoryImageState(null);
       await loadRows();
     } catch {
+      if (isCategories) {
+        await releasePendingCategoryImages();
+        setCategoryImageState(editing);
+        setCategoryImagePhase("error");
+      }
       setMessage("Chưa thể lưu phân loại. Vui lòng thử lại.");
     } finally {
       setBusy(false);
     }
   };
   const deleteTaxonomyRow = async () => {
-    if (!editing || busy) return;
+    if (!editing || busy || isCategoryImageBusy) return;
     const label = isCategories ? "danh mục" : "tag";
     const confirmation = isCategories
       ? `Xóa vĩnh viễn danh mục "${editing.name}"? Sản phẩm thuộc danh mục này sẽ không bị xóa. Hành động này không thể hoàn tác.`
@@ -2683,6 +2883,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
     setBusy(true);
     setMessage("Đang xóa vĩnh viễn...");
     try {
+      if (isCategories) await releasePendingCategoryImages();
       const response = await fetch(
         `/api/admin/${type}/${editing.id}/permanent`,
         { method: "DELETE" },
@@ -2699,6 +2900,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
       setRows((current) => current.filter((row) => row.id !== editing.id));
       setEditing(null);
       setCategoryProducts([]);
+      setCategoryImageState(null);
       try {
         await loadRows();
         setMessage(`Đã xóa ${label} vĩnh viễn.`);
@@ -2730,7 +2932,12 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               : "Quản lý đặc tính và độ tuổi sản phẩm"}
           </p>
         </div>
-        <button className="btn primary" onClick={() => { setEditing(null); setCategoryProducts([]); }}>
+        <button
+          className="btn primary"
+          type="button"
+          disabled={busy || isCategoryImageBusy}
+          onClick={() => void startNewCategory()}
+        >
           <Icon>add</Icon> THÊM {isCategories ? "DANH MỤC" : "TAG"}
         </button>
       </div>
@@ -2783,6 +2990,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
                     <div className="taxonomy-row-actions">
                       <button
                         type="button"
+                        disabled={busy || isCategoryImageBusy}
                         aria-label={`Sửa ${row.name}`}
                         title={`Sửa ${row.name}`}
                         onClick={() => void openCategory(row)}
@@ -2793,7 +3001,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
                         <button
                           className="taxonomy-visibility-btn"
                           type="button"
-                          disabled={busy}
+                          disabled={busy || isCategoryImageBusy}
                           onClick={() => void toggleCategoryVisibility(row)}
                         >
                           <Icon>{row.isActive ? "visibility_off" : "restore"}</Icon>
@@ -2827,7 +3035,68 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
         {isCategories ? (
           <>
             <label>Mô tả<textarea name="description" defaultValue={editing?.description} /></label>
-            <label>R2 image key<input name="imageKey" defaultValue={editing?.imageKey ?? ""} /></label>
+            <section className="taxonomy-image-control" aria-label="Ảnh đại diện danh mục">
+              <div className="taxonomy-image-heading">
+                <h3>Ảnh đại diện danh mục</h3>
+                <p>Ảnh sẽ được kiểm tra và tối ưu tự động trước khi sử dụng.</p>
+              </div>
+              {categoryImageKey ? (
+                <>
+                  <div className="taxonomy-image-preview">
+                    <ProductImage
+                      className="storefront-product-media"
+                      r2Key={categoryImageKey}
+                      url={categoryImageUrl}
+                      alt={editing?.name ?? "Ảnh đại diện danh mục"}
+                    />
+                  </div>
+                  <div className="taxonomy-image-actions">
+                    <label className="btn taxonomy-image-picker">
+                      <Icon>upload</Icon> THAY ẢNH
+                      <input
+                        name="file"
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                        disabled={busy || isCategoryImageBusy}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          void uploadCategoryImage(file);
+                        }}
+                      />
+                    </label>
+                    <button
+                      className="taxonomy-delete-btn"
+                      type="button"
+                      disabled={busy || isCategoryImageBusy}
+                      onClick={() => void deleteCategoryImage()}
+                    >
+                      <Icon>delete</Icon> XÓA ẢNH
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <label className="taxonomy-image-picker taxonomy-image-empty">
+                  <Icon>add_photo_alternate</Icon>
+                  <span>TẢI ẢNH LÊN</span>
+                  <small>JPG, PNG hoặc WebP</small>
+                  <input
+                    name="file"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                    disabled={busy || isCategoryImageBusy}
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      void uploadCategoryImage(file);
+                    }}
+                  />
+                </label>
+              )}
+              <small className="taxonomy-image-status" role="status" aria-live="polite">
+                {categoryImagePhaseLabels[categoryImagePhase]}
+              </small>
+            </section>
           </>
         ) : (
           <label>Nhóm tag<input name="groupType" defaultValue={editing?.groupType ?? "ATTRIBUTE"} /></label>
@@ -2885,7 +3154,7 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               <button
                 className="taxonomy-visibility-btn"
                 type="button"
-                disabled={busy}
+                disabled={busy || isCategoryImageBusy}
                 onClick={() => void toggleCategoryVisibility(editing)}
               >
                 <Icon>{editing.isActive ? "visibility_off" : "restore"}</Icon>
@@ -2896,13 +3165,17 @@ export function AdminTaxonomyPage({ type }: { type: "categories" | "tags" }) {
               <button
                 className="taxonomy-delete-btn"
                 type="button"
-                disabled={busy}
+                disabled={busy || isCategoryImageBusy}
                 onClick={() => void deleteTaxonomyRow()}
               >
                 <Icon>delete</Icon> XÓA VĨNH VIỄN
               </button>
             ) : null}
-            <button className="btn primary" type="submit" disabled={busy}>
+            <button
+              className="btn primary"
+              type="submit"
+              disabled={busy || isCategoryImageBusy}
+            >
               <Icon>save</Icon> {busy ? "ĐANG XỬ LÝ..." : "LƯU"}
             </button>
           </div>

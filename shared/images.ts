@@ -13,7 +13,10 @@ export const ALLOWED_IMAGE_TYPES = [
 
 export type AllowedImageType = (typeof ALLOWED_IMAGE_TYPES)[number];
 export type ProductImageUrlStrategy = "local" | "production";
-export type ImageKeyPurpose = "product-gallery" | "product-description";
+export type ImageKeyPurpose =
+  | "product-gallery"
+  | "product-description"
+  | "category-representative";
 
 export function normalizeR2Key(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -65,6 +68,14 @@ export function getPublicImageUrl(r2Key: unknown): string {
   return getProductImageUrl(r2Key, "production");
 }
 
+export function isLegacyCategoryImageKey(value: unknown): value is string {
+  const key = normalizeR2Key(value);
+  return Boolean(
+    key &&
+      /^images\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:jpg|jpeg|png|webp)$/i.test(key),
+  );
+}
+
 export function isAllowedImageType(value: string): value is AllowedImageType {
   return ALLOWED_IMAGE_TYPES.includes(value as AllowedImageType);
 }
@@ -83,7 +94,12 @@ export function createImmutableImageKey(
   uuid: string = crypto.randomUUID(),
   purpose: ImageKeyPurpose = "product-gallery",
 ): string {
-  const prefix = purpose === "product-description" ? "product-descriptions" : "products";
+  const prefix =
+    purpose === "product-description"
+      ? "product-descriptions"
+      : purpose === "category-representative"
+        ? "categories"
+        : "products";
   return `${prefix}/${now.toISOString().slice(0, 10)}/${uuid}.${imageExtension(contentType)}`;
 }
 
@@ -105,4 +121,44 @@ export function isImmutableProductDescriptionImageKey(value: unknown): value is 
       key,
     ),
   );
+}
+
+export function isImmutableCategoryImageKey(value: unknown): value is string {
+  const key = normalizeR2Key(value);
+  return Boolean(
+    key &&
+      /^categories\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(
+        key,
+      ),
+  );
+}
+
+export function isManagedImageKey(value: unknown): value is string {
+  const normalized = normalizeR2Key(value);
+  return (
+    isImmutableProductImageKey(value) ||
+    isImmutableProductDescriptionImageKey(value) ||
+    isImmutableCategoryImageKey(value) ||
+    // Giữ khả năng dọn object product legacy đã tồn tại trước khi key có UUID.
+    Boolean(
+      normalized &&
+        (normalized.startsWith("products/") ||
+          normalized.startsWith("product-descriptions/")),
+    )
+  );
+}
+
+function encodeImagePath(key: string) {
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
+export function getCategoryImageUrl(
+  imageKey: unknown,
+  strategy: ProductImageUrlStrategy,
+): string {
+  const key = normalizeR2Key(imageKey);
+  if (!key) return PRODUCT_IMAGE_PLACEHOLDER;
+  // Dữ liệu seed cũ trỏ tới asset public, không phải object R2; giữ đường dẫn để backward-compatible.
+  if (isLegacyCategoryImageKey(key)) return `/${encodeImagePath(key)}`;
+  return getProductImageUrl(key, strategy);
 }
