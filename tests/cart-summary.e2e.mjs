@@ -87,6 +87,9 @@ async function inspectSummary(page) {
       promotionDigits: valueDigits(".cart-summary .promotion-breakdown-value strong"),
       totalDigits: valueDigits(".cart-summary .cart-final-total .price"),
       rowDisplay: display(".cart-summary .promotion-total-row"),
+      shippingDisplay: display(".cart-summary .shipping-fee-row"),
+      shippingDigits: valueDigits(".cart-summary .shipping-fee-row strong"),
+      promotionBreakdownDisplay: display(".cart-summary .promotion-breakdown"),
       breakdownHeadingDisplay: display(".cart-summary .promotion-breakdown > b"),
       breakdownAmountDisplay: display(".cart-summary .promotion-breakdown-value strong"),
       promotionName: box(".cart-summary .promotion-breakdown-name"),
@@ -246,8 +249,65 @@ try {
     }
   }
 
+  // Xóa fixture promotion để chụp cùng một cart ở trạng thái phí chuẩn.
+  await jsonRequest("DELETE", `/api/admin/promotions/${freeShippingPromotionId}`);
+  await jsonRequest("DELETE", `/api/admin/promotions/${promotionId}`);
+
+  for (const viewport of [
+    { width: 1536, height: 1024, file: "cart-summary-standard-1536.png" },
+    { width: 390, height: 844, file: "cart-summary-standard-390.png" },
+  ]) {
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      deviceScaleFactor: 1,
+      locale: "vi-VN",
+    });
+    await context.addInitScript(
+      ({ id }) => {
+        localStorage.setItem(
+          "babyjoy.cart.v1",
+          JSON.stringify({ items: [{ variantId: id, quantity: 1 }] }),
+        );
+        sessionStorage.removeItem("babyjoy.preparedCartShare.v1");
+        localStorage.removeItem("babyjoy.cartShareSubmission.v1");
+      },
+      { id: variantId },
+    );
+    const page = await context.newPage();
+    try {
+      await page.goto(`${baseUrl}/cart`, { waitUntil: "domcontentloaded" });
+      await page.locator(".cart-item").first().waitFor({ state: "visible", timeout: 10000 });
+      await page.locator(".shipping-fee-row").waitFor({ state: "visible", timeout: 10000 });
+      await page.waitForFunction(
+        () => document.querySelector(".shipping-fee-row")?.textContent?.includes("15.000"),
+        undefined,
+        { timeout: 10000 },
+      );
+      await page.evaluate(() => document.fonts.ready).catch(() => undefined);
+      await page.waitForTimeout(250);
+
+      const metrics = await inspectSummary(page);
+      await page.screenshot({
+        path: fileURLToPath(new URL(viewport.file, outputDir)),
+        fullPage: true,
+      });
+
+      assert(!metrics.overflow, `Cart summary standard ${viewport.width}px bị tràn ngang`);
+      assert(metrics.shippingDisplay !== "missing" && metrics.shippingDisplay !== "none", `Thiếu dòng phí ship ở ${viewport.width}px`);
+      assert(metrics.shippingDigits === "15000", `Sai phí ship ở ${viewport.width}px: ${metrics.shippingDigits}`);
+      assert(metrics.subtotalDigits === "55000", `Sai tạm tính standard ở ${viewport.width}px: ${metrics.subtotalDigits}`);
+      assert(metrics.totalDigits === "70000", `Sai tổng standard ở ${viewport.width}px: ${metrics.totalDigits}`);
+      assert(metrics.promotionBreakdownDisplay === "missing", `Standard ${viewport.width}px còn breakdown promotion`);
+      assert(!metrics.text.includes("Ưu đãi đang áp dụng"), `Standard ${viewport.width}px còn heading promotion`);
+      assert(metrics.text.includes("Phí vận chuyển") && metrics.text.includes("+15.000"), `Standard ${viewport.width}px thiếu nội dung phí ship`);
+      assert(metrics.totalSize > metrics.subtotalSize, `Total standard ${viewport.width}px chưa nổi bật hơn subtotal`);
+    } finally {
+      await context.close();
+    }
+  }
+
   console.log(
-    `CART_SUMMARY_E2E_OK product=${productId} promotion=${promotionId} desktop=1536 mobile=390 hierarchy=pass applied-promotions=pass`,
+    `CART_SUMMARY_E2E_OK product=${productId} promotion=${promotionId} desktop=1536 mobile=390 applied=pass standard-shipping=pass screenshots=pass`,
   );
 } finally {
   await browser.close();

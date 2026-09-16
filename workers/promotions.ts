@@ -1,8 +1,10 @@
 import {
   evaluatePromotions,
+  hasRealizedPromotion,
   parseStoredPromotion,
   promotionConfigProvidesFreeShipping,
   promotionTypes,
+  STANDARD_SHIPPING_FEE_VND,
   validatePromotionConfig,
   type AppliedPromotion,
   type PromotionCartLine,
@@ -77,6 +79,9 @@ export type PromotionGiftSnapshot = PromotionGiftItem & {
 
 export type PromotionHistory = {
   discountAmountVnd: number;
+  shippingFeeVnd: number;
+  shippingStatus: "EMPTY_CART" | "STANDARD" | "WAIVED_BY_PROMOTION";
+  hasRealizedPromotion: boolean;
   finalTotalVnd: number;
   freeShipping: boolean;
   promotions: PromotionSnapshot[];
@@ -196,18 +201,21 @@ type CanonicalLineResult = {
 
 function isMissingPromotionSchema(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /no such table: promotions|no such column: promotion_discount_vnd/i.test(message);
+  return /no such table: promotions|no such column: (promotion_discount_vnd|shipping_fee_vnd)/i.test(message);
 }
 
 export async function hasPromotionSchema(env: Env) {
-  try {
-    const row = await env.DB.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'promotions'",
-    ).first<{ name: string }>();
-    return Boolean(row?.name);
-  } catch {
-    return false;
-  }
+  const row = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'promotions'",
+  ).first<{ name: string }>();
+  return Boolean(row?.name);
+}
+
+export async function hasShippingSchema(env: Env) {
+  const column = await env.DB.prepare(
+    "SELECT name FROM pragma_table_info('cart_requests') WHERE name = 'shipping_fee_vnd'",
+  ).first<{ name: string }>();
+  return Boolean(column?.name);
 }
 
 function mapPromotionRow(row: PromotionRow) {
@@ -251,13 +259,16 @@ export async function loadActivePromotions(
   rows.results.forEach((row) => {
     const promotion = mapPromotionRow(row);
     if (promotion) valid.push(promotion);
-    else
-      console.warn(
+    else {
+      // Không biến cấu hình khuyến mãi lỗi thành "không có khuyến mãi" để tiếp tục tính tiền.
+      console.error(
         JSON.stringify({
-          event: "promotion_invalid_config_skipped",
+          event: "promotion_invalid_config",
           promotionId: row.id,
         }),
       );
+      throw new Error("PROMOTION_INVALID_CONFIG");
+    }
   });
   return valid;
 }
@@ -654,17 +665,36 @@ async function loadPromotionTargetNames(
   });
   const emptyProducts = { results: [] as NamedRow[] };
   const emptyCategories = { results: [] as NamedRow[] };
+  const [inventorySchema, variantRetirementSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasVariantRetirementSchema(env),
+  ]);
+  const activeVariantPredicate = variantRetirementSchema
+    ? " AND v.archived_at IS NULL"
+    : "";
+  const availableVariantPredicate = inventorySchema
+    ? `v.availability = 'AVAILABLE'
+       AND (v.track_inventory = 0 OR v.stock_on_hand > v.reserved_quantity)${activeVariantPredicate}`
+    : `v.availability = 'AVAILABLE'${activeVariantPredicate}`;
   const [productRows, categoryRows] = await Promise.all([
     productIds.size
       ? env.DB.prepare(
-          `SELECT id, name FROM products WHERE id IN (${[...productIds].map(() => "?").join(",")})`,
+          `SELECT id, name FROM products
+           WHERE status = 'AVAILABLE'
+             AND EXISTS (
+               SELECT 1 FROM product_variants v
+               WHERE v.product_id = products.id AND ${availableVariantPredicate}
+             )
+             AND id IN (${[...productIds].map(() => "?").join(",")})`,
         )
           .bind(...productIds)
           .all<NamedRow>()
       : Promise.resolve(emptyProducts),
     categoryIds.size
       ? env.DB.prepare(
-          `SELECT id, name FROM categories WHERE id IN (${[...categoryIds].map(() => "?").join(",")})`,
+          `SELECT id, name FROM categories
+           WHERE is_active = 1
+             AND id IN (${[...categoryIds].map(() => "?").join(",")})`,
         )
           .bind(...categoryIds)
           .all<NamedRow>()
@@ -993,6 +1023,8 @@ export function buildPromotionPersistenceStatements(
   if (!result.promotionSchema) return empty;
   const byId = new Map(result.promotions.map((promotion) => [promotion.id, promotion]));
   result.evaluation.appliedPromotions.forEach((applied) => {
+    // Không đếm usage hoặc snapshot một reward chỉ được eligible nhưng chưa cấp benefit thật.
+    if (!hasRealizedPromotion([applied])) return;
     const definition = byId.get(applied.promotionId);
     if (!definition) return;
     if (options.consumeUsage !== false)
@@ -1082,6 +1114,9 @@ export async function loadPromotionHistory(
 ): Promise<PromotionHistory> {
   const fallback: PromotionHistory = {
     discountAmountVnd: 0,
+    shippingFeeVnd: 0,
+    shippingStatus: "EMPTY_CART",
+    hasRealizedPromotion: false,
     finalTotalVnd: 0,
     freeShipping: false,
     promotions: [],
@@ -1089,12 +1124,22 @@ export async function loadPromotionHistory(
   };
   if (!(await hasPromotionSchema(env))) return fallback;
   try {
+    const shippingSchema = await hasShippingSchema(env);
     const [request, promotions, gifts] = await Promise.all([
       env.DB.prepare(
-        "SELECT subtotal_vnd AS subtotalVnd, promotion_discount_vnd AS discountAmountVnd, final_total_vnd AS finalTotalVnd FROM cart_requests WHERE id = ?",
+        `SELECT subtotal_vnd AS subtotalVnd, total_quantity AS totalQuantity,
+          promotion_discount_vnd AS discountAmountVnd, final_total_vnd AS finalTotalVnd,
+          ${shippingSchema ? "shipping_fee_vnd" : "0"} AS shippingFeeVnd
+         FROM cart_requests WHERE id = ?`,
       )
         .bind(cartRequestId)
-        .first<{ subtotalVnd: number; discountAmountVnd: number; finalTotalVnd: number }>(),
+        .first<{
+          subtotalVnd: number;
+          totalQuantity: number;
+          discountAmountVnd: number;
+          finalTotalVnd: number;
+          shippingFeeVnd: number;
+        }>(),
       env.DB.prepare(
         `SELECT promotion_id AS promotionId,
           promotion_name_snapshot AS promotionName,
@@ -1122,18 +1167,40 @@ export async function loadPromotionHistory(
       ...promotion,
       freeShipping: snapshotProvidesFreeShipping(promotion, request?.subtotalVnd ?? 0),
     }));
+    const snapshotGifts = gifts.results.map((gift) => ({
+      ...gift,
+      unitPriceVnd: 0 as const,
+      lineTotalVnd: 0 as const,
+      isPromotionGift: true as const,
+      imageUrl: getPublicImageUrl(gift.imageKey),
+    } satisfies PromotionGiftSnapshot));
+    const hasRealized =
+      snapshotPromotions.some(
+        (promotion) =>
+          promotion.discountAmountVnd > 0 ||
+          promotion.freeShipping ||
+          snapshotGifts.some((gift) => gift.promotionId === promotion.promotionId),
+      );
+    const shippingFeeVnd = request?.shippingFeeVnd === STANDARD_SHIPPING_FEE_VND
+      ? STANDARD_SHIPPING_FEE_VND
+      : 0;
+    const totalQuantity = Number(request?.totalQuantity ?? 0);
     return {
       discountAmountVnd: request?.discountAmountVnd ?? 0,
       finalTotalVnd: request?.finalTotalVnd ?? request?.subtotalVnd ?? 0,
+      shippingFeeVnd,
+      shippingStatus:
+        totalQuantity <= 0
+          ? "EMPTY_CART"
+          : shippingFeeVnd > 0
+            ? "STANDARD"
+            : hasRealized
+              ? "WAIVED_BY_PROMOTION"
+              : "STANDARD",
+      hasRealizedPromotion: hasRealized,
       freeShipping: snapshotPromotions.some((promotion) => promotion.freeShipping),
       promotions: snapshotPromotions,
-      gifts: gifts.results.map((gift) => ({
-        ...gift,
-        unitPriceVnd: 0,
-        lineTotalVnd: 0,
-        isPromotionGift: true,
-        imageUrl: getPublicImageUrl(gift.imageKey),
-      })),
+      gifts: snapshotGifts,
     };
   } catch (caught) {
     if (isMissingPromotionSchema(caught)) return fallback;

@@ -69,6 +69,7 @@ function createEnv() {
     "0009_cleanup_seed_test_products.sql",
     "0010_storefront_brand_v1.sql",
     "0011_promotion_management_p0_p1.sql",
+    "0025_shipping_fee_v1.sql",
   ])
     database.exec(migration(name));
   database.exec(`
@@ -192,15 +193,22 @@ describe("Promotion API và D1 snapshot", () => {
 
     const evaluation = await api(env, "/api/cart/evaluate", jsonInit("POST", {
       items: [{ variantId: "promotion-test-variant", quantity: 1, promotionId: created.id, discountAmountVnd: 999999, giftPriceVnd: 0 }],
+      shippingFeeVnd: 0,
+      discountTotalVnd: 100000,
+      finalTotalVnd: 0,
+      freeShipping: true,
     }));
     expect(evaluation.status).toBe(200);
-    const evaluationBody = await evaluation.json() as { subtotalVnd: number; discountTotalVnd: number; finalTotalVnd: number };
-    expect(evaluationBody).toMatchObject({ subtotalVnd: 125000, discountTotalVnd: 30000, finalTotalVnd: 95000 });
+    const evaluationBody = await evaluation.json() as { subtotalVnd: number; discountTotalVnd: number; discountedSubtotalVnd: number; shippingFeeVnd: number; finalTotalVnd: number };
+    expect(evaluationBody).toMatchObject({ subtotalVnd: 125000, discountTotalVnd: 30000, discountedSubtotalVnd: 95000, shippingFeeVnd: 0, finalTotalVnd: 95000 });
 
     const prepared = await api(env, "/api/cart/share/prepare", jsonInit("POST", {
       submissionToken: "promotion-snapshot-share-1",
       acceptCurrentPrices: false,
-      items: [{ variantId: "promotion-test-variant", quantity: 1, displayedPrice: 125000, discountAmountVnd: 999999 }],
+      items: [{ variantId: "promotion-test-variant", quantity: 1, displayedPrice: 125000, discountAmountVnd: 999999, shippingFeeVnd: 0, finalTotalVnd: 0 }],
+      shippingFeeVnd: 0,
+      discountTotalVnd: 100000,
+      finalTotalVnd: 0,
     }));
     expect(prepared.status).toBe(201);
     const preparedBody = (await prepared.json()) as {
@@ -278,7 +286,14 @@ describe("Promotion API và D1 snapshot", () => {
       finalTotalVnd: number;
       progress: Array<{ message: string; remainingQuantity?: number }>;
     };
-    expect(body).toMatchObject({ subtotalVnd: 250000, discountTotalVnd: 0, finalTotalVnd: 250000 });
+    expect(body).toMatchObject({
+      subtotalVnd: 250000,
+      discountTotalVnd: 0,
+      shippingFeeVnd: 15000,
+      shippingStatus: "STANDARD",
+      hasRealizedPromotion: false,
+      finalTotalVnd: 265000,
+    });
     expect(body.progress.map(({ message, remainingQuantity }) => ({ message, remainingQuantity }))).toEqual([
       {
         message: "Bạn cần mua thêm 3 sản phẩm Promotion test product để áp dụng ưu đãi giảm 20.000 ₫.",
@@ -366,5 +381,102 @@ describe("Promotion API và D1 snapshot", () => {
         promotions: [expect.objectContaining({ freeShipping: true, discountAmountVnd: 0 })],
       },
     });
+  });
+
+  it("evaluate giữ đồng bộ discount, ship, total và progress tại ba biên threshold", async () => {
+    const { env } = createEnv();
+    const createdResponse = await api(env, "/api/admin/promotions", jsonInit("POST", {
+      ...fixedPayload,
+      name: "Biên 500k giảm 30k",
+      status: "ACTIVE",
+      config: { ...fixedPayload.config, minimumSubtotal: 500000, discountAmount: 30000 },
+    }));
+    expect(createdResponse.status).toBe(201);
+
+    const evaluate = async (quantity: number) => {
+      const response = await api(env, "/api/cart/evaluate", jsonInit("POST", {
+        items: [{
+          variantId: "promotion-test-variant",
+          quantity,
+          shippingFeeVnd: 0,
+          discountTotalVnd: 100000,
+          finalTotalVnd: 0,
+        }],
+      }));
+      expect(response.status).toBe(200);
+      return await response.json() as {
+        subtotalVnd: number;
+        discountTotalVnd: number;
+        shippingFeeVnd: number;
+        finalTotalVnd: number;
+        appliedPromotions: unknown[];
+        progress: Array<{ promotionId: string }>;
+      };
+    };
+
+    const below = await evaluate(3);
+    expect(below).toMatchObject({
+      subtotalVnd: 375000,
+      discountTotalVnd: 0,
+      shippingFeeVnd: 15000,
+      finalTotalVnd: 390000,
+      appliedPromotions: [],
+    });
+    expect(below.progress).toEqual([
+      expect.objectContaining({ promotionId: expect.any(String) }),
+    ]);
+    expect(await evaluate(4)).toMatchObject({
+      subtotalVnd: 500000,
+      discountTotalVnd: 30000,
+      shippingFeeVnd: 0,
+      finalTotalVnd: 470000,
+      appliedPromotions: [expect.anything()],
+      progress: [],
+    });
+    expect(await evaluate(5)).toMatchObject({
+      subtotalVnd: 625000,
+      discountTotalVnd: 30000,
+      shippingFeeVnd: 0,
+      finalTotalVnd: 595000,
+      appliedPromotions: [expect.anything()],
+      progress: [],
+    });
+  });
+
+  it("không hạ lỗi cấu hình ACTIVE thành zero promotions hoặc tiếp tục tính tiền", async () => {
+    const { env, database } = createEnv();
+    database
+      .prepare(
+        `INSERT INTO promotions (
+          id, name, description, type, status, priority, stackable,
+          usage_count_total, config_json, created_at, updated_at
+        ) VALUES (?, 'Cấu hình lỗi', '', 'ORDER_FIXED_DISCOUNT', 'ACTIVE',
+          100, 0, 0, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      )
+      .run("invalid-active-promotion");
+
+    const response = await api(env, "/api/cart/evaluate", jsonInit("POST", {
+      items: [{ variantId: "promotion-test-variant", quantity: 1 }],
+    }));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "SUBMISSION_FAILED" } });
+  });
+
+  it("phân biệt lỗi DB với cơ sở dữ liệu không có promotion schema", async () => {
+    const { env } = createEnv();
+    const brokenEnv = {
+      ...env,
+      DB: {
+        prepare() {
+          throw new Error("D1 unavailable");
+        },
+      },
+    } as unknown as Env;
+
+    const response = await api(brokenEnv, "/api/cart/evaluate", jsonInit("POST", {
+      items: [{ variantId: "promotion-test-variant", quantity: 1 }],
+    }));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "SUBMISSION_FAILED" } });
   });
 });

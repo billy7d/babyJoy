@@ -33,6 +33,27 @@
   border-bottom: 0;
 }
 
+/* Phí ship là dòng snapshot riêng, không trộn vào tạm tính hay promotion breakdown. */
+.cart-page .cart-summary > .shipping-fee-row {
+  min-width: 0;
+  margin-top: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--surface-container);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--on-variant);
+  font-size: 14px;
+}
+
+.cart-page .cart-summary > .shipping-fee-row strong {
+  flex: 0 0 auto;
+  color: var(--on-surface);
+  font-family: "Quicksand", sans-serif;
+  white-space: nowrap;
+}
+
 /* Breakdown đứng giữa subtotal và total nên divider đầu section là ranh giới duy nhất phía trên. */
 .cart-page .cart-summary > .promotion-breakdown {
   margin-top: 0;

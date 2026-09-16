@@ -1954,6 +1954,7 @@ export function AdminCartRequestsPage() {
                 <th>Thời gian</th>
                 <th>Số mặt hàng</th>
                 <th>Tạm tính</th>
+                <th>Tổng</th>
                 <th>Trạng thái</th>
                 <th>Kênh</th>
                 <th>Trạng thái gửi</th>
@@ -1962,7 +1963,7 @@ export function AdminCartRequestsPage() {
             <tbody>
               {loading && !requests.length ? (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="request-table-state" aria-live="polite">
                       <Icon className="request-table-loading-icon">progress_activity</Icon>
                       <p>Đang tải danh sách giỏ hàng…</p>
@@ -1971,7 +1972,7 @@ export function AdminCartRequestsPage() {
                 </tr>
               ) : loadError && !requests.length ? (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="request-table-state request-table-error" role="alert">
                       <Icon>error</Icon>
                       <p>{loadError}</p>
@@ -2034,6 +2035,12 @@ export function AdminCartRequestsPage() {
                       <Price value={request.subtotalVnd} />
                     </td>
                     <td>
+                      <Price value={request.finalTotalVnd ?? request.subtotalVnd} />
+                      {(request.shippingFeeVnd ?? 0) > 0 && (
+                        <small>+{formatVnd(request.shippingFeeVnd ?? 0)} ship</small>
+                      )}
+                    </td>
+                    <td>
                       <StatusBadge
                         status={
                           request.checkoutState && request.checkoutState !== "LEGACY"
@@ -2067,7 +2074,7 @@ export function AdminCartRequestsPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="request-table-state">
                       <Icon>shopping_basket</Icon>
                       <h2>
@@ -2127,6 +2134,9 @@ export function AdminCartRequestDetailPage() {
     totalQuantity: number;
     subtotalVnd: number;
     promotionDiscountVnd?: number;
+    shippingFeeVnd?: number;
+    shippingStatus?: "EMPTY_CART" | "STANDARD" | "WAIVED_BY_PROMOTION";
+    hasRealizedPromotion?: boolean;
     finalTotalVnd?: number;
     freeShipping?: boolean;
     status: string;
@@ -2167,6 +2177,12 @@ export function AdminCartRequestDetailPage() {
       promotionName: string;
       discountAmountVnd: number;
       freeShipping?: boolean;
+    }>;
+    gifts?: Array<{
+      promotionId: string | null;
+      productName: string;
+      variantName: string;
+      quantity: number;
     }>;
     items: Array<{
       id: string;
@@ -2351,7 +2367,12 @@ export function AdminCartRequestDetailPage() {
                 <Price value={detail.subtotalVnd} />
               </div>
             </div>
-            {(requestPromotions.length > 0 || detail.freeShipping) && (
+            {detail.shippingStatus === "STANDARD" && (detail.shippingFeeVnd ?? 0) > 0 ? (
+              <div className="request-shipping-summary">
+                <p><span>Phí vận chuyển</span><strong>+{formatVnd(detail.shippingFeeVnd ?? 0)}</strong></p>
+                <p className="request-promotion-total"><span>Tổng</span><Price value={detail.finalTotalVnd ?? detail.subtotalVnd} /></p>
+              </div>
+            ) : (detail.hasRealizedPromotion && (requestPromotions.length > 0 || detail.freeShipping || (detail.gifts?.length ?? 0) > 0)) && (
               <div className="request-promotion-summary">
                 <b>Ưu đãi đang áp dụng</b>
                 {requestPromotions.map((promotion) => (
@@ -2371,12 +2392,26 @@ export function AdminCartRequestDetailPage() {
                     <strong><small>{FREE_SHIPPING_LABEL}</small></strong>
                   </p>
                 )}
+                {detail.gifts?.map((gift) => (
+                  <p key={`${gift.promotionId ?? "gift"}:${gift.productName}:${gift.variantName}`}>
+                    <span>🎁 {gift.productName} — {gift.variantName}</span>
+                    <strong>x{gift.quantity}</strong>
+                  </p>
+                ))}
                 <p className="request-promotion-total">
-                  <span>Tổng sau ưu đãi</span>
+                  <span>Tổng</span>
                   <Price value={detail.finalTotalVnd ?? detail.subtotalVnd} />
                 </p>
               </div>
             )}
+            {detail.shippingStatus !== "EMPTY_CART" &&
+              !detail.hasRealizedPromotion &&
+              !(detail.shippingStatus === "STANDARD" && (detail.shippingFeeVnd ?? 0) > 0) && (
+                <p className="request-promotion-total">
+                  <span>Tổng</span>
+                  <Price value={detail.finalTotalVnd ?? detail.subtotalVnd} />
+                </p>
+              )}
           </section>
         </div>
         <aside>

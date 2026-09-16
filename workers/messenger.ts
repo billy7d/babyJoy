@@ -8,6 +8,7 @@ import {
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
   hasPromotionSchema,
+  hasShippingSchema,
   loadPromotionHistory,
   PromotionCartError,
   type PromotionCartRequestItem,
@@ -382,6 +383,13 @@ async function startResponse(
         totalQuantity: row.totalQuantity,
         subtotalVnd: row.subtotalVnd,
         promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
+        shippingFeeVnd: schema ? history.shippingFeeVnd : 0,
+        shippingStatus: schema
+          ? history.shippingStatus
+          : row.totalQuantity > 0
+            ? "STANDARD"
+            : "EMPTY_CART",
+        hasRealizedPromotion: schema ? history.hasRealizedPromotion : false,
         finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
         freeShipping: history.freeShipping,
         createdAt: row.createdAt,
@@ -441,7 +449,14 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       loaded,
     );
     const comboSchema = await hasComboSchema(env);
+    const shippingSchema = await hasShippingSchema(env);
     const itemLineCount = pricedItems.length + loaded.evaluation.gifts.length;
+    // Schema cũ chỉ được dùng trong compatibility path; không ghi phí vào nơi chưa có cột.
+    const persistedFinalTotalVnd = shippingSchema
+      ? loaded.evaluation.finalTotalVnd
+      : loaded.evaluation.discountedSubtotalVnd;
+    const shippingColumn = shippingSchema ? ", shipping_fee_vnd" : "";
+    const shippingValue = shippingSchema ? ", ?" : "";
     const statements: D1PreparedStatement[] = [
       ...promotionStatements.usage,
       loaded.promotionSchema
@@ -449,9 +464,9 @@ export async function startMessengerCheckout(request: Request, env: Env) {
             `INSERT INTO cart_requests (
               id, public_code, submission_token, customer_name, customer_phone,
               item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
-              final_total_vnd, status, telegram_status, contact_channel,
+              final_total_vnd${shippingColumn}, status, telegram_status, contact_channel,
               messenger_delivery_status, created_at, updated_at
-            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED', 'PENDING',
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?${shippingValue}, 'SUBMITTED', 'PENDING',
               'MESSENGER', 'PENDING', ?, ?)`,
           ).bind(
             cartRequestId,
@@ -461,7 +476,8 @@ export async function startMessengerCheckout(request: Request, env: Env) {
             totalQuantity,
             subtotalVnd,
             loaded.evaluation.discountTotalVnd,
-            loaded.evaluation.finalTotalVnd,
+            persistedFinalTotalVnd,
+            ...(shippingSchema ? [loaded.evaluation.shippingFeeVnd] : []),
             createdAt,
             createdAt,
           )
@@ -937,6 +953,7 @@ export function composeMessengerCartSummary(request: {
   storeDisplayName?: string;
   items: PricedItem[];
   subtotalVnd: number;
+  shippingFeeVnd?: number;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
   freeShipping?: boolean;
@@ -975,6 +992,9 @@ export function composeMessengerCartSummary(request: {
   lines.push(
     "────────────────",
     `Tạm tính: ${formatVnd(request.subtotalVnd)}`,
+    ...(request.shippingFeeVnd && request.shippingFeeVnd > 0
+      ? [`Phí vận chuyển: ${formatVnd(request.shippingFeeVnd)}`]
+      : []),
     ...(request.promotionDiscountVnd
       ? [`Khuyến mãi: -${formatVnd(request.promotionDiscountVnd)}`]
       : []),
@@ -1141,6 +1161,7 @@ async function deliverCartSummary(cartRequestId: string, env: Env) {
         storeDisplayName: displayName,
         items: items.results,
         subtotalVnd: delivery.subtotalVnd,
+        shippingFeeVnd: schema ? history.shippingFeeVnd : 0,
         promotionDiscountVnd: schema ? history.discountAmountVnd : 0,
         finalTotalVnd: schema ? history.finalTotalVnd : delivery.subtotalVnd,
         freeShipping: history.freeShipping,
