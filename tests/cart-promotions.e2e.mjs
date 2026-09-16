@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
 
 const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 const screenshotDir = new URL("../screenshots/actual/", import.meta.url);
@@ -18,6 +18,10 @@ function evaluationPayload() {
     success: true,
     subtotalVnd: 89000,
     discountTotalVnd: 50000,
+    discountedSubtotalVnd: 39000,
+    shippingFeeVnd: 0,
+    shippingStatus: "WAIVED_BY_PROMOTION",
+    hasRealizedPromotion: true,
     finalTotalVnd: 39000,
     totalQuantity: 1,
     items: [{
@@ -40,6 +44,7 @@ function evaluationPayload() {
         promotionName: "Ưu đãi giao hàng cho mẹ",
         type: "FREE_SHIPPING",
         discountAmountVnd: 0,
+        freeShipping: true,
         giftUnavailable: false,
       },
       {
@@ -47,6 +52,7 @@ function evaluationPayload() {
         promotionName: "MUA 5 GIẢM 10%",
         type: "ORDER_PERCENTAGE_DISCOUNT",
         discountAmountVnd: 50000,
+        freeShipping: false,
         giftUnavailable: false,
       },
     ],
@@ -55,6 +61,7 @@ function evaluationPayload() {
         promotionId: "progress-product",
         promotionName: "Đủ số lượng sản phẩm",
         type: "QUANTITY_DISCOUNT",
+        kind: "NEXT_UNLOCK",
         priority: 50,
         remainingQuantity: 2,
         nextReward: "Miễn phí vận chuyển",
@@ -64,6 +71,7 @@ function evaluationPayload() {
         promotionId: "progress-category",
         promotionName: "Đủ số lượng danh mục",
         type: "QUANTITY_DISCOUNT",
+        kind: "NEXT_UNLOCK",
         priority: 40,
         remainingQuantity: 5,
         nextReward: "Miễn phí vận chuyển",
@@ -73,6 +81,7 @@ function evaluationPayload() {
         promotionId: `progress-extra-${index}`,
         promotionName: `Ưu đãi ${index + 3}`,
         type: "ORDER_FIXED_DISCOUNT",
+        kind: "NEXT_UNLOCK",
         priority: 30 - index,
         remainingAmountVnd: 100000 + index * 10000,
         nextReward: "giảm 20.000 ₫",
@@ -204,7 +213,9 @@ async function inspect(page, width) {
   }, width);
 }
 
-const browser = await chromium.launch({
+// Cho phép CI chạy cùng một contract UI trên Chromium và WebKit.
+const browserEngine = process.env.BABYJOY_BROWSER === "webkit" ? webkit : chromium;
+const browser = await browserEngine.launch({
   headless: true,
   ...(process.env.CHROME_EXECUTABLE_PATH ? { executablePath: process.env.CHROME_EXECUTABLE_PATH } : {}),
 });

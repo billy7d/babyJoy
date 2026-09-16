@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluatePromotions,
+  hasRealizedPromotion,
   promotionTypes,
   roundPercentage,
   validatePromotionInput,
@@ -349,10 +350,88 @@ describe("Promotion Engine P0 + P1", () => {
   it("clamp tiền và discount, validate input server-side", () => {
     const tooLarge = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 1, discountAmount: Number.MAX_SAFE_INTEGER }, { id: "large" });
     const result = evaluatePromotions({ cart: [line("a", 0)], promotions: [tooLarge], now });
-    expect(result.finalTotalVnd).toBe(0);
+    expect(result.finalTotalVnd).toBe(15000);
+    expect(result.shippingStatus).toBe("STANDARD");
     expect(result.items.every((item) => item.lineTotalVnd >= 0)).toBe(true);
     expect(() => validatePromotionInput({ name: "bad", type: "ORDER_FIXED_DISCOUNT", config: { minimumSubtotal: 0, discountAmount: 1 } })).toThrow();
     expect(() => validatePromotionInput({ name: "bad", type: "ORDER_PERCENTAGE_DISCOUNT", config: { minimumSubtotal: 1, percentage: 101 } })).toThrow();
     expect(() => validatePromotionInput({ name: "bad", type: "TIERED_DISCOUNT", config: { tiers: [{ threshold: 10, reward: { kind: "FIXED", amount: 1 } }, { threshold: 10, reward: { kind: "FIXED", amount: 2 } }] } })).toThrow();
+  });
+
+  it.each([
+    ["giỏ rỗng", [], [], 0, 0, 0, 0, "EMPTY_CART"],
+    ["không campaign", [line("a", 100000)], [], 100000, 0, 15000, 115000, "STANDARD"],
+    ["chưa đạt threshold", [line("a", 420000)], [promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 500000, discountAmount: 30000 })], 420000, 0, 15000, 435000, "STANDARD"],
+    ["giảm fixed", [line("a", 500000)], [promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 500000, discountAmount: 30000 })], 500000, 30000, 0, 470000, "WAIVED_BY_PROMOTION"],
+    ["giảm percentage", [line("a", 500000)], [promotion("ORDER_PERCENTAGE_DISCOUNT", { minimumSubtotal: 500000, percentage: 10 })], 500000, 50000, 0, 450000, "WAIVED_BY_PROMOTION"],
+    ["gift hợp lệ", [line("a", 800000)], [promotion("ORDER_GIFT", { minimumSubtotal: 800000, giftProductId: "gift", giftQuantity: 1 })], 800000, 0, 0, 800000, "WAIVED_BY_PROMOTION"],
+    ["Free Shipping hợp lệ", [line("a", 300000)], [promotion("PRODUCT_DISCOUNT", { productIds: ["a"], reward: { kind: "FREE_SHIPPING" } })], 300000, 0, 0, 300000, "WAIVED_BY_PROMOTION"],
+  ] as const)("shipping matrix: %s", (_label, cart, promotions, subtotal, discount, shipping, finalTotal, status) => {
+    const result = evaluatePromotions({
+      cart,
+      promotions,
+      catalog: promotions.some((item) => item.config.type === "ORDER_GIFT") ? giftCatalog("gift") : undefined,
+      now,
+    });
+    expect(result).toMatchObject({ subtotalVnd: subtotal, discountTotalVnd: discount, shippingFeeVnd: shipping, finalTotalVnd: finalTotal, shippingStatus: status });
+    expect(result.finalTotalVnd).toBe(Math.max(0, result.subtotalVnd - result.discountTotalVnd) + result.shippingFeeVnd);
+  });
+
+  it("gift hết hàng không được coi là realized promotion hoặc waive shipping", () => {
+    const gift = promotion("ORDER_GIFT", { minimumSubtotal: 800000, giftProductId: "gift", giftQuantity: 1 });
+    const result = evaluatePromotions({ cart: [line("a", 800000)], promotions: [gift], catalog: giftCatalog("gift", false), now });
+    expect(result).toMatchObject({ shippingFeeVnd: 15000, finalTotalVnd: 815000, hasRealizedPromotion: false, shippingStatus: "STANDARD" });
+    expect(hasRealizedPromotion(result.appliedPromotions)).toBe(false);
+  });
+
+  it("realized benefit của một stackable promotion đủ waive ship và không tính quà vào subtotal", () => {
+    const fixed = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 1, discountAmount: 10000 }, { id: "fixed", stackable: true });
+    const gift = promotion("ORDER_GIFT", { minimumSubtotal: 100000, giftProductId: "gift", giftQuantity: 1 }, { id: "gift", stackable: true });
+    const result = evaluatePromotions({ cart: [line("a", 100000)], promotions: [fixed, gift], catalog: giftCatalog("gift"), now });
+    expect(result).toMatchObject({ subtotalVnd: 100000, discountTotalVnd: 10000, shippingFeeVnd: 0, finalTotalVnd: 90000, hasRealizedPromotion: true });
+    expect(result.gifts[0].lineTotalVnd).toBe(0);
+  });
+
+  it("progress chỉ nêu benefit gia tăng và ẩn exclusive bị chặn", () => {
+    const winner = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 1, discountAmount: 10000 }, { id: "winner", priority: 100 });
+    const blocked = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 200000, discountAmount: 20000 }, { id: "blocked", priority: 10 });
+    const allowedStackable = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 200000, discountAmount: 20000 }, { id: "allowed-stack", priority: 10, stackable: true });
+    const result = evaluatePromotions({ cart: [line("a", 100000)], promotions: [winner, blocked, allowedStackable], now });
+    expect(result.progress.map((item) => item.promotionId)).toEqual(["allowed-stack"]);
+    expect(result.progress[0].kind).toBe("NEXT_UNLOCK");
+  });
+
+  it("xếp completion band trước priority và cho phép future winner priority cao hơn", () => {
+    const almost = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 105000, discountAmount: 10000 }, { id: "almost", priority: 1 });
+    const early = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 500000, discountAmount: 20000 }, { id: "early", priority: 100 });
+    const futureWinner = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 200000, discountAmount: 30000 }, { id: "future", priority: 200 });
+    const result = evaluatePromotions({ cart: [line("a", 100000)], promotions: [almost, early, futureWinner], now });
+    expect(result.progress.map((item) => item.promotionId)).toEqual(["almost", "future", "early"]);
+  });
+
+  it("BUY_X_GET_Y repeat dùng đúng mốc còn thiếu sau phần thưởng vừa nhận", () => {
+    const buy = promotion("BUY_X_GET_Y", { triggerProductId: "a", requiredQuantity: 3, rewardProductId: "b", rewardQuantity: 1, allowRepeatedApplications: true }, { id: "buy-repeat" });
+    const expected: Record<number, [number, string]> = { 1: [2, "NEXT_UNLOCK"], 3: [3, "NEXT_REPEAT"], 4: [2, "NEXT_REPEAT"], 5: [1, "NEXT_REPEAT"], 6: [3, "NEXT_REPEAT"] };
+    Object.entries(expected).forEach(([rawQuantity, [remaining, kind]]) => {
+      const result = evaluatePromotions({ cart: [line("a", 100000, Number(rawQuantity))], promotions: [buy], catalog: giftCatalog("b"), now });
+      expect(result.progress[0]).toMatchObject({ remainingQuantity: remaining, kind });
+    });
+  });
+
+  it("QUANTITY repeat dùng mốc 5/10/15 chính xác", () => {
+    const quantity = promotion("QUANTITY_DISCOUNT", { requiredQuantity: 5, scope: "ENTIRE_CART", reward: { kind: "FIXED", amount: 10000 }, allowRepeatedApplications: true }, { id: "quantity-repeat" });
+    const expected: Record<number, number> = { 5: 5, 7: 3, 9: 1, 10: 5 };
+    Object.entries(expected).forEach(([rawQuantity, remaining]) => {
+      const result = evaluatePromotions({ cart: [line("a", 100000, Number(rawQuantity))], promotions: [quantity], now });
+      expect(result.progress[0]).toMatchObject({ kind: "NEXT_REPEAT", remainingQuantity: remaining });
+    });
+  });
+
+  it("ẩn Free Shipping-only progress khi shipping đã được waive bởi discount khác", () => {
+    const discount = promotion("ORDER_FIXED_DISCOUNT", { minimumSubtotal: 1, discountAmount: 10000 }, { id: "discount", priority: 100 });
+    const freeShip = promotion("QUANTITY_DISCOUNT", { requiredQuantity: 2, scope: "ENTIRE_CART", reward: { kind: "FREE_SHIPPING" } }, { id: "free-ship", priority: 10, stackable: true });
+    const result = evaluatePromotions({ cart: [line("a", 100000)], promotions: [discount, freeShip], now });
+    expect(result.shippingFeeVnd).toBe(0);
+    expect(result.progress).toEqual([]);
   });
 });

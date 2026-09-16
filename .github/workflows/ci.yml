@@ -108,6 +108,12 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
         run: npm run test:e2e
 
+      - name: Cart promotion E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: chromium
+        run: npm run test:e2e:cart-promotions
+
       - name: Category image E2E
         env:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
@@ -190,6 +196,12 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
           BABYJOY_BROWSER: webkit
         run: npm run test:e2e:featured-cross-browser
+
+      - name: Cart promotion WebKit E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: webkit
+        run: npm run test:e2e:cart-promotions
 
       - name: Category image WebKit E2E
         env:

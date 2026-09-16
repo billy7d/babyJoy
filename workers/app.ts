@@ -77,6 +77,7 @@ import {
 import {
   evaluateAuthoritativeCart,
   hasPromotionSchema,
+  hasShippingSchema,
   loadPromotionHistory,
   PromotionCartError,
   type PromotionCartRequestItem,
@@ -414,6 +415,10 @@ async function evaluateCart(
       success: true,
       subtotalVnd: result.evaluation.subtotalVnd,
       discountTotalVnd: result.evaluation.discountTotalVnd,
+      discountedSubtotalVnd: result.evaluation.discountedSubtotalVnd,
+      shippingFeeVnd: result.evaluation.shippingFeeVnd,
+      shippingStatus: result.evaluation.shippingStatus,
+      hasRealizedPromotion: result.evaluation.hasRealizedPromotion,
       finalTotalVnd: result.evaluation.finalTotalVnd,
       freeShipping: result.evaluation.freeShipping,
       totalQuantity: result.evaluation.totalQuantity,
@@ -1650,6 +1655,8 @@ async function getAdminRequests(request: Request, env: Env) {
     );
 
   const inventorySchema = await hasInventorySchema(env);
+  const promotionSchema = await hasPromotionSchema(env);
+  const shippingSchema = await hasShippingSchema(env);
   const messengerSessionSchema = await hasDatabaseTable(
     env,
     "messenger_checkout_sessions",
@@ -1675,10 +1682,16 @@ async function getAdminRequests(request: Request, env: Env) {
   const sessionSelect = messengerSessionSchema
     ? "(SELECT status FROM messenger_checkout_sessions WHERE cart_request_id = cr.id ORDER BY created_at DESC LIMIT 1)"
     : "NULL";
+  const pricingSelect = promotionSchema
+    ? ", cr.promotion_discount_vnd AS promotionDiscountVnd, cr.final_total_vnd AS finalTotalVnd"
+    : ", 0 AS promotionDiscountVnd, cr.subtotal_vnd AS finalTotalVnd";
+  const shippingSelect = shippingSchema
+    ? ", cr.shipping_fee_vnd AS shippingFeeVnd"
+    : ", 0 AS shippingFeeVnd";
   const result = await env.DB.prepare(
     `SELECT cr.id, cr.public_code AS publicCode, cr.customer_name AS customerName,
       cr.customer_phone AS customerPhone, cr.item_line_count AS itemLineCount,
-      cr.total_quantity AS totalQuantity, cr.subtotal_vnd AS subtotalVnd, cr.status,
+      cr.total_quantity AS totalQuantity, cr.subtotal_vnd AS subtotalVnd${pricingSelect}${shippingSelect}, cr.status,
       cr.telegram_status AS telegramStatus, cr.contact_channel AS contactChannel,
       cr.messenger_delivery_status AS messengerDeliveryStatus,
       ${sessionSelect} AS messengerSessionStatus,
@@ -1697,13 +1710,23 @@ async function getAdminRequests(request: Request, env: Env) {
 
 async function getAdminRequest(id: string, env: Env) {
   await cleanupExpiredReservations(env);
-  const inventorySchema = await hasInventorySchema(env);
-  const comboSchema = await hasComboSchema(env);
+  const [inventorySchema, comboSchema, promotionSchema, shippingSchema] = await Promise.all([
+    hasInventorySchema(env),
+    hasComboSchema(env),
+    hasPromotionSchema(env),
+    hasShippingSchema(env),
+  ]);
+  const pricingSelect = promotionSchema
+    ? ", promotion_discount_vnd AS promotionDiscountVnd, final_total_vnd AS storedFinalTotalVnd"
+    : ", 0 AS promotionDiscountVnd, subtotal_vnd AS storedFinalTotalVnd";
+  const shippingSelect = shippingSchema
+    ? ", shipping_fee_vnd AS shippingFeeVnd"
+    : ", 0 AS shippingFeeVnd";
   const cartRequest = await env.DB.prepare(
     `SELECT id, public_code AS publicCode, customer_name AS customerName,
       customer_phone AS customerPhone, customer_contact AS customerContact,
       customer_note AS customerNote, item_line_count AS itemLineCount,
-      total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd, status,
+      total_quantity AS totalQuantity, subtotal_vnd AS subtotalVnd${pricingSelect}${shippingSelect}, status,
       telegram_status AS telegramStatus, telegram_last_error AS telegramLastError,
       contact_channel AS contactChannel,
       messenger_delivery_status AS messengerDeliveryStatus,
@@ -1761,10 +1784,9 @@ async function getAdminRequest(id: string, env: Env) {
       comboComponentsByItem.set(component.cartRequestItemId, current);
     });
   }
-  const [reservations, promotionReservations, promotionSchema, promotionHistory] = await Promise.all([
+  const [reservations, promotionReservations, promotionHistory] = await Promise.all([
     listActiveReservations(id, env),
     listPromotionReservations(id, env),
-    hasPromotionSchema(env),
     loadPromotionHistory(id, env),
   ]);
   return json({
@@ -1774,9 +1796,19 @@ async function getAdminRequest(id: string, env: Env) {
       finalTotalVnd: promotionSchema
         ? promotionHistory.finalTotalVnd
         : Number(cartRequest.subtotalVnd ?? 0),
+      shippingFeeVnd: promotionSchema ? promotionHistory.shippingFeeVnd : 0,
+      shippingStatus: promotionSchema
+        ? promotionHistory.shippingStatus
+        : Number(cartRequest.totalQuantity ?? 0) > 0
+          ? "STANDARD"
+          : "EMPTY_CART",
+      hasRealizedPromotion: promotionSchema ? promotionHistory.hasRealizedPromotion : false,
       freeShipping: promotionSchema ? promotionHistory.freeShipping : false,
       promotions: promotionSchema
         ? promotionHistory.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion)
+        : [],
+      gifts: promotionSchema
+        ? promotionHistory.gifts.map(({ imageUrl: _imageUrl, ...gift }) => gift)
         : [],
       serverNow: new Date().toISOString(),
       reservations,

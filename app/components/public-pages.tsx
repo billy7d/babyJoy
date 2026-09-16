@@ -71,7 +71,6 @@ import {
 } from "../lib/catalog-context";
 import { cartStorageKey, parseStoredCart, useCart, type CartLine } from "../lib/cart";
 import {
-  isFreeShippingPromotion,
   useCartPromotionEvaluation,
   type CartPromotionResult,
 } from "../lib/promotions";
@@ -1938,10 +1937,11 @@ export function CartPage() {
   const { displayName } = useStoreSettings();
   const lines = cartDetails(cart.items, products);
   const promotion = useCartPromotionEvaluation(cart.items, cart.hydrated);
+  const authoritativePromotion = promotion.quoteReady ? promotion.data : null;
   const evaluatedByVariant = new Map(
-    promotion.data?.items.map((item) => [item.variantId, item]) ?? [],
+    authoritativePromotion?.items.map((item) => [item.variantId, item]) ?? [],
   );
-  const giftCount = promotion.data?.gifts.length ?? 0;
+  const giftCount = authoritativePromotion?.gifts.length ?? 0;
   return (
     <PublicShell hideMobileNav>
       <section className="cart-page">
@@ -2042,7 +2042,7 @@ export function CartPage() {
                   </article>
                 );
               })}
-              {promotion.data?.gifts.map((gift) => (
+              {authoritativePromotion?.gifts.map((gift) => (
                 <article className="cart-item promotion-gift-cart-item" key={`${gift.promotionId}-${gift.variantId}`}>
                   <ProductImage
                     className="storefront-product-media"
@@ -2065,6 +2065,7 @@ export function CartPage() {
             <CartSummary
               lines={lines}
               promotion={promotion.data}
+              quoteReady={promotion.quoteReady}
               promotionLoading={promotion.loading}
               promotionError={promotion.error}
             />
@@ -2085,30 +2086,39 @@ export function CartPage() {
 function CartSummary({
   lines,
   promotion,
+  quoteReady,
   promotionLoading,
   promotionError,
 }: {
   lines: ReturnType<typeof cartDetails>;
   promotion: CartPromotionResult | null;
+  quoteReady: boolean;
   promotionLoading: boolean;
   promotionError: string;
 }) {
   const cart = useCart();
   const checkoutConfig = useCheckoutConfig();
-  const subtotalVnd = promotion?.subtotalVnd ?? cart.subtotalVnd;
-  const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd;
+  const subtotalVnd = quoteReady ? promotion?.subtotalVnd ?? 0 : 0;
+  const finalTotalVnd = quoteReady ? promotion?.finalTotalVnd ?? 0 : 0;
   const isFreeShippingApplied = (
     item: CartPromotionResult["appliedPromotions"][number],
-  ) => item.freeShipping === true || isFreeShippingPromotion(item);
+  ) => item.freeShipping === true;
+  const giftByPromotion = new Map<string, CartPromotionResult["gifts"]>();
+  promotion?.gifts.forEach((gift) => {
+    const current = giftByPromotion.get(gift.promotionId) ?? [];
+    current.push(gift);
+    giftByPromotion.set(gift.promotionId, current);
+  });
   const appliedPromotions = promotion?.appliedPromotions.filter(
-    (item, index, all) =>
-      !isFreeShippingApplied(item) ||
-      all.findIndex((candidate) => isFreeShippingApplied(candidate)) === index,
+    (item) =>
+      item.discountAmountVnd > 0 ||
+      isFreeShippingApplied(item) ||
+      (giftByPromotion.get(item.promotionId)?.length ?? 0) > 0,
   ) ?? [];
   const hasAppliedPromotion = Boolean(
-    promotion?.appliedPromotions.some(
-      (item) => item.discountAmountVnd > 0 || isFreeShippingApplied(item) || item.giftUnavailable,
-    ),
+    quoteReady &&
+      promotion?.hasRealizedPromotion &&
+      appliedPromotions.length,
   );
   return (
     <aside className="cart-summary">
@@ -2119,27 +2129,37 @@ function CartSummary({
       </div>
       <div className="subtotal">
         <span>Tạm tính</span>
-        <Price value={subtotalVnd} />
+        {quoteReady ? <Price value={subtotalVnd} /> : <span aria-label="Đang chờ báo giá">—</span>}
       </div>
-      {hasAppliedPromotion && (
+      {quoteReady && promotion?.shippingStatus === "STANDARD" && (promotion.shippingFeeVnd ?? 0) > 0 && (
+        <div className="shipping-fee-row">
+          <span>Phí vận chuyển</span>
+          <strong>+{formatVnd(promotion?.shippingFeeVnd ?? 0)}</strong>
+        </div>
+      )}
+      {hasAppliedPromotion && promotion?.shippingStatus === "WAIVED_BY_PROMOTION" && (
         <div className="promotion-breakdown">
           <b>Ưu đãi đang áp dụng</b>
           {appliedPromotions.map((item) => {
             const freeShipping = isFreeShippingApplied(item);
+            const gifts = giftByPromotion.get(item.promotionId) ?? [];
             return (
               <div className="promotion-breakdown-row" key={item.promotionId}>
                 <span className="promotion-breakdown-name">{item.promotionName}</span>
                 <span className="promotion-breakdown-value">
                   {freeShipping && (
                     <>
-                      <span>Miễn phí vận chuyển</span>
-                      <span className="promotion-breakdown-benefit">- Free Shipping</span>
+                      <span>{FREE_SHIPPING_LABEL}</span>
                     </>
                   )}
                   {!freeShipping && item.discountAmountVnd > 0 && (
                     <strong>-{formatVnd(item.discountAmountVnd)}</strong>
                   )}
-                  {item.giftUnavailable && <small>Quà hiện tạm hết hàng</small>}
+                  {gifts.map((gift) => (
+                    <small key={`${gift.productId}:${gift.variantId}`}>
+                      🎁 {gift.productName} × {gift.quantity}
+                    </small>
+                  ))}
                 </span>
               </div>
             );
@@ -2148,9 +2168,9 @@ function CartSummary({
       )}
       <div className="cart-final-total">
         <span>Tổng</span>
-        <Price value={finalTotalVnd} />
+        {quoteReady ? <Price value={finalTotalVnd} /> : <span aria-label="Đang chờ báo giá">—</span>}
       </div>
-      {promotion?.progress.length ? (
+      {quoteReady && promotion?.progress.length ? (
         <PromotionProgressGroup progress={promotion.progress} />
       ) : null}
       {promotionLoading && (
@@ -2168,9 +2188,10 @@ function CartSummary({
           lines={lines}
           seller={checkoutConfig.seller}
           reservationMinutes={checkoutConfig.reservationMinutes}
+          quoteReady={quoteReady}
         />
       ) : checkoutConfig?.messengerCheckoutEnabled === true ? (
-        <MessengerCheckoutControls lines={lines} />
+        <MessengerCheckoutControls lines={lines} quoteReady={quoteReady} />
       ) : checkoutConfig ? (
         <p className="info-box">
           <Icon>info</Icon>Kênh xác nhận giỏ hàng hiện chưa sẵn sàng. Vui lòng
@@ -2205,7 +2226,7 @@ function PromotionProgressGroup({
     >
       <div className="promotion-progress-list">
         {progress.map((item) => (
-          <div className="promotion-progress-item" key={item.promotionId}>
+          <div className="promotion-progress-item" key={`${item.promotionId}:${item.kind}`}>
             <Icon>local_offer</Icon>
             <p>{item.message}</p>
           </div>
@@ -2228,9 +2249,11 @@ function PromotionProgressGroup({
               <span className="promotion-progress-toggle-mobile">
                 Xem thêm {progress.length - 2} ưu đãi
               </span>
-              <span className="promotion-progress-toggle-desktop">
-                Xem thêm {Math.max(0, progress.length - 3)} ưu đãi
-              </span>
+              {hasDesktopOverflow && (
+                <span className="promotion-progress-toggle-desktop">
+                  Xem thêm {progress.length - 3} ưu đãi
+                </span>
+              )}
               <Icon>expand_more</Icon>
             </>
           )}
@@ -2315,10 +2338,12 @@ function DirectSellerShareControls({
   lines,
   seller,
   reservationMinutes,
+  quoteReady,
 }: {
   lines: ReturnType<typeof cartDetails>;
   seller: SellerContact | null;
   reservationMinutes: number;
+  quoteReady: boolean;
 }) {
   const cart = useCart();
   const { products } = useCatalog();
@@ -2349,6 +2374,7 @@ function DirectSellerShareControls({
     setMessage("");
     setPriceChanges([]);
     try {
+      if (!quoteReady) throw new Error("Đang chờ báo giá chính xác từ hệ thống.");
       if (!lines.length) throw new Error("Giỏ hàng đang trống.");
       if (hasUnavailable)
         throw new Error("Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng.");
@@ -2395,7 +2421,7 @@ function DirectSellerShareControls({
     }
   };
 
-  if (!prepared || stale || hasUnavailable) {
+  if (!prepared || stale || hasUnavailable || !quoteReady) {
     return (
       <div className="direct-share-checkout">
         <p className="direct-share-help">
@@ -2434,7 +2460,7 @@ function DirectSellerShareControls({
             })}
             <button
               className="btn secondary-btn"
-              disabled={busy}
+              disabled={busy || !quoteReady}
               onClick={() => void prepare(true)}
             >
               XÁC NHẬN GIÁ MỚI
@@ -2445,7 +2471,7 @@ function DirectSellerShareControls({
           <button
             className="btn primary direct-prepare"
             type="button"
-            disabled={busy || hasUnavailable}
+            disabled={busy || hasUnavailable || !quoteReady}
             onClick={() => void prepare(false, stale)}
           >
             {busy ? "ĐANG KIỂM TRA..." : "CHỐT GIỎ HÀNG"}
@@ -2485,8 +2511,10 @@ type MessengerStartResult = {
 
 function MessengerCheckoutControls({
   lines,
+  quoteReady,
 }: {
   lines: ReturnType<typeof cartDetails>;
+  quoteReady: boolean;
 }) {
   const { displayName } = useStoreSettings();
   const cart = useCart();
@@ -2548,7 +2576,7 @@ function MessengerCheckoutControls({
   };
 
   useEffect(() => {
-    if (!pending) return;
+    if (!pending || pending.fingerprint !== fingerprint) return;
     const refresh = () => void checkStatus(true);
     const visible = () => {
       if (document.visibilityState === "visible") refresh();
@@ -2563,7 +2591,7 @@ function MessengerCheckoutControls({
 
   const openMessenger = (url: string) => {
     // Điều hướng same-tab ổn định trên cả mobile và desktop, không phụ thuộc popup.
-    if (hasUnavailable) return;
+    if (hasUnavailable || !quoteReady) return;
     window.location.assign(url);
   };
 
@@ -2571,6 +2599,7 @@ function MessengerCheckoutControls({
     setBusy(true);
     setMessage("");
     try {
+      if (!quoteReady) throw new Error("Đang chờ báo giá chính xác từ hệ thống.");
       if (!lines.length) throw new Error("Giỏ hàng đang trống.");
       if (hasUnavailable)
         throw new Error("Có phân loại không còn khả dụng. Vui lòng xóa khỏi giỏ hàng.");
@@ -2622,7 +2651,7 @@ function MessengerCheckoutControls({
     }
   };
 
-  if (pending) {
+  if (pending && pending.fingerprint === fingerprint) {
     const expired = status === "EXPIRED";
     return (
       <div className="messenger-pending" role="status">
@@ -2648,12 +2677,12 @@ function MessengerCheckoutControls({
         )}
         {message && <p className="form-error">{message}</p>}
         {expired ? (
-          <button className="btn primary" disabled={busy} onClick={() => void start(true)}>
+          <button className="btn primary" disabled={busy || !quoteReady} onClick={() => void start(true)}>
             XÁC NHẬN LẠI
           </button>
         ) : (
           <div className="messenger-actions">
-            <button className="btn primary" disabled={hasUnavailable} onClick={() => openMessenger(pending.messengerUrl)}>
+            <button className="btn primary" disabled={hasUnavailable || !quoteReady} onClick={() => openMessenger(pending.messengerUrl)}>
               MỞ MESSENGER
             </button>
             <button className="btn secondary-btn" disabled={busy} onClick={() => void checkStatus()}>
@@ -2678,7 +2707,7 @@ function MessengerCheckoutControls({
         </p>
       )}
       <div className="mobile-cart-checkout-dock">
-        <button className="btn primary" type="button" disabled={busy || hasUnavailable} onClick={() => void start()}>
+        <button className="btn primary" type="button" disabled={busy || hasUnavailable || !quoteReady} onClick={() => void start()}>
           {busy ? "ĐANG TẠO PHIÊN..." : "XÁC NHẬN QUA MESSENGER"} <Icon>send</Icon>
         </button>
       </div>
@@ -2693,6 +2722,9 @@ type PublicCartShareDto = {
   totalQuantity: number;
   subtotalVnd: number;
   promotionDiscountVnd?: number;
+  shippingFeeVnd?: number;
+  shippingStatus?: "EMPTY_CART" | "STANDARD" | "WAIVED_BY_PROMOTION";
+  hasRealizedPromotion?: boolean;
   finalTotalVnd?: number;
   freeShipping?: boolean;
   checkoutState?: string;
@@ -2825,6 +2857,9 @@ export function PublicCartSharePage() {
           <footer>
             <p><span>Tổng số lượng</span><b>{data.totalQuantity}</b></p>
             <p><span>Tạm tính</span><Price value={data.subtotalVnd} /></p>
+            {data.shippingStatus === "STANDARD" && (data.shippingFeeVnd ?? 0) > 0 && (
+              <p><span>Phí vận chuyển</span><b>+{formatVnd(data.shippingFeeVnd ?? 0)}</b></p>
+            )}
             {publicPromotions.map((promotion) => (
               <p key={promotion.promotionName}>
                 <span>{promotion.promotionName}</span>
@@ -3218,6 +3253,12 @@ function GuideActions({
               <span>-{formatVnd(issue.discountTotalVnd)}</span>
             </p>
           )}
+          {issue?.shippingStatus === "STANDARD" && (issue.shippingFeeVnd ?? 0) > 0 && (
+            <p>
+              <span>Phí vận chuyển hiện tại</span>
+              <span>+{formatVnd(issue.shippingFeeVnd ?? 0)}</span>
+            </p>
+          )}
           {issue?.freeShipping && (
             <p>
               <span>Ưu đãi hiện tại</span>
@@ -3316,6 +3357,9 @@ export function SuccessPage() {
     totalQuantity: 4,
     subtotalVnd: 367000,
     promotionDiscountVnd: 0,
+    shippingFeeVnd: 0,
+    shippingStatus: "STANDARD" as const,
+    hasRealizedPromotion: false,
     finalTotalVnd: 367000,
     freeShipping: false,
     createdAt: "2026-08-25T15:12:00+07:00",
@@ -3374,9 +3418,15 @@ export function SuccessPage() {
                 </b>
               </div>
               <div className="meta-total">
-                <span>Tạm tính (chưa gồm phí ship)</span>
+                <span>Tạm tính</span>
                 <Price value={data.subtotalVnd} />
               </div>
+              {data.shippingStatus === "STANDARD" && (data.shippingFeeVnd ?? 0) > 0 && (
+                <div className="meta-promotion">
+                  <span>Phí vận chuyển</span>
+                  <b>+{formatVnd(data.shippingFeeVnd ?? 0)}</b>
+                </div>
+              )}
               {data.promotionDiscountVnd > 0 && (
                 <div className="meta-promotion">
                   <span>Khuyến mãi</span>
@@ -3389,9 +3439,9 @@ export function SuccessPage() {
                   <b>{FREE_SHIPPING_LABEL}</b>
                 </div>
               )}
-              {data.finalTotalVnd !== undefined && data.finalTotalVnd !== data.subtotalVnd && (
+              {data.finalTotalVnd !== undefined && (
                 <div className="meta-total">
-                  <span>Tổng sau ưu đãi</span>
+                  <span>Tổng</span>
                   <Price value={data.finalTotalVnd} />
                 </div>
               )}

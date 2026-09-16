@@ -6,13 +6,14 @@ import {
 } from "./services";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import { DEFAULT_STORE_SETTINGS } from "../shared/store-settings";
-import { FREE_SHIPPING_LABEL } from "../shared/promotions";
+import { FREE_SHIPPING_LABEL, hasRealizedPromotion } from "../shared/promotions";
 import { loadStoreSettings } from "./store-settings";
 import {
   buildCartRequestItemStatements,
   buildPromotionPersistenceStatements,
   evaluateAuthoritativeCart,
   hasPromotionSchema,
+  hasShippingSchema,
   loadPromotionHistory,
   PromotionCartError,
   type AuthoritativeCartEvaluation,
@@ -358,6 +359,7 @@ export function composeCartShareText(input: {
     }
   >;
   subtotalVnd: number;
+  shippingFeeVnd?: number;
   url: string;
   promotionDiscountVnd?: number;
   finalTotalVnd?: number;
@@ -412,6 +414,9 @@ export function composeCartShareText(input: {
     }
     lines.push(
       `Tạm tính: ${formatVnd(input.subtotalVnd)}`,
+      ...(input.shippingFeeVnd && input.shippingFeeVnd > 0
+        ? [`Phí vận chuyển: ${formatVnd(input.shippingFeeVnd)}`]
+        : []),
       ...(input.promotionDiscountVnd
         ? [`Khuyến mãi: -${formatVnd(input.promotionDiscountVnd)}`]
         : []),
@@ -577,6 +582,13 @@ async function buildPreparedResponse(
   const storeDisplayName = await storeDisplayNameForShare(env);
   const promotionDiscountVnd = schema ? history.discountAmountVnd : 0;
   const finalTotalVnd = schema ? history.finalTotalVnd : row.subtotalVnd;
+  const shippingFeeVnd = schema ? history.shippingFeeVnd : 0;
+  const shippingStatus = schema
+    ? history.shippingStatus
+    : row.totalQuantity > 0
+      ? "STANDARD"
+      : "EMPTY_CART";
+  const hasRealizedPromotion = schema ? history.hasRealizedPromotion : false;
   const url = `https://metraphuong.com/c/${rawToken}`;
   const text = composeCartShareText({
     code: row.publicCode,
@@ -589,6 +601,7 @@ async function buildPreparedResponse(
       comboComponents: item.comboComponents,
     })),
     subtotalVnd: row.subtotalVnd,
+    shippingFeeVnd,
     url,
     promotionDiscountVnd,
     finalTotalVnd,
@@ -609,6 +622,9 @@ async function buildPreparedResponse(
       totalQuantity: row.totalQuantity,
       subtotalVnd: row.subtotalVnd,
       promotionDiscountVnd,
+      shippingFeeVnd,
+      shippingStatus,
+      hasRealizedPromotion,
       finalTotalVnd,
       freeShipping: history.freeShipping,
       createdAt: row.createdAt,
@@ -625,6 +641,9 @@ async function buildPreparedResponse(
       expiresAt: link.expiresAt,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
       freeShipping: history.freeShipping,
+      shippingFeeVnd,
+      shippingStatus,
+      hasRealizedPromotion,
       gifts: history.gifts,
     },
     seller,
@@ -672,6 +691,7 @@ export async function prepareCartShare(
     return failure("CART_SHARE_NOT_CONFIGURED", "Chia sẻ giỏ hàng chưa được cấu hình.", 503);
   const inventorySchema = await hasInventorySchema(env);
   const comboSchema = await hasComboSchema(env);
+  const shippingSchema = await hasShippingSchema(env);
   await cleanupExpiredReservations(env);
 
   const existing = await findShareRequest(body.submissionToken, env);
@@ -739,6 +759,12 @@ export async function prepareCartShare(
     { consumeUsage: !inventorySchema },
   );
   const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
+  // Schema cũ chưa có cột phí: giữ snapshot cũ cho đến khi migration additive hoàn tất.
+  const persistedFinalTotalVnd = shippingSchema
+    ? loaded.evaluation.finalTotalVnd
+    : loaded.evaluation.discountedSubtotalVnd;
+  const shippingColumn = shippingSchema ? ", shipping_fee_vnd" : "";
+  const shippingValue = shippingSchema ? ", ?" : "";
   const storefrontSessionColumn = storefront.bindingSchema
     ? ", storefront_session_id"
     : "";
@@ -750,9 +776,9 @@ export async function prepareCartShare(
           `INSERT INTO cart_requests (
             id, public_code, submission_token, customer_name, customer_phone,
             item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
-            final_total_vnd, status, telegram_status, contact_channel,
+            final_total_vnd${shippingColumn}, status, telegram_status, contact_channel,
             messenger_delivery_status, checkout_state, created_at, updated_at${storefrontSessionColumn}
-          ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
+          ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?${shippingValue}, 'SUBMITTED',
             'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', 'READY_TO_SEND', ?, ?${storefrontSessionValue})`,
         ).bind(
           id,
@@ -762,7 +788,8 @@ export async function prepareCartShare(
           totalQuantity,
           subtotalVnd,
           loaded.evaluation.discountTotalVnd,
-          loaded.evaluation.finalTotalVnd,
+          persistedFinalTotalVnd,
+          ...(shippingSchema ? [loaded.evaluation.shippingFeeVnd] : []),
           createdAt,
           createdAt,
           ...(storefront.bindingSchema ? [storefront.sessionId] : []),
@@ -772,9 +799,9 @@ export async function prepareCartShare(
             `INSERT INTO cart_requests (
               id, public_code, submission_token, customer_name, customer_phone,
               item_line_count, total_quantity, subtotal_vnd, promotion_discount_vnd,
-              final_total_vnd, status, telegram_status, contact_channel,
+              final_total_vnd${shippingColumn}, status, telegram_status, contact_channel,
               messenger_delivery_status, created_at, updated_at${storefrontSessionColumn}
-            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'SUBMITTED',
+            ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?${shippingValue}, 'SUBMITTED',
               'NOT_APPLICABLE', 'SHARE', 'NOT_APPLICABLE', ?, ?${storefrontSessionValue})`,
           ).bind(
             id,
@@ -784,7 +811,8 @@ export async function prepareCartShare(
             totalQuantity,
             subtotalVnd,
             loaded.evaluation.discountTotalVnd,
-            loaded.evaluation.finalTotalVnd,
+            persistedFinalTotalVnd,
+            ...(shippingSchema ? [loaded.evaluation.shippingFeeVnd] : []),
             createdAt,
             createdAt,
             ...(storefront.bindingSchema ? [storefront.sessionId] : []),
@@ -939,8 +967,10 @@ function parseComboSelection(value: string | null | undefined) {
 function promotionEvaluationChanged(
   history: Awaited<ReturnType<typeof loadPromotionHistory>>,
   loaded: AuthoritativeCartEvaluation,
+  shippingSchema = true,
 ) {
   const currentPromotions = loaded.evaluation.appliedPromotions
+    .filter((promotion) => hasRealizedPromotion([promotion]))
     .map((promotion) => `${promotion.promotionId}:${promotion.discountAmountVnd}:${promotion.freeShipping ? "FREE_SHIPPING" : ""}`)
     .sort();
   const previousPromotions = history.promotions
@@ -948,6 +978,12 @@ function promotionEvaluationChanged(
     .sort();
   if (currentPromotions.join("|") !== previousPromotions.join("|")) return true;
   if (history.discountAmountVnd !== loaded.evaluation.discountTotalVnd) return true;
+  if (
+    shippingSchema &&
+    (history.shippingFeeVnd !== loaded.evaluation.shippingFeeVnd ||
+      history.finalTotalVnd !== loaded.evaluation.finalTotalVnd)
+  )
+    return true;
   const currentGifts = loaded.evaluation.gifts
     .map((gift) => `${gift.promotionId}:${gift.productId}:${gift.variantId}:${gift.quantity}`)
     .sort();
@@ -971,6 +1007,7 @@ export async function activateCartShare(
     preauthorized,
   );
   if (storefront.response) return storefront.response;
+  const shippingSchema = await hasShippingSchema(env);
   if (!(await hasInventorySchema(env)))
     return failure("FEATURE_NOT_READY", "Reservation inventory chưa được cài đặt.", 503);
   try {
@@ -1091,6 +1128,10 @@ export async function activateCartShare(
         items: loaded.changed,
         subtotalVnd: loaded.evaluation.subtotalVnd,
         discountTotalVnd: loaded.evaluation.discountTotalVnd,
+        discountedSubtotalVnd: loaded.evaluation.discountedSubtotalVnd,
+        shippingFeeVnd: loaded.evaluation.shippingFeeVnd,
+        shippingStatus: loaded.evaluation.shippingStatus,
+        hasRealizedPromotion: loaded.evaluation.hasRealizedPromotion,
         finalTotalVnd: loaded.evaluation.finalTotalVnd,
         freeShipping: loaded.evaluation.freeShipping,
         gifts: loaded.evaluation.gifts,
@@ -1106,7 +1147,7 @@ export async function activateCartShare(
   const history = await loadPromotionHistory(existing.id, env);
   if (
     loaded.promotionSchema &&
-    promotionEvaluationChanged(history, loaded) &&
+    promotionEvaluationChanged(history, loaded, shippingSchema) &&
     !body.acceptCurrentPrices
   )
     return failure(
@@ -1116,6 +1157,10 @@ export async function activateCartShare(
       {
         subtotalVnd: loaded.evaluation.subtotalVnd,
         discountTotalVnd: loaded.evaluation.discountTotalVnd,
+        discountedSubtotalVnd: loaded.evaluation.discountedSubtotalVnd,
+        shippingFeeVnd: loaded.evaluation.shippingFeeVnd,
+        shippingStatus: loaded.evaluation.shippingStatus,
+        hasRealizedPromotion: loaded.evaluation.hasRealizedPromotion,
         finalTotalVnd: loaded.evaluation.finalTotalVnd,
         freeShipping: loaded.evaluation.freeShipping,
         gifts: loaded.evaluation.gifts,
@@ -1179,14 +1224,19 @@ export async function activateCartShare(
     existing.id,
     reservationStartedAt,
     reservationExpiresAt,
-    loaded.evaluation.appliedPromotions.map((promotion) => promotion.promotionId),
+    loaded.evaluation.appliedPromotions
+      .filter((promotion) => hasRealizedPromotion([promotion]))
+      .map((promotion) => promotion.promotionId),
   );
   const itemLineCount = loaded.pricedItems.length + loaded.evaluation.gifts.length;
+  const persistedFinalTotalVnd = shippingSchema
+    ? loaded.evaluation.finalTotalVnd
+    : loaded.evaluation.discountedSubtotalVnd;
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       `UPDATE cart_requests SET
         item_line_count = ?, total_quantity = ?, subtotal_vnd = ?,
-        promotion_discount_vnd = ?, final_total_vnd = ?, status = 'CONTACTED',
+        promotion_discount_vnd = ?, final_total_vnd = ?${shippingSchema ? ", shipping_fee_vnd = ?" : ""}, status = 'CONTACTED',
         checkout_state = 'WAITING_SELLER_CONFIRM',
         reservation_started_at = ?, reservation_expires_at = ?,
         reservation_duration_minutes = ?, updated_at = ?
@@ -1196,7 +1246,8 @@ export async function activateCartShare(
       loaded.evaluation.totalQuantity,
       loaded.evaluation.subtotalVnd,
       loaded.evaluation.discountTotalVnd,
-      loaded.evaluation.finalTotalVnd,
+      persistedFinalTotalVnd,
+      ...(shippingSchema ? [loaded.evaluation.shippingFeeVnd] : []),
       reservationStartedAt,
       reservationExpiresAt,
       reservation.reservationMinutes,
@@ -1304,10 +1355,14 @@ export async function getPublicCartShare(
   }
   const tokenHash = await hashShareToken(rawToken);
   const inventorySchema = await hasInventorySchema(env);
+  const shippingSchema = await hasShippingSchema(env);
+  const shippingSelect = shippingSchema
+    ? ", c.shipping_fee_vnd AS shippingFeeVnd"
+    : ", 0 AS shippingFeeVnd";
   const row = await env.DB.prepare(
     `SELECT c.id, c.public_code AS code, c.created_at AS createdAt,
       c.item_line_count AS itemLineCount, c.total_quantity AS totalQuantity,
-      c.subtotal_vnd AS subtotalVnd, l.expires_at AS expiresAt,
+      c.subtotal_vnd AS subtotalVnd${shippingSelect}, l.expires_at AS expiresAt,
       l.revoked_at AS revokedAt${inventorySchema
         ? ", c.checkout_state AS checkoutState, c.reservation_started_at AS reservationStartedAt, c.reservation_expires_at AS reservationExpiresAt, c.reservation_duration_minutes AS reservationDurationMinutes"
         : ", 'LEGACY' AS checkoutState, NULL AS reservationStartedAt, NULL AS reservationExpiresAt, NULL AS reservationDurationMinutes"}
@@ -1322,6 +1377,7 @@ export async function getPublicCartShare(
       itemLineCount: number;
       totalQuantity: number;
       subtotalVnd: number;
+      shippingFeeVnd: number;
       expiresAt: string;
       revokedAt: string | null;
       checkoutState: string;
@@ -1376,6 +1432,13 @@ export async function getPublicCartShare(
           : undefined,
       promotionDiscountVnd: history.discountAmountVnd,
       finalTotalVnd: schema ? history.finalTotalVnd : row.subtotalVnd,
+      shippingFeeVnd: schema ? history.shippingFeeVnd : row.shippingFeeVnd,
+      shippingStatus: schema
+        ? history.shippingStatus
+        : row.totalQuantity > 0
+          ? "STANDARD"
+          : "EMPTY_CART",
+      hasRealizedPromotion: schema ? history.hasRealizedPromotion : false,
       freeShipping: history.freeShipping,
       promotions: history.promotions.map(({ configSnapshot: _configSnapshot, ...promotion }) => promotion),
       items: [

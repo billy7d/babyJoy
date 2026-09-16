@@ -36,6 +36,9 @@ export type AdminCartRequestRow = {
   itemLineCount: number;
   totalQuantity: number;
   subtotalVnd: number;
+  promotionDiscountVnd?: number;
+  shippingFeeVnd?: number;
+  finalTotalVnd?: number;
   status: string;
   contactChannel: CartRequestChannel;
   messengerDeliveryStatus: MessengerDeliveryStatus;

@@ -152,6 +152,21 @@ export type PromotionInput = {
 };
 
 import type { ComboSelection } from "./combos";
+import {
+  hasRealizedPromotion,
+  resolveShipping,
+  STANDARD_SHIPPING_FEE_VND,
+  type ShippingStatus,
+} from "./shipping";
+
+export {
+  hasRealizedPromotion,
+  resolveShipping,
+  STANDARD_SHIPPING_FEE_VND,
+  shippingStatuses,
+  type ShippingResolution,
+  type ShippingStatus,
+} from "./shipping";
 
 export type PromotionCartLine = {
   productId: string;
@@ -231,11 +246,14 @@ export type AppliedPromotion = {
   giftUnavailable: boolean;
 };
 
+export type PromotionProgressKind = "NEXT_UNLOCK" | "NEXT_TIER" | "NEXT_REPEAT";
+
 export type PromotionProgress = {
   promotionId: string;
   promotionName: string;
   type: PromotionType;
   priority: number;
+  kind: PromotionProgressKind;
   remainingAmountVnd?: number;
   remainingQuantity?: number;
   currentReward?: string;
@@ -252,6 +270,10 @@ export type PromotionCartLineResult = PromotionCartLine & {
 export type PromotionEvaluationResult = {
   subtotalVnd: number;
   discountTotalVnd: number;
+  discountedSubtotalVnd: number;
+  shippingFeeVnd: 0 | 15000;
+  shippingStatus: ShippingStatus;
+  hasRealizedPromotion: boolean;
   finalTotalVnd: number;
   freeShipping: boolean;
   totalQuantity: number;
@@ -786,7 +808,7 @@ function sumLineTotals(lines: Array<{ priceVnd: number; quantity: number }>) {
 }
 
 function quantityFor(lines: PromotionCartLine[], predicate: (line: PromotionCartLine) => boolean) {
-  return lines.reduce((sum, line) => (predicate(line) ? sum + line.quantity : sum), 0);
+  return moneySum(lines.filter(predicate).map((line) => line.quantity));
 }
 
 function indicesFor(lines: PromotionCartLine[], predicate: (line: PromotionCartLine) => boolean) {
@@ -852,27 +874,27 @@ function evaluateCandidate(promotion: PromotionDefinition, lines: PromotionCartL
   }
   if (config.type === "PRODUCT_DISCOUNT") {
     const target = indicesFor(lines, (line) => config.productIds.includes(line.productId));
-    const estimate = target.reduce((sum, index) => {
+    const estimate = moneySum(target.map((index) => {
       const line = lines[index];
-      return sum + (config.reward.kind === "FIXED"
+      return (config.reward.kind === "FIXED"
         ? moneyProduct(Math.min(line.priceVnd, config.reward.amount), line.quantity)
         : rewardAmount(config.reward, moneyProduct(line.priceVnd, line.quantity)));
-    }, 0);
+    }));
     return { promotion, scope: "LINE", eligible: target.length > 0, estimate };
   }
   if (config.type === "CATEGORY_DISCOUNT") {
     const target = indicesFor(lines, (line) => line.categoryIds.some((id) => config.categoryIds.includes(id)));
-    const estimate = target.reduce((sum, index) => {
+    const estimate = moneySum(target.map((index) => {
       const line = lines[index];
-      return sum + (config.reward.kind === "FIXED"
+      return (config.reward.kind === "FIXED"
         ? moneyProduct(Math.min(line.priceVnd, config.reward.amount), line.quantity)
         : rewardAmount(config.reward, moneyProduct(line.priceVnd, line.quantity)));
-    }, 0);
+    }));
     return { promotion, scope: "LINE", eligible: target.length > 0, estimate };
   }
   if (config.type === "QUANTITY_DISCOUNT") {
     const target = rewardForScope(config, lines);
-    const count = target.reduce((sum, index) => sum + lines[index].quantity, 0);
+    const count = moneySum(target.map((index) => lines[index].quantity));
     const applications = config.allowRepeatedApplications ? Math.floor(count / config.requiredQuantity) : 1;
     return { promotion, scope: "CART", eligible: count >= config.requiredQuantity, estimate: rewardAmount(config.reward, sumLineTotals(target.map((index) => lines[index])), Math.max(1, applications)) };
   }
@@ -920,11 +942,14 @@ function productGift(
   const product = catalog.get(productId);
   if (!product || product.productStatus !== "AVAILABLE" || product.availability !== "AVAILABLE")
     return null;
-  if (
-    product.trackInventory &&
-    (product.availableQuantity ?? 0) < quantity
-  )
-    return null;
+  if (product.trackInventory) {
+    // Tồn kho không có số nguyên an toàn thì không được coi là quà đã sẵn sàng cấp.
+    if (
+      !Number.isSafeInteger(product.availableQuantity) ||
+      (product.availableQuantity as number) < quantity
+    )
+      return null;
+  }
   return {
     promotionId,
     productId: product.productId,
@@ -966,132 +991,515 @@ function progressTargetName(
 ) {
   if (config.type === "QUANTITY_DISCOUNT") {
     if (config.scope === "SELECTED_PRODUCTS") {
+      const ids = config.productIds ?? [];
       const names = targetNamesForIds(
-        config.productIds ?? [],
+        ids,
         targetNames?.products,
         (id) => lines.find((line) => line.productId === id)?.productName,
       );
-      return names.join(", ") || undefined;
+      return names.length === ids.length ? names.join(", ") : undefined;
     }
     if (config.scope === "SELECTED_CATEGORIES") {
+      const ids = config.categoryIds ?? [];
       const names = targetNamesForIds(
-        config.categoryIds ?? [],
+        ids,
         targetNames?.categories,
         () => undefined,
       );
-      return names.join(", ") || undefined;
+      return names.length === ids.length ? names.join(", ") : undefined;
     }
   }
   if (config.type === "BUY_X_GET_Y") {
-    return targetNamesForIds(
-      [config.triggerProductId],
+    const ids = [config.triggerProductId];
+    const names = targetNamesForIds(
+      ids,
       targetNames?.products,
       (id) => lines.find((line) => line.productId === id)?.productName,
-    ).join(", ") || undefined;
+    );
+    return names.length === ids.length ? names.join(", ") : undefined;
   }
   if (config.type === "COMBO_DISCOUNT") {
-    return targetNamesForIds(
-      config.items.map((item) => item.productId),
+    const ids = config.items.map((item) => item.productId);
+    const names = targetNamesForIds(
+      ids,
       targetNames?.products,
       (id) => lines.find((line) => line.productId === id)?.productName,
-    ).join(", ") || undefined;
+    );
+    return names.length === ids.length ? names.join(", ") : undefined;
   }
   return undefined;
 }
 
-function progressFor(
+function promotionTargetName(
+  productId: string,
+  lines: PromotionCartLine[],
+  targetNames: PromotionTargetNames | undefined,
+) {
+  const name = targetNames?.products?.[productId] ??
+    lines.find((line) => line.productId === productId)?.productName;
+  const trimmed = name?.trim();
+  return trimmed || undefined;
+}
+
+function comboMissingDescription(
+  missingByItem: Array<{ productId: string; missing: number }>,
+  lines: PromotionCartLine[],
+  targetNames: PromotionTargetNames | undefined,
+) {
+  return missingByItem
+    .filter((item) => item.missing > 0)
+    .map((item) => {
+      const name = promotionTargetName(item.productId, lines, targetNames);
+      return name ? `${item.missing} sản phẩm ${name}` : undefined;
+    })
+    .filter((value): value is string => Boolean(value))
+    .join(" và ");
+}
+
+export const PROMOTION_PROGRESS_LIMIT = 8;
+
+type ScoredProgress = PromotionProgress & {
+  completionRatio: number;
+  incrementalBenefitVnd: number;
+  createdAt: string;
+};
+
+function clampRatio(value: number) {
+  return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+}
+
+function completionBand(value: number) {
+  if (value >= 0.8) return 2;
+  if (value >= 0.5) return 1;
+  return 0;
+}
+
+function giftProductId(config: PromotionConfig) {
+  if (config.type === "ORDER_GIFT") return config.giftProductId;
+  if (config.type === "BUY_X_GET_Y") return config.rewardProductId;
+  return null;
+}
+
+function giftQuantity(config: PromotionConfig, applications = 1) {
+  if (config.type === "ORDER_GIFT") return config.giftQuantity;
+  if (config.type === "BUY_X_GET_Y") return moneyProduct(config.rewardQuantity, applications);
+  return 0;
+}
+
+function giftBenefitValue(
+  config: PromotionConfig,
+  catalog: Map<string, PromotionCatalogProduct>,
+  applications = 1,
+) {
+  const productId = giftProductId(config);
+  if (!productId) return 0;
+  const product = catalog.get(productId);
+  return product
+    ? moneyProduct(product.priceVnd, giftQuantity(config, applications))
+    : 0;
+}
+
+function rewardBenefitValue(
+  rewardValue: PromotionReward,
+  base: number,
+  shippingFeeVnd: number,
+) {
+  if (rewardValue.kind === "FREE_SHIPPING")
+    return shippingFeeVnd > 0 ? shippingFeeVnd : 0;
+  return rewardAmount(rewardValue, Math.max(1, base));
+}
+
+function orderReward(config: Extract<PromotionConfig, { type: "ORDER_FIXED_DISCOUNT" | "ORDER_PERCENTAGE_DISCOUNT" }>) {
+  return config.type === "ORDER_FIXED_DISCOUNT"
+    ? `giảm ${formatVnd(config.discountAmount)}`
+    : describeReward({
+        kind: "PERCENTAGE",
+        percentage: config.percentage,
+        maximumDiscount: config.maximumDiscount,
+      });
+}
+
+function withProgressScore(
+  candidate: Candidate,
+  kind: PromotionProgressKind,
+  completionRatio: number,
+  nextReward: string,
+  message: string,
+  incrementalBenefitVnd: number,
+  extra: Pick<PromotionProgress, "remainingAmountVnd" | "remainingQuantity" | "currentReward"> = {},
+): ScoredProgress {
+  return {
+    promotionId: candidate.promotion.id,
+    promotionName: candidate.promotion.name,
+    type: candidate.promotion.type,
+    priority: candidate.promotion.priority,
+    kind,
+    nextReward,
+    message,
+    completionRatio: clampRatio(completionRatio),
+    incrementalBenefitVnd: Math.max(0, incrementalBenefitVnd),
+    createdAt: candidate.promotion.createdAt,
+    ...extra,
+  };
+}
+
+function currentExclusivePromotion(
+  input: PromotionEvaluationInput,
+  currentEvaluation: PromotionEvaluationResult,
+) {
+  const byId = new Map(input.promotions.map((promotion) => [promotion.id, promotion]));
+  return currentEvaluation.appliedPromotions
+    .map((applied) => byId.get(applied.promotionId))
+    .find((promotion) => promotion && !promotion.stackable);
+}
+
+function isBlockedByCurrentExclusive(
   candidate: Candidate,
   lines: PromotionCartLine[],
-  targetNames?: PromotionTargetNames,
-): PromotionProgress | null {
-  if (candidate.promotion.config.type === "TIERED_DISCOUNT") {
-    const subtotal = sumLineTotals(lines);
-    const tiers = candidate.promotion.config.tiers;
-    const next = tiers.find((tier) => tier.threshold > subtotal);
-    if (!next) return null;
-    const current = [...tiers].reverse().find((tier) => tier.threshold <= subtotal);
-    return {
-      promotionId: candidate.promotion.id,
-      promotionName: candidate.promotion.name,
-      type: candidate.promotion.type,
-      priority: candidate.promotion.priority,
-      remainingAmountVnd: next.threshold - subtotal,
-      currentReward: current ? describeReward(current.reward) : undefined,
-      nextReward: describeReward(next.reward),
-      message: `${current ? `Bạn đang được ${describeReward(current.reward)}. ` : ""}Mua thêm ${formatVnd(next.threshold - subtotal)} để được ${describeReward(next.reward)}.`,
-    };
-  }
-  if (candidate.eligible) return null;
+  input: PromotionEvaluationInput,
+  currentEvaluation: PromotionEvaluationResult,
+) {
+  if (candidate.promotion.stackable) return false;
+  const winner = currentExclusivePromotion(input, currentEvaluation);
+  if (!winner || winner.id === candidate.promotion.id) return false;
+  if (winner.priority !== candidate.promotion.priority)
+    return winner.priority > candidate.promotion.priority;
+  // Cùng priority phải dùng đúng comparator của engine, không dùng thứ tự DB.
+  return sortCandidates(evaluateCandidate(winner, lines), candidate) <= 0;
+}
+
+function availableGift(
+  promotionId: string,
+  config: PromotionConfig,
+  catalog: Map<string, PromotionCatalogProduct>,
+  applications = 1,
+) {
+  const productId = giftProductId(config);
+  if (!productId) return null;
+  return productGift(
+    promotionId,
+    productId,
+    giftQuantity(config, applications),
+    catalog,
+  );
+}
+
+function progressForCandidate(
+  candidate: Candidate,
+  lines: PromotionCartLine[],
+  input: PromotionEvaluationInput,
+  currentEvaluation: PromotionEvaluationResult,
+  applied: AppliedPromotion | undefined,
+): ScoredProgress | null {
   const config = candidate.promotion.config;
   const subtotal = sumLineTotals(lines);
-  if (config.type === "ORDER_FIXED_DISCOUNT" || config.type === "ORDER_PERCENTAGE_DISCOUNT" || config.type === "ORDER_GIFT") {
-    const remaining = config.minimumSubtotal - subtotal;
-    return {
-      promotionId: candidate.promotion.id,
-      promotionName: candidate.promotion.name,
-      type: candidate.promotion.type,
-      priority: candidate.promotion.priority,
-      remainingAmountVnd: remaining,
-      nextReward: config.type === "ORDER_FIXED_DISCOUNT" ? `giảm ${formatVnd(config.discountAmount)}` : config.type === "ORDER_PERCENTAGE_DISCOUNT" ? describeReward({ kind: "PERCENTAGE", percentage: config.percentage, maximumDiscount: config.maximumDiscount }) : `nhận quà x${config.giftQuantity}`,
-      message: `Mua thêm ${formatVnd(remaining)} để ${config.type === "ORDER_GIFT" ? `nhận quà x${config.giftQuantity}` : "được ưu đãi"}.`,
-    };
+  const catalog = new Map((input.catalog ?? []).map((product) => [product.productId, product]));
+  const realized = applied ? hasRealizedPromotion([applied]) : false;
+
+  if (config.type === "TIERED_DISCOUNT") {
+    if (isBlockedByCurrentExclusive(candidate, lines, input, currentEvaluation))
+      return null;
+    const next = config.tiers.find((tier) => tier.threshold > subtotal);
+    if (!next) return null;
+    const current = [...config.tiers].reverse().find((tier) => tier.threshold <= subtotal);
+    if (current && (!applied || !realized)) return null;
+    const nextBenefit = rewardBenefitValue(
+      next.reward,
+      next.threshold,
+      currentEvaluation.shippingFeeVnd,
+    );
+    const currentBenefit = applied?.freeShipping
+      ? currentEvaluation.appliedPromotions.some(
+          (item) =>
+            item.promotionId !== candidate.promotion.id &&
+            hasRealizedPromotion([item]),
+        )
+        ? 0
+        : STANDARD_SHIPPING_FEE_VND
+      : applied?.discountAmountVnd ?? 0;
+    if (nextBenefit <= 0) return null;
+    if (current && nextBenefit <= currentBenefit)
+      return null;
+    const kind: PromotionProgressKind = current ? "NEXT_TIER" : "NEXT_UNLOCK";
+    return withProgressScore(
+      candidate,
+      kind,
+      subtotal / next.threshold,
+      describeReward(next.reward),
+      `${current && applied ? `Bạn đang được ${describeReward(current.reward)}. ` : ""}Mua thêm ${formatVnd(next.threshold - subtotal)} để được ${describeReward(next.reward)}.`,
+      nextBenefit,
+      {
+        remainingAmountVnd: next.threshold - subtotal,
+        currentReward: current && applied ? describeReward(current.reward) : undefined,
+      },
+    );
   }
+
+  if (candidate.eligible) {
+    if (!applied || !realized) return null;
+    if (config.type === "BUY_X_GET_Y" && config.allowRepeatedApplications) {
+      const count = triggerQuantity(config, lines);
+      const applications = Math.floor(count / config.requiredQuantity);
+      const nextApplications = applications + 1;
+      const remaining = nextApplications * config.requiredQuantity - count;
+      const gift = availableGift(candidate.promotion.id, config, catalog, nextApplications);
+      if (!gift) return null;
+      const targetName = progressTargetName(config, lines, input.targetNames);
+      if (!targetName) return null;
+      const giftName = catalog.get(config.rewardProductId)?.productName;
+      const rewardText = giftName
+        ? `nhận quà ${giftName} x${config.rewardQuantity}`
+        : `nhận quà x${config.rewardQuantity}`;
+      return withProgressScore(
+        candidate,
+        "NEXT_REPEAT",
+        (count % config.requiredQuantity) / config.requiredQuantity,
+        `tặng ${config.rewardQuantity}`,
+        `Mua thêm ${remaining} sản phẩm ${targetName} để ${rewardText}.`,
+        giftBenefitValue(config, catalog, 1),
+        { remainingQuantity: remaining },
+      );
+    }
+    if (config.type === "QUANTITY_DISCOUNT" && config.allowRepeatedApplications) {
+      const indexes = rewardForScope(config, lines);
+      const count = moneySum(indexes.map((index) => lines[index].quantity));
+      const applications = Math.floor(count / config.requiredQuantity);
+      const nextApplications = applications + 1;
+      const base = sumLineTotals(indexes.map((index) => lines[index]));
+      const nextBenefit = rewardBenefitValue(
+        config.reward,
+        base,
+        currentEvaluation.shippingFeeVnd,
+      );
+      if (config.reward.kind === "FREE_SHIPPING" && currentEvaluation.shippingFeeVnd === 0)
+        return null;
+      const currentBenefit = applied.discountAmountVnd;
+      const repeatedBenefit = config.reward.kind === "FIXED"
+        ? rewardAmount(config.reward, base, nextApplications)
+        : nextBenefit;
+      if (repeatedBenefit <= currentBenefit && config.reward.kind !== "FREE_SHIPPING")
+        return null;
+      const targetName = progressTargetName(config, lines, input.targetNames);
+      if (config.scope !== "ENTIRE_CART" && !targetName) return null;
+      const remaining = nextApplications * config.requiredQuantity - count;
+      return withProgressScore(
+        candidate,
+        "NEXT_REPEAT",
+        (count % config.requiredQuantity) / config.requiredQuantity,
+        describeReward(config.reward),
+        config.scope === "ENTIRE_CART"
+          ? `Mua thêm ${remaining} sản phẩm để áp dụng ưu đãi ${describeReward(config.reward)}.`
+          : `Mua thêm ${remaining} sản phẩm ${targetName} để áp dụng ưu đãi ${describeReward(config.reward)}.`,
+        Math.max(nextBenefit, repeatedBenefit - currentBenefit),
+        { remainingQuantity: remaining },
+      );
+    }
+    if (config.type === "COMBO_DISCOUNT" && config.allowRepeatedApplications) {
+      const applications = comboApplications(config, lines);
+      const nextApplications = applications + 1;
+      const target = comboIndices(config, lines);
+      const base = sumLineTotals(target.map((index) => lines[index]));
+      const nextBenefit = config.reward.kind === "FIXED"
+        ? rewardAmount(config.reward, base, nextApplications)
+        : rewardBenefitValue(config.reward, base, currentEvaluation.shippingFeeVnd);
+      if (nextBenefit <= applied.discountAmountVnd && config.reward.kind !== "FREE_SHIPPING")
+        return null;
+      if (config.reward.kind === "FREE_SHIPPING" && currentEvaluation.shippingFeeVnd === 0)
+        return null;
+      const missing = moneySum(config.items.map((item) => {
+        const current = quantityFor(lines, (line) => line.productId === item.productId);
+        return Math.max(0, moneyProduct(nextApplications, item.quantity) - current);
+      }));
+      const targetName = progressTargetName(config, lines, input.targetNames);
+      if (!targetName) return null;
+      const missingByItem = config.items.map((item) => ({
+        productId: item.productId,
+        missing: Math.max(
+          0,
+          moneyProduct(nextApplications, item.quantity) -
+            quantityFor(lines, (line) => line.productId === item.productId),
+        ),
+      }));
+      const missingDescription = comboMissingDescription(
+        missingByItem,
+        lines,
+        input.targetNames,
+      );
+      if (!missingDescription) return null;
+      return withProgressScore(
+        candidate,
+        "NEXT_REPEAT",
+        1 - missing / Math.max(1, moneySum(config.items.map((item) => moneyProduct(nextApplications, item.quantity)))),
+        describeReward(config.reward),
+        `Bổ sung ${missingDescription} còn thiếu để ${describeReward(config.reward)}.`,
+        Math.max(0, nextBenefit - applied.discountAmountVnd),
+        { remainingQuantity: missing },
+      );
+    }
+    return null;
+  }
+
+  if (isBlockedByCurrentExclusive(candidate, lines, input, currentEvaluation))
+    return null;
+
+  if (config.type === "ORDER_FIXED_DISCOUNT" || config.type === "ORDER_PERCENTAGE_DISCOUNT") {
+    const remaining = Math.max(0, config.minimumSubtotal - subtotal);
+    const benefit = config.type === "ORDER_FIXED_DISCOUNT"
+      ? config.discountAmount
+      : rewardAmount(
+          { kind: "PERCENTAGE", percentage: config.percentage, maximumDiscount: config.maximumDiscount },
+          config.minimumSubtotal,
+        );
+    if (!remaining || benefit <= 0) return null;
+    return withProgressScore(
+      candidate,
+      "NEXT_UNLOCK",
+      subtotal / config.minimumSubtotal,
+      orderReward(config),
+      `Mua thêm ${formatVnd(remaining)} để được ${orderReward(config)}.`,
+      benefit,
+      { remainingAmountVnd: remaining },
+    );
+  }
+
+  if (config.type === "ORDER_GIFT") {
+    const remaining = Math.max(0, config.minimumSubtotal - subtotal);
+    const gift = availableGift(candidate.promotion.id, config, catalog);
+    if (!remaining || !gift) return null;
+    const giftName = catalog.get(config.giftProductId)?.productName;
+    const rewardText = giftName
+      ? `nhận quà ${giftName} x${config.giftQuantity}`
+      : `nhận quà x${config.giftQuantity}`;
+    return withProgressScore(
+      candidate,
+      "NEXT_UNLOCK",
+      subtotal / config.minimumSubtotal,
+      rewardText,
+      `Mua thêm ${formatVnd(remaining)} để ${rewardText}.`,
+      giftBenefitValue(config, catalog),
+      { remainingAmountVnd: remaining },
+    );
+  }
+
   if (config.type === "BUY_X_GET_Y") {
     const count = triggerQuantity(config, lines);
     const remaining = Math.max(0, config.requiredQuantity - count);
-    const targetName = progressTargetName(config, lines, targetNames);
-    return {
-      promotionId: candidate.promotion.id,
-      promotionName: candidate.promotion.name,
-      type: candidate.promotion.type,
-      priority: candidate.promotion.priority,
-      remainingQuantity: remaining,
-      nextReward: `tặng ${config.rewardQuantity}`,
-      message: targetName
-        ? `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để nhận quà.`
-        : `Mua thêm ${remaining} sản phẩm để nhận quà.`,
-    };
+    const gift = availableGift(candidate.promotion.id, config, catalog);
+    if (!remaining || !gift) return null;
+    const targetName = progressTargetName(config, lines, input.targetNames);
+    if (!targetName) return null;
+    const giftName = catalog.get(config.rewardProductId)?.productName;
+    const rewardText = giftName
+      ? `nhận quà ${giftName} x${config.rewardQuantity}`
+      : `nhận quà x${config.rewardQuantity}`;
+    return withProgressScore(
+      candidate,
+      "NEXT_UNLOCK",
+      count / config.requiredQuantity,
+      `tặng ${config.rewardQuantity}`,
+      `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để ${rewardText}.`,
+      giftBenefitValue(config, catalog),
+      { remainingQuantity: remaining },
+    );
   }
+
   if (config.type === "QUANTITY_DISCOUNT") {
     const indexes = rewardForScope(config, lines);
-    const count = indexes.reduce((sum, index) => sum + lines[index].quantity, 0);
+    const count = moneySum(indexes.map((index) => lines[index].quantity));
     const remaining = Math.max(0, config.requiredQuantity - count);
-    const targetName = progressTargetName(config, lines, targetNames);
-    if (config.scope !== "ENTIRE_CART" && !targetName) return null;
-    return {
-      promotionId: candidate.promotion.id,
-      promotionName: candidate.promotion.name,
-      type: candidate.promotion.type,
-      priority: candidate.promotion.priority,
-      remainingQuantity: remaining,
-      nextReward: describeReward(config.reward),
-      message:
-        config.scope === "ENTIRE_CART"
-          ? `Bạn đã mua ${count}/${config.requiredQuantity} sản phẩm để ${describeReward(config.reward)}.`
-          : `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để áp dụng ưu đãi ${describeReward(config.reward)}.`,
-    };
+    const targetName = progressTargetName(config, lines, input.targetNames);
+    if (!remaining || (config.scope !== "ENTIRE_CART" && !targetName)) return null;
+    const base = sumLineTotals(indexes.map((index) => lines[index]));
+    const benefit = rewardBenefitValue(config.reward, base, currentEvaluation.shippingFeeVnd);
+    if (benefit <= 0) return null;
+    return withProgressScore(
+      candidate,
+      "NEXT_UNLOCK",
+      count / config.requiredQuantity,
+      describeReward(config.reward),
+      config.scope === "ENTIRE_CART"
+        ? `Bạn cần mua thêm ${remaining} sản phẩm để áp dụng ưu đãi ${describeReward(config.reward)}.`
+        : `Bạn cần mua thêm ${remaining} sản phẩm ${targetName} để áp dụng ưu đãi ${describeReward(config.reward)}.`,
+      benefit,
+      { remainingQuantity: remaining },
+    );
   }
+
   if (config.type === "COMBO_DISCOUNT") {
-    const missing = config.items
-      .map((item) => {
-        const current = quantityFor(lines, (line) => line.productId === item.productId);
-        return Math.max(0, item.quantity - current);
-      })
-      .reduce((sum, value) => sum + value, 0);
-    const targetName = progressTargetName(config, lines, targetNames);
-    return {
-      promotionId: candidate.promotion.id,
-      promotionName: candidate.promotion.name,
-      type: candidate.promotion.type,
-      priority: candidate.promotion.priority,
-      remainingQuantity: missing,
-      nextReward: describeReward(config.reward),
-      message: targetName
-        ? `Bổ sung ${missing} sản phẩm ${targetName} còn thiếu để ${describeReward(config.reward)}.`
-        : `Bổ sung ${missing} sản phẩm còn thiếu để ${describeReward(config.reward)}.`,
-    };
+    const missingByItem = config.items.map((item) => ({
+      ...item,
+      missing: Math.max(0, item.quantity - quantityFor(lines, (line) => line.productId === item.productId)),
+    }));
+    const missing = moneySum(missingByItem.map((item) => item.missing));
+    const targetName = progressTargetName(config, lines, input.targetNames);
+    if (!missing || !targetName) return null;
+    const missingDescription = comboMissingDescription(
+      missingByItem,
+      lines,
+      input.targetNames,
+    );
+    if (!missingDescription) return null;
+    const target = comboIndices(config, lines);
+    const base = sumLineTotals(target.map((index) => lines[index]));
+    const benefit = rewardBenefitValue(config.reward, base, currentEvaluation.shippingFeeVnd);
+    if (benefit <= 0) return null;
+    return withProgressScore(
+      candidate,
+      "NEXT_UNLOCK",
+      1 - missing / Math.max(1, moneySum(config.items.map((item) => item.quantity))),
+      describeReward(config.reward),
+      `Bổ sung ${missingDescription} còn thiếu để ${describeReward(config.reward)}.`,
+      benefit,
+      { remainingQuantity: missing },
+    );
   }
   return null;
+}
+
+/**
+ * Giải quyết progress từ đúng kết quả applied hiện tại; hàm thuần, ổn định và không chạm DB.
+ */
+export function resolvePromotionProgress(
+  input: PromotionEvaluationInput,
+  currentEvaluation: PromotionEvaluationResult,
+) {
+  const lines = input.cart.map((line) => ({ ...line, categoryIds: [...line.categoryIds] }));
+  const now = input.now ?? new Date();
+  const appliedById = new Map(
+    currentEvaluation.appliedPromotions.map((promotion) => [promotion.promotionId, promotion]),
+  );
+  const scored = input.promotions
+    .filter((promotion) => isPromotionRunning(promotion, now))
+    .map((promotion) => evaluateCandidate(promotion, lines))
+    .map((candidate) =>
+      progressForCandidate(
+        candidate,
+        lines,
+        input,
+        currentEvaluation,
+        appliedById.get(candidate.promotion.id),
+      ),
+    )
+    .filter((value): value is ScoredProgress => Boolean(value))
+    .sort(
+      (left, right) =>
+        completionBand(right.completionRatio) - completionBand(left.completionRatio) ||
+        right.priority - left.priority ||
+        right.completionRatio - left.completionRatio ||
+        right.incrementalBenefitVnd - left.incrementalBenefitVnd ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.promotionId.localeCompare(right.promotionId),
+    );
+  const seen = new Set<string>();
+  return scored
+    .filter((item) => {
+      const key = `${item.promotionId}:${item.kind}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, PROMOTION_PROGRESS_LIMIT)
+    .map(({ completionRatio: _completionRatio, incrementalBenefitVnd: _incrementalBenefitVnd, createdAt: _createdAt, ...item }) => item);
 }
 
 export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEvaluationResult {
@@ -1152,15 +1560,15 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
     } else if (config.type === "ORDER_FIXED_DISCOUNT") {
       discount = allocateDiscount(currentLines, target, config.discountAmount);
     } else if (config.type === "ORDER_PERCENTAGE_DISCOUNT") {
-      discount = allocateDiscount(currentLines, target, rewardAmount({ kind: "PERCENTAGE", percentage: config.percentage, maximumDiscount: config.maximumDiscount }, currentLines.reduce((sum, line) => sum + line.currentTotal, 0)));
+      discount = allocateDiscount(currentLines, target, rewardAmount({ kind: "PERCENTAGE", percentage: config.percentage, maximumDiscount: config.maximumDiscount }, moneySum(currentLines.map((line) => line.currentTotal))));
     } else if (config.type === "QUANTITY_DISCOUNT") {
-      const count = target.reduce((sum, index) => sum + lines[index].quantity, 0);
+      const count = moneySum(target.map((index) => lines[index].quantity));
       const multiplier = config.allowRepeatedApplications ? Math.floor(count / config.requiredQuantity) : 1;
-      const base = target.reduce((sum, index) => sum + currentLines[index].currentTotal, 0);
+      const base = moneySum(target.map((index) => currentLines[index].currentTotal));
       discount = allocateDiscount(currentLines, target, rewardAmount(config.reward, base, Math.max(1, multiplier)));
     } else if (config.type === "COMBO_DISCOUNT") {
       const applications = comboApplications(config, lines);
-      const base = target.reduce((sum, index) => sum + currentLines[index].currentTotal, 0);
+      const base = moneySum(target.map((index) => currentLines[index].currentTotal));
       discount = allocateDiscount(currentLines, target, rewardAmount(config.reward, base, Math.max(1, config.allowRepeatedApplications ? applications : 1)));
     }
     if (config.type === "ORDER_GIFT") {
@@ -1170,7 +1578,12 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
     } else if (config.type === "BUY_X_GET_Y") {
       const quantity = triggerQuantity(config, lines);
       const applications = config.allowRepeatedApplications ? Math.floor(quantity / config.requiredQuantity) : 1;
-      const gift = productGift(candidate.promotion.id, config.rewardProductId, config.rewardQuantity * Math.max(1, applications), catalog);
+      const gift = productGift(
+        candidate.promotion.id,
+        config.rewardProductId,
+        moneyProduct(config.rewardQuantity, Math.max(1, applications)),
+        catalog,
+      );
       if (gift) giftItems = [gift];
       else giftUnavailable = true;
     } else if (config.type === "TIERED_DISCOUNT") {
@@ -1202,18 +1615,36 @@ export function evaluatePromotions(input: PromotionEvaluationInput): PromotionEv
     lineTotalVnd: currentLines[index].currentTotal,
   }));
   const discountTotalVnd = moneySum(items.map((item) => item.discountAmountVnd));
-  const progress = input.promotions
-    .filter((promotion) => isPromotionRunning(promotion, now))
-    .map((promotion) => evaluateCandidate(promotion, lines))
-    .map((candidate) => progressFor(candidate, lines, input.targetNames))
-    .filter((value): value is PromotionProgress => Boolean(value))
-    .sort((left, right) => right.priority - left.priority || (left.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) - (right.remainingAmountVnd ?? Number.MAX_SAFE_INTEGER) || (left.remainingQuantity ?? Number.MAX_SAFE_INTEGER) - (right.remainingQuantity ?? Number.MAX_SAFE_INTEGER));
+  const discountedSubtotalVnd = Math.max(0, subtotalVnd - discountTotalVnd);
+  const shipping = resolveShipping({
+    hasPurchasedItems: lines.some((line) => line.quantity > 0),
+    appliedPromotions,
+  });
+  const progress = resolvePromotionProgress(input, {
+    subtotalVnd,
+    discountTotalVnd,
+    discountedSubtotalVnd,
+    shippingFeeVnd: shipping.shippingFeeVnd,
+    shippingStatus: shipping.shippingStatus,
+    hasRealizedPromotion: shipping.hasRealizedPromotion,
+    finalTotalVnd: moneySum([discountedSubtotalVnd, shipping.shippingFeeVnd]),
+    freeShipping: appliedPromotions.some((promotion) => promotion.freeShipping),
+    totalQuantity: moneySum(lines.map((line) => line.quantity)),
+    items,
+    gifts,
+    appliedPromotions,
+    progress: [],
+  });
   return {
     subtotalVnd,
     discountTotalVnd,
-    finalTotalVnd: Math.max(0, subtotalVnd - discountTotalVnd),
+    discountedSubtotalVnd,
+    shippingFeeVnd: shipping.shippingFeeVnd,
+    shippingStatus: shipping.shippingStatus,
+    hasRealizedPromotion: shipping.hasRealizedPromotion,
+    finalTotalVnd: moneySum([discountedSubtotalVnd, shipping.shippingFeeVnd]),
     freeShipping: appliedPromotions.some((promotion) => promotion.freeShipping),
-    totalQuantity: lines.reduce((sum, line) => sum + line.quantity, 0),
+    totalQuantity: moneySum(lines.map((line) => line.quantity)),
     items,
     gifts,
     appliedPromotions,

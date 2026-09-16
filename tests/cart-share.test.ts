@@ -82,18 +82,22 @@ function createTestEnv() {
   database.exec(migration("0002_seed.sql"));
   database.exec(migration("0003_messenger_checkout_v1.sql"));
   database.exec(migration("0004_direct_seller_cart_share_v1.sql"));
+  database.exec(migration("0011_promotion_management_p0_p1.sql"));
+  database.exec(migration("0025_shipping_fee_v1.sql"));
   database.exec(`
     INSERT INTO app_settings (key, value, updated_at) VALUES
       ('seller_display_name', 'Nguyễn A', CURRENT_TIMESTAMP),
       ('seller_contact_label', 'Người bán BabyJoy', CURRENT_TIMESTAMP),
       ('seller_messenger_url', 'https://m.me/nguyena', CURRENT_TIMESTAMP),
-      ('seller_avatar_key', '', CURRENT_TIMESTAMP);
+      ('seller_avatar_key', '', CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
   `);
   const d1 = new SqliteD1Adapter(database);
   const env = {
     DB: d1,
     DIRECT_SELLER_SHARE_ENABLED: "true",
     MESSENGER_CHECKOUT_ENABLED: "false",
+    STOREFRONT_ACCESS_GATE_ENABLED: "false",
     CART_SHARE_SECRET: "test-cart-share-secret-that-is-long-enough-123",
     PRODUCT_IMAGES: { head: async () => ({}) },
   } as unknown as Env;
@@ -216,13 +220,14 @@ describe("Direct Seller Cart Share domain", () => {
     const first = await prepareCartShare(prepareRequest(), env);
     expect(first.status).toBe(201);
     const body = await first.json() as {
-      cartRequest: { code: string; subtotalVnd: number; totalQuantity: number };
+      cartRequest: { code: string; subtotalVnd: number; totalQuantity: number; shippingFeeVnd: number; finalTotalVnd: number; shippingStatus: string };
       share: { title: string; url: string; copyText: string };
     };
-    expect(body.cartRequest).toMatchObject({ subtotalVnd: 318000, totalQuantity: 3 });
+    expect(body.cartRequest).toMatchObject({ subtotalVnd: 318000, totalQuantity: 3, shippingFeeVnd: 15000, finalTotalVnd: 333000, shippingStatus: "STANDARD" });
     expect(body.share.title).toBe(`Giỏ hàng ${STORE_BRAND} ${body.cartRequest.code}`);
     expect(body.share.copyText).toContain(`🛒 GIỎ HÀNG ${STORE_BRAND}`);
     expect(body.share.copyText).toContain(body.share.url);
+    expect(body.share.copyText).toContain("Phí vận chuyển: 15.000 ₫");
     const rawToken = body.share.url.split("/").at(-1) ?? "";
     const stored = database.prepare("SELECT token_hash FROM cart_share_links").get() as { token_hash: string };
     expect(stored.token_hash).toBe(await hashShareToken(rawToken));
@@ -344,6 +349,7 @@ describe("Direct Seller Cart Share domain", () => {
       code: "GH-FREE-SHIP",
       items: [{ productName: "Bột ăn dặm", variantName: "227g", quantity: 1, lineTotalVnd: 125000 }],
       subtotalVnd: 125000,
+      shippingFeeVnd: 0,
       promotionDiscountVnd: 0,
       finalTotalVnd: 125000,
       freeShipping: true,
@@ -352,7 +358,21 @@ describe("Direct Seller Cart Share domain", () => {
     });
     expect(text).toContain(FREE_SHIPPING_LABEL);
     expect(text).toContain("Khuyến mãi Ship tháng 9");
+    expect(text).not.toContain("Phí vận chuyển");
     expect(text).not.toContain("-0 ₫");
+  });
+
+  it("thêm phí ship snapshot vào text standard và giữ tổng thanh toán", () => {
+    const text = composeCartShareText({
+      code: "GH-STANDARD-SHIP",
+      items: [{ productName: "Bột ăn dặm", variantName: "227g", quantity: 1, lineTotalVnd: 125000 }],
+      subtotalVnd: 125000,
+      shippingFeeVnd: 15000,
+      finalTotalVnd: 140000,
+      url: "https://metraphuong.com/c/opaque-standard-ship",
+    });
+    expect(text).toContain("Phí vận chuyển: 15.000 ₫");
+    expect(text).toContain("Tổng thanh toán: 140.000 ₫");
   });
 
   it("giới hạn Direct Share theo IP hash trước khi tạo snapshot", async () => {

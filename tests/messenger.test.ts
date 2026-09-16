@@ -269,6 +269,34 @@ describe("Messenger message và public status", () => {
     expect(text).not.toContain("-0 ₫");
   });
 
+  it("hiển thị phí vận chuyển snapshot trước tổng và không tự thêm phí", () => {
+    const text = composeMessengerCartSummary({
+      code: "GH-STANDARD-SHIP",
+      subtotalVnd: 250000,
+      shippingFeeVnd: 15000,
+      promotionDiscountVnd: 30000,
+      finalTotalVnd: 235000,
+      items: [{
+        productId: "p1",
+        variantId: "v1",
+        productName: "Bột ăn dặm",
+        variantName: "227g",
+        sku: "SKU-1",
+        imageKey: null,
+        priceVnd: 125000,
+        quantity: 2,
+        lineTotalVnd: 250000,
+      }],
+    });
+    expect(text.indexOf("Tạm tính: 250.000 ₫")).toBeLessThan(
+      text.indexOf("Phí vận chuyển: 15.000 ₫"),
+    );
+    expect(text.indexOf("Phí vận chuyển: 15.000 ₫")).toBeLessThan(
+      text.indexOf("Tổng thanh toán: 235.000 ₫"),
+    );
+    expect(text).not.toContain("Phí vận chuyển: 0 ₫");
+  });
+
   it("chỉ SENT mới là hoàn tất delivery", () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(publicMessengerStatus("CREATED", "PENDING", future)).toBe(

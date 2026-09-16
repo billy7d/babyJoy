@@ -23,6 +23,10 @@ export type PreparedCartShare = {
     totalQuantity: number;
     subtotalVnd: number;
     promotionDiscountVnd?: number;
+    discountedSubtotalVnd?: number;
+    shippingFeeVnd?: number;
+    shippingStatus?: "EMPTY_CART" | "STANDARD" | "WAIVED_BY_PROMOTION";
+    hasRealizedPromotion?: boolean;
     finalTotalVnd?: number;
     freeShipping?: boolean;
     createdAt: string;
@@ -78,6 +82,10 @@ export type CartShareApiIssue = {
   variantIds?: string[];
   subtotalVnd?: number;
   discountTotalVnd?: number;
+  discountedSubtotalVnd?: number;
+  shippingFeeVnd?: number;
+  shippingStatus?: "EMPTY_CART" | "STANDARD" | "WAIVED_BY_PROMOTION";
+  hasRealizedPromotion?: boolean;
   finalTotalVnd?: number;
   freeShipping?: boolean;
   gifts?: Array<{

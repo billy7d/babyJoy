@@ -17,11 +17,13 @@ describe("cart summary presentation", () => {
 
   it("keeps authoritative subtotal, discount and final-total sources", () => {
     expect(cartSource).toContain(
-      "const subtotalVnd = promotion?.subtotalVnd ?? cart.subtotalVnd",
+      "const subtotalVnd = quoteReady ? promotion?.subtotalVnd ?? 0 : 0",
     );
     expect(cartSource).toContain(
-      "const finalTotalVnd = promotion?.finalTotalVnd ?? subtotalVnd",
+      "const finalTotalVnd = quoteReady ? promotion?.finalTotalVnd ?? 0 : 0",
     );
+    expect(cartSource).toContain('promotion?.shippingStatus === "STANDARD"');
+    expect(cartSource).toContain('promotion?.shippingStatus === "WAIVED_BY_PROMOTION"');
     expect(cartSource).toContain("appliedPromotions.map");
     expect(cartSource).toContain("hasAppliedPromotion");
     expect(cartSource).toContain("item.freeShipping === true");

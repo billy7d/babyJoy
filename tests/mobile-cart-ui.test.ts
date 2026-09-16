@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { isFreeShippingPromotion } from "../app/lib/promotions";
+import { FREE_SHIPPING_LABEL } from "../shared/promotions";
 
 describe("mobile cart Stitch presentation contract", () => {
   const cartPageSource = readFileSync("app/components/public-pages.tsx", "utf8");
@@ -13,7 +14,7 @@ describe("mobile cart Stitch presentation contract", () => {
     expect(cartPageSource).toContain("cart-item-unavailable");
     expect(cartPageSource).toContain("evaluated?.priceVnd ?? variant.priceVnd");
     expect(cartPageSource).toContain("evaluated.discountAmountVnd > 0");
-    expect(cartPageSource).toContain("promotion.data?.gifts.map");
+    expect(cartPageSource).toContain("authoritativePromotion?.gifts.map");
     expect(cartPageSource).toContain("formatReservationDuration(reservationMinutes)");
   });
 
@@ -80,12 +81,14 @@ describe("mobile cart Stitch presentation contract", () => {
     expect(promotionCss).not.toContain("text-overflow: ellipsis");
   });
 
-  it("đưa FREE SHIPPING vào cột value bằng type, không dựa vào promotion name", () => {
-    expect(isFreeShippingPromotion({ type: "FREE_SHIPPING" })).toBe(true);
+  it("chỉ hiển thị FREE SHIPPING khi backend xác nhận benefit thực nhận", () => {
+    expect(isFreeShippingPromotion({ type: "FREE_SHIPPING" })).toBe(false);
+    expect(isFreeShippingPromotion({ type: "ORDER_FIXED_DISCOUNT", freeShipping: true })).toBe(true);
     expect(isFreeShippingPromotion({ type: "ORDER_FIXED_DISCOUNT" })).toBe(false);
-    expect(cartPageSource).toContain("isFreeShippingPromotion(item)");
-    expect(cartPageSource).toContain("Miễn phí vận chuyển");
-    expect(cartPageSource).toContain("className=\"promotion-breakdown-benefit\"");
+    expect(cartPageSource).toContain("item.freeShipping === true");
+    expect(cartPageSource).toContain("FREE_SHIPPING_LABEL");
+    expect(FREE_SHIPPING_LABEL).toBe("Miễn phí vận chuyển - Free Shipping");
+    expect(cartPageSource).toContain("className=\"promotion-breakdown-value\"");
     expect(cartPageSource).not.toContain('item.promotionName === "FREE SHIPPING"');
   });
 });
