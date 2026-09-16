@@ -1,6 +1,23 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseJsonc } from "../scripts/cloudflare-production-cron.mjs";
+import {
+  PRODUCTION_CUSTOM_DOMAIN,
+  PRODUCTION_D1_DATABASE_ID,
+  PRODUCTION_WORKER_SCRIPT_NAME,
+  SHIPPING_MIGRATION_FILE,
+  assertAuthoritativeCartSnapshot,
+  buildShippingMigrationConfig,
+  assertD1DatabaseIdentity,
+  assertHistoryAggregateUnchanged,
+  assertMigrationAllowlist,
+  assertSchemaColumn,
+  assertSingleActiveWorkerVersion,
+  extractD1Rows,
+  productionGateValue,
+  setProductionGateValue,
+  assertProductionDeploymentConfig,
+} from "../scripts/production-shipping-rollout.mjs";
 
 const workflow = readFileSync(
   new URL("../.github/workflows/production-rollout.yml", import.meta.url),
@@ -23,6 +40,13 @@ describe("production rollout workflow safeguards", () => {
     expect(workflow).toContain("confirm_enable_gate:");
     expect(workflow).toContain("confirm_repair_cron:");
     expect(workflow).toContain("REPAIR_CRON");
+    expect(workflow).toContain("- shipping_rollout");
+    expect(workflow).toContain("confirm_shipping_rollout:");
+    expect(workflow).toContain("expected_main_sha:");
+    expect(workflow).toContain("ROLL_OUT_SHIPPING");
+    expect(workflow).toContain("STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL");
+    expect(workflow).toContain("SHIPPING_FINANCIAL_SMOKE_CASES_JSON");
+    expect(workflow).toContain("production-financial-smoke.mjs --validate");
     expect(workflow).toContain("environment: production");
   });
 
@@ -47,18 +71,18 @@ describe("production rollout workflow safeguards", () => {
     expect(step("Initialize storefront access secret if missing")).toContain(
       "== 'prepare'",
     );
-    expect(step("Force gate disabled for prepare deploy")).toContain(
-      "== 'prepare'",
-    );
-    expect(step("Enable gate in deployment config")).toContain(
-      "== 'enable_gate'",
-    );
     expect(step("Build resolved production deployment config")).toContain(
       "!= 'repair_cron'",
     );
     expect(step("Build resolved production deployment config")).toContain(
-      "STOREFRONT_ACCESS_GATE_ENABLED",
+      "productionGateValue",
     );
+    expect(step("Guard legacy prepare against shipping pricing rollout")).toContain(
+      "migrations/0025_shipping_fee_v1.sql",
+    );
+    expect(workflow).toContain("setProductionGateValue");
+    expect(workflow).not.toContain("content.replaceAll");
+    expect(workflow).not.toContain("content = content.replace");
     expect(step("Create trigger-free Worker deployment config")).toContain(
       "!= 'repair_cron'",
     );
@@ -78,8 +102,9 @@ describe("production rollout workflow safeguards", () => {
     expect(workflow).toContain("prepare-deploy-config");
     expect(workflow).toContain("build/server/wrangler.production-deploy.json");
     expect(deployStep).toContain(
-      "npx wrangler deploy --config build/server/wrangler.production-deploy.json",
+      "--config build/server/wrangler.production-deploy.json",
     );
+    expect(deployStep).toContain("--keep-vars");
     expect(deployStep).not.toContain("--env production");
     expect(workflow).not.toContain('"crons": []');
     expect(workflow).not.toMatch(/npx wrangler deploy[^\n]*\|\|\s*true/);
@@ -142,5 +167,168 @@ describe("production rollout workflow safeguards", () => {
     expect(workflow).toContain("Worker deployment succeeded, but Cron reconciliation failed");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_API_TOKEN\"");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_ACCOUNT_ID\"");
+  });
+
+  it("keeps the shipping sequence guarded and ordered", () => {
+    const d1Preflight = workflow.indexOf("- name: Read-only shipping D1 preflight");
+    const backup = workflow.indexOf("- name: Create and verify full production D1 backup");
+    const compatibility = workflow.indexOf(
+      "- name: Deploy rollback-compatible Worker before shipping migration",
+    );
+    const compatibilityCutover = workflow.indexOf(
+      "- name: Verify no financial writes during compatibility cutover",
+    );
+    const migration = workflow.indexOf("- name: Apply only allowlisted shipping migration");
+    const postMigration = workflow.indexOf("- name: Verify shipping schema and historical totals");
+    const deploy = workflow.indexOf("- name: Deploy production Worker");
+    const identity = workflow.indexOf("- name: Verify validated shipping deployment identity");
+    expect(d1Preflight).toBeGreaterThan(-1);
+    expect(backup).toBeGreaterThan(d1Preflight);
+    expect(compatibility).toBeGreaterThan(backup);
+    expect(compatibilityCutover).toBeGreaterThan(compatibility);
+    expect(migration).toBeGreaterThan(compatibilityCutover);
+    expect(postMigration).toBeGreaterThan(migration);
+    expect(deploy).toBeGreaterThan(postMigration);
+    expect(identity).toBeGreaterThan(deploy);
+
+    const compatibilityStep = step(
+      "Deploy rollback-compatible Worker before shipping migration",
+    );
+    expect(compatibilityStep).toContain("--keep-vars");
+    expect(compatibilityStep).toContain("--strict");
+    expect(compatibilityStep).toContain("shipping compatibility");
+    expect(step("Apply only allowlisted shipping migration")).toContain(
+      "npx wrangler d1 migrations apply babyjoy-db --remote --env production --config build/server/wrangler.shipping-migration.json",
+    );
+    expect(step("Recheck shipping migration allowlist immediately before apply")).toContain(
+      "assertMigrationAllowlist",
+    );
+    expect(step("Persist tested shipping rollback artifact")).toContain(
+      "SHIPPING_PRICING_NOT_READY",
+    );
+    expect(step("Persist tested shipping rollback artifact")).toContain(
+      "npx wrangler rollback",
+    );
+    expect(step("Upload tested shipping rollback artifact")).toContain(
+      "actions/upload-artifact@v4",
+    );
+    expect(step("Prepare shipping-only migration config")).toContain(
+      "containing only ${SHIPPING_MIGRATION_FILE}",
+    );
+    expect(step("Create and verify full production D1 backup")).toContain(
+      "d1 export babyjoy-db --remote --env production --config wrangler.jsonc",
+    );
+    expect(step("Persist production backup artifact outside Git")).toContain(
+      "actions/upload-artifact@v4",
+    );
+    expect(step("Read-only shipping D1 preflight")).toContain(
+      "assertMigrationAllowlist",
+    );
+    expect(step("Verify shipping schema and historical totals")).toContain(
+      "nonzero_legacy_fee_count",
+    );
+    expect(step("Smoke test shipping financial pricing on compatibility Worker")).toContain(
+      "production-financial-smoke.mjs",
+    );
+    expect(step("Smoke test shipping financial pricing on final Worker")).toContain(
+      "production-financial-smoke.mjs",
+    );
+  });
+
+  it("validates the final artifact without changing access policy accidentally", () => {
+    const source = parseJsonc(
+      readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+      "wrangler.jsonc",
+    ) as Record<string, unknown>;
+    expect(assertProductionDeploymentConfig(source)).toBe(true);
+    expect(productionGateValue(source)).toBe("true");
+    expect(PRODUCTION_WORKER_SCRIPT_NAME).toBe("babyjoy-web-app-production");
+    expect(PRODUCTION_CUSTOM_DOMAIN).toBe("metraphuong.com");
+    expect(PRODUCTION_D1_DATABASE_ID).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+
+    const prepare = setProductionGateValue(source, "false");
+    expect(productionGateValue(prepare)).toBe("false");
+    expect(productionGateValue(source)).toBe("true");
+    expect(() => setProductionGateValue(source, "0" as never)).toThrow();
+  });
+
+  it("giới hạn config apply migration vào đúng D1 production và file 0025", () => {
+    const source = parseJsonc(
+      readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+      "wrangler.jsonc",
+    ) as Record<string, any>;
+    const migrationConfig = buildShippingMigrationConfig(source);
+    expect(migrationConfig.main).toBe("./index.js");
+    expect(migrationConfig.name).toBe(PRODUCTION_WORKER_SCRIPT_NAME);
+    expect(migrationConfig.env.production.name).toBe(PRODUCTION_WORKER_SCRIPT_NAME);
+    expect(migrationConfig.env.production.d1_databases).toEqual([
+      expect.objectContaining({
+        database_name: "babyjoy-db",
+        database_id: PRODUCTION_D1_DATABASE_ID,
+        migrations_dir: "shipping-migrations",
+      }),
+    ]);
+    expect(() => buildShippingMigrationConfig(source, "../unsafe")).toThrow();
+  });
+
+  it("rejects a wrong production D1, migration, schema, or Worker state", () => {
+    expect(() =>
+      assertD1DatabaseIdentity(
+        { result: { uuid: "wrong", name: "babyjoy-db" } },
+        PRODUCTION_D1_DATABASE_ID,
+        "babyjoy-db",
+      ),
+    ).toThrow();
+    expect(() => assertMigrationAllowlist("0024_combo_compare_price_v1.sql")).toThrow();
+    expect(assertMigrationAllowlist(`pending: ${SHIPPING_MIGRATION_FILE}`)).toEqual([
+      SHIPPING_MIGRATION_FILE,
+    ]);
+    expect(assertSchemaColumn([{ name: "shipping_fee_vnd" }], "shipping_fee_vnd", true)).toBe(true);
+    expect(() => assertSchemaColumn([], "shipping_fee_vnd", true)).toThrow();
+    expect(() =>
+      assertSingleActiveWorkerVersion({
+        activeVersions: [{ versionId: "one", percentage: 50 }, { versionId: "two", percentage: 50 }],
+      }),
+    ).toThrow();
+  });
+
+  it("normalizes D1 envelopes and preserves financial invariants", () => {
+    expect(
+      extractD1Rows({
+        success: true,
+        result: { results: [{ shipping_fee_vnd: 15_000 }] },
+      }),
+    ).toEqual([{ shipping_fee_vnd: 15_000 }]);
+    expect(() => extractD1Rows({ success: false, errors: [] })).toThrow();
+    expect(
+      assertHistoryAggregateUnchanged(
+        [{ cart_count: 1, subtotal_sum: 100_000, discount_sum: 0, final_sum: 100_000 }],
+        [{ cart_count: 1, subtotal_sum: 100_000, discount_sum: 0, final_sum: 100_000 }],
+      ),
+    ).toBe(true);
+    expect(() =>
+      assertHistoryAggregateUnchanged(
+        [{ cart_count: 1, subtotal_sum: 100_000, discount_sum: 0, final_sum: 100_000 }],
+        [{ cart_count: 1, subtotal_sum: 100_000, discount_sum: 0, final_sum: 115_000 }],
+      ),
+    ).toThrow();
+    expect(
+      assertAuthoritativeCartSnapshot({
+        subtotal_vnd: 100_000,
+        promotion_discount_vnd: 0,
+        shipping_fee_vnd: 15_000,
+        final_total_vnd: 115_000,
+      }),
+    ).toBe(true);
+    expect(() =>
+      assertAuthoritativeCartSnapshot({
+        subtotal_vnd: 100_000,
+        promotion_discount_vnd: 0,
+        shipping_fee_vnd: 0,
+        final_total_vnd: 100_000,
+      }),
+    ).not.toThrow();
   });
 });

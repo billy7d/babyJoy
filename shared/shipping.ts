@@ -3,6 +3,34 @@ import type { AppliedPromotion } from "./promotions";
 /** Phí vận chuyển chuẩn do backend sở hữu, áp dụng một lần cho mỗi giỏ có hàng. */
 export const STANDARD_SHIPPING_FEE_VND = 15_000;
 
+/** Mã lỗi dùng khi Worker tương thích chạy trước migration snapshot phí. */
+export const SHIPPING_PRICING_NOT_READY_CODE = "SHIPPING_PRICING_NOT_READY";
+export const SHIPPING_PRICING_NOT_READY_MESSAGE =
+  "Hệ thống đang hoàn tất cập nhật phí vận chuyển. Vui lòng thử lại sau.";
+
+export type ShippingPricingWriteBlock = {
+  code: typeof SHIPPING_PRICING_NOT_READY_CODE;
+  message: typeof SHIPPING_PRICING_NOT_READY_MESSAGE;
+  status: 503;
+};
+
+/**
+ * Compatibility release chỉ cho phép ghi giá mới khi snapshot phí đã tồn tại.
+ * Nhờ đó Worker chạy trước migration không thể ghi tổng thiếu phí ship.
+ */
+export function shippingPricingWriteBlock(
+  hasShippingSchema: boolean,
+  environment = "production",
+): ShippingPricingWriteBlock | null {
+  return environment === "development" || hasShippingSchema
+    ? null
+    : {
+        code: SHIPPING_PRICING_NOT_READY_CODE,
+        message: SHIPPING_PRICING_NOT_READY_MESSAGE,
+        status: 503,
+      };
+}
+
 export const shippingStatuses = [
   "EMPTY_CART",
   "STANDARD",
