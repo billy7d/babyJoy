@@ -184,7 +184,6 @@ export function HomePage() {
           <source media="(max-width: 639px)" srcSet="/images/hero-mobile.jpg" />
           <img src="/images/hero-desktop.jpg" alt="Các sản phẩm ăn dặm cho bé" />
         </picture>
-        <div className="hero-shade" />
         <div className="hero-content">
           <div className="hero-ctas">
             <Link className="btn primary" to="/shop">
