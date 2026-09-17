@@ -2,7 +2,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASE_URL = "https://metraphuong.com";
-const REQUIRED_CASES = ["noPromo", "realized", "giftOnly", "freeShipping"];
+export const REQUIRED_CASES = ["noPromo", "realized", "giftOnly", "freeShipping"];
+export const PRODUCTION_CASES = ["noPromo", "freeShipping"];
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -54,7 +55,7 @@ function validateItems(value, caseName) {
 }
 
 /** Parse fixture secret mà không nhận giá, discount hoặc tổng từ fixture. */
-export function parseSmokeCases(value) {
+export function parseSmokeCases(value, requiredCases = REQUIRED_CASES) {
   let parsed;
   try {
     parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -64,7 +65,7 @@ export function parseSmokeCases(value) {
   if (!isRecord(parsed))
     throw new Error("Financial smoke cases must be a JSON object.");
   const cases = {};
-  REQUIRED_CASES.forEach((caseName) => {
+  requiredCases.forEach((caseName) => {
     cases[caseName] = validateItems(parsed[caseName], caseName);
   });
   return cases;
@@ -92,14 +93,15 @@ async function issueSmokeSession(accessUrl) {
   return cookies.join("; ");
 }
 
-async function authorizedFetch(path, cookie, init = {}) {
-  return fetch(`${BASE_URL}${path}`, {
+async function authorizedFetch(baseUrl, path, cookie, init = {}) {
+  const headers = {
+    accept: "application/json",
+    ...(init.headers ?? {}),
+  };
+  if (cookie) headers.cookie = cookie;
+  return fetch(`${baseUrl}${path}`, {
     ...init,
-    headers: {
-      accept: "application/json",
-      ...(init.headers ?? {}),
-      cookie,
-    },
+    headers,
   });
 }
 
@@ -145,18 +147,26 @@ export function assertSmokeResult(caseName, body) {
   return { subtotal, discount, shipping, finalTotal };
 }
 
-export async function runProductionFinancialSmoke({ accessUrl, cases }) {
+export async function runProductionFinancialSmoke({
+  accessUrl,
+  cases,
+  baseUrl = BASE_URL,
+  caseNames = REQUIRED_CASES,
+  requireGatedSession = true,
+}) {
   const url = validateAccessUrl(accessUrl);
-  const parsedCases = parseSmokeCases(cases);
+  const parsedCases = parseSmokeCases(cases, caseNames);
   const cookie = await issueSmokeSession(url.toString());
-  const sessionResponse = await authorizedFetch("/api/storefront/session", cookie);
-  if (!sessionResponse.ok) throw new Error("Financial smoke session verification failed.");
-  const session = await sessionResponse.json();
-  if (session.authenticated !== true || session.gateEnabled !== true)
-    throw new Error("Financial smoke did not verify an authenticated gated storefront.");
+  if (requireGatedSession) {
+    const sessionResponse = await authorizedFetch(baseUrl, "/api/storefront/session", cookie);
+    if (!sessionResponse.ok) throw new Error("Financial smoke session verification failed.");
+    const session = await sessionResponse.json();
+    if (session.authenticated !== true || session.gateEnabled !== true)
+      throw new Error("Financial smoke did not verify an authenticated gated storefront.");
+  }
   const results = {};
-  for (const caseName of REQUIRED_CASES) {
-    const response = await authorizedFetch("/api/cart/evaluate", cookie, {
+  for (const caseName of caseNames) {
+    const response = await authorizedFetch(baseUrl, "/api/cart/evaluate", cookie, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ items: parsedCases[caseName] }),
@@ -170,8 +180,11 @@ export async function runProductionFinancialSmoke({ accessUrl, cases }) {
 
 if (process.argv.includes("--validate")) {
   validateAccessUrl(process.env.STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL);
-  parseSmokeCases(process.env.SHIPPING_FINANCIAL_SMOKE_CASES_JSON);
-  console.log("Production financial smoke fixture validated without contacting production.");
+  const caseNames = process.argv.includes("--production") ? PRODUCTION_CASES : REQUIRED_CASES;
+  parseSmokeCases(process.env.SHIPPING_FINANCIAL_SMOKE_CASES_JSON, caseNames);
+  console.log(
+    `${process.argv.includes("--production") ? "Production" : "Full"} financial smoke fixture validated without contacting production. Cases: ${caseNames.join(", ")}.`,
+  );
 } else if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === resolve(process.argv[1])
@@ -179,12 +192,18 @@ if (process.argv.includes("--validate")) {
   runProductionFinancialSmoke({
     accessUrl: process.env.STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL,
     cases: process.env.SHIPPING_FINANCIAL_SMOKE_CASES_JSON,
+    caseNames: process.argv.includes("--production") ? PRODUCTION_CASES : REQUIRED_CASES,
   }).then((results) => {
-    for (const caseName of REQUIRED_CASES) {
+    const caseNames = process.argv.includes("--production") ? PRODUCTION_CASES : REQUIRED_CASES;
+    for (const caseName of caseNames) {
       const result = results[caseName];
       console.log(
         `Production financial smoke ${caseName}: subtotal=${result.subtotal}, discount=${result.discount}, shipping=${result.shipping}, final=${result.finalTotal}`,
       );
+    }
+    if (process.argv.includes("--production")) {
+      // Gift-only chỉ có thể PASS ở isolated D1 khi production không có fixture hợp lệ.
+      console.log("Production financial smoke giftOnly: NOT AVAILABLE (isolated smoke is mandatory for this case).");
     }
   }).catch((caught) => {
     console.error(caught instanceof Error ? caught.message : String(caught));

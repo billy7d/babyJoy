@@ -148,7 +148,8 @@ jobs:
           console.log(`Validated production D1: ${PRODUCTION_D1_DATABASE_ID}`);
           console.log('Validated storefront gate in source artifact: true');
           NODE
-          node scripts/production-financial-smoke.mjs --validate
+          # Production chỉ kiểm thử các fixture thật đang có; gift-only được kiểm thử bắt buộc ở D1 isolated.
+          node scripts/production-financial-smoke.mjs --validate --production
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -265,6 +266,60 @@ jobs:
           npm test
           npm run typecheck
           npm run build
+
+      - name: Seed isolated D1 financial smoke fixture
+        id: financial_smoke_isolated_seed
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Dùng secret giả chỉ cho local Worker; không bao giờ trỏ tới D1 production.
+          cat > .dev.vars <<'EOF'
+          META_PAGE_ACCESS_TOKEN=isolated-page-token
+          META_APP_SECRET=isolated-meta-app-secret
+          META_WEBHOOK_VERIFY_TOKEN=isolated-webhook-token
+          CART_SHARE_SECRET=isolated-cart-share-secret-0123456789abcdef
+          STOREFRONT_ACCESS_SECRET=isolated-storefront-access-secret-0123456789abcdef
+          EOF
+          npm run db:migrate:local
+          node scripts/isolated-financial-smoke.mjs --seed
+
+      - name: Start isolated Worker against local D1
+        id: financial_smoke_isolated_server
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev -- --host 127.0.0.1 --port 5173 > "$RUNNER_TEMP/babyjoy-isolated-worker.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/babyjoy-isolated-worker.pid"
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5173/ >/dev/null; then
+              echo "Isolated Worker is serving local D1-backed requests."
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/babyjoy-isolated-worker.log"
+          exit 1
+
+      - name: Run full isolated financial smoke through Worker and D1
+        id: financial_smoke_isolated
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+        run: node scripts/isolated-financial-smoke.mjs --run
+
+      - name: Clean isolated financial smoke fixture
+        if: ${{ always() && steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set +e
+          if [ -f "$RUNNER_TEMP/babyjoy-isolated-worker.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/babyjoy-isolated-worker.pid")" 2>/dev/null
+          fi
+          node scripts/isolated-financial-smoke.mjs --cleanup
+          rm -f .dev.vars
+          exit 0
 
       - name: Apply production D1 migrations
         if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
@@ -676,7 +731,7 @@ jobs:
       - name: Smoke test shipping financial pricing on compatibility Worker
         id: financial_smoke_compatibility
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
-        run: node scripts/production-financial-smoke.mjs
+        run: node scripts/production-financial-smoke.mjs --production
 
       - name: Deploy production Worker
         id: worker_deploy
@@ -831,7 +886,7 @@ jobs:
       - name: Smoke test shipping financial pricing on final Worker
         id: financial_smoke_final
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
-        run: node scripts/production-financial-smoke.mjs
+        run: node scripts/production-financial-smoke.mjs --production
 
       - name: Write production rollout summary
         if: ${{ always() }}
@@ -847,6 +902,7 @@ jobs:
           SMOKE_SHIPPING_OUTCOME: ${{ steps.smoke_shipping.outcome }}
           FINANCIAL_SMOKE_COMPATIBILITY_OUTCOME: ${{ steps.financial_smoke_compatibility.outcome }}
           FINANCIAL_SMOKE_FINAL_OUTCOME: ${{ steps.financial_smoke_final.outcome }}
+          FINANCIAL_SMOKE_ISOLATED_OUTCOME: ${{ steps.financial_smoke_isolated.outcome }}
           COMPATIBILITY_WORKER_OUTCOME: ${{ steps.compatibility_worker_verify.outcome }}
           SHIPPING_D1_PREFLIGHT_OUTCOME: ${{ steps.shipping_d1_preflight.outcome }}
           PRODUCTION_BACKUP_OUTCOME: ${{ steps.production_backup.outcome }}
@@ -944,6 +1000,10 @@ jobs:
               echo "Financial smoke on compatibility Worker: ${FINANCIAL_SMOKE_COMPATIBILITY_OUTCOME:-NOT RUN}"
               echo
               echo "Financial smoke on final Worker: ${FINANCIAL_SMOKE_FINAL_OUTCOME:-NOT RUN}"
+              echo
+              echo "Full isolated financial smoke (noPromo/realized/giftOnly/freeShipping): ${FINANCIAL_SMOKE_ISOLATED_OUTCOME:-NOT RUN}"
+              echo
+              echo "Production giftOnly: NOT AVAILABLE; covered by mandatory isolated smoke."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$worker_deploy_status" = "SUCCESS" ] && [ "$cron_status" = "FAILED" ]; then

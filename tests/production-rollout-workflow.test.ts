@@ -47,6 +47,8 @@ describe("production rollout workflow safeguards", () => {
     expect(workflow).toContain("STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL");
     expect(workflow).toContain("SHIPPING_FINANCIAL_SMOKE_CASES_JSON");
     expect(workflow).toContain("production-financial-smoke.mjs --validate");
+    expect(workflow).toContain("production-financial-smoke.mjs --validate --production");
+    expect(workflow).toContain("isolated-financial-smoke.mjs");
     expect(workflow).toContain("environment: production");
   });
 
@@ -136,6 +138,26 @@ describe("production rollout workflow safeguards", () => {
     expect(migrations).toBeGreaterThan(preflight);
     expect(secret).toBeGreaterThan(preflight);
     expect(deploy).toBeGreaterThan(preflight);
+  });
+
+  it("chạy đủ bốn financial case trên Worker/D1 isolated trước mọi production mutation", () => {
+    const isolatedSeed = workflow.indexOf("- name: Seed isolated D1 financial smoke fixture");
+    const isolatedRun = workflow.indexOf("- name: Run full isolated financial smoke through Worker and D1");
+    const d1Preflight = workflow.indexOf("- name: Read-only shipping D1 preflight");
+    const backup = workflow.indexOf("- name: Create and verify full production D1 backup");
+    const migration = workflow.indexOf("- name: Apply only allowlisted shipping migration");
+    expect(isolatedSeed).toBeGreaterThan(-1);
+    expect(isolatedRun).toBeGreaterThan(isolatedSeed);
+    expect(d1Preflight).toBeGreaterThan(isolatedRun);
+    expect(backup).toBeGreaterThan(isolatedRun);
+    expect(migration).toBeGreaterThan(isolatedRun);
+    expect(step("Seed isolated D1 financial smoke fixture")).toContain("npm run db:migrate:local");
+    expect(step("Seed isolated D1 financial smoke fixture")).toContain("isolated-financial-smoke.mjs --seed");
+    expect(step("Start isolated Worker against local D1")).toContain("npm run dev");
+    expect(step("Run full isolated financial smoke through Worker and D1")).toContain(
+      "isolated-financial-smoke.mjs --run",
+    );
+    expect(step("Clean isolated financial smoke fixture")).toContain("--cleanup");
   });
 
   it("keeps canonical production Cron and safety settings in wrangler.jsonc", () => {
@@ -230,8 +252,14 @@ describe("production rollout workflow safeguards", () => {
     expect(step("Smoke test shipping financial pricing on compatibility Worker")).toContain(
       "production-financial-smoke.mjs",
     );
+    expect(step("Smoke test shipping financial pricing on compatibility Worker")).toContain(
+      "--production",
+    );
     expect(step("Smoke test shipping financial pricing on final Worker")).toContain(
       "production-financial-smoke.mjs",
+    );
+    expect(step("Smoke test shipping financial pricing on final Worker")).toContain(
+      "--production",
     );
   });
 
