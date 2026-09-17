@@ -263,6 +263,20 @@ describe("production rollout workflow safeguards", () => {
     );
   });
 
+  it("passes the pre-migration history snapshot across shipping steps", () => {
+    const preflight = step("Read-only shipping D1 preflight");
+    const cutover = step("Verify no financial writes during compatibility cutover");
+    const postMigration = step("Verify shipping schema and historical totals");
+
+    expect(preflight).toContain('echo "history_path=$D1_HISTORY_PATH" >> "$GITHUB_OUTPUT"');
+    expect(cutover).toContain(
+      "D1_HISTORY_PATH: ${{ steps.shipping_d1_preflight.outputs.history_path }}",
+    );
+    expect(postMigration).toContain(
+      "D1_HISTORY_PATH: ${{ steps.shipping_d1_preflight.outputs.history_path }}",
+    );
+  });
+
   it("validates the final artifact without changing access policy accidentally", () => {
     const source = parseJsonc(
       readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),

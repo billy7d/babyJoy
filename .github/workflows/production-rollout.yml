@@ -460,6 +460,8 @@ jobs:
           console.log(`Pending migration allowlist verified: ${SHIPPING_MIGRATION_FILE}`);
           console.log('Pre-migration cart history aggregate captured without PII.');
           NODE
+          # Truyền đường dẫn snapshot qua ranh giới step để các gate sau đọc đúng baseline.
+          echo "history_path=$D1_HISTORY_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Create and verify full production D1 backup
         id: production_backup
@@ -551,6 +553,8 @@ jobs:
       - name: Verify no financial writes during compatibility cutover
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
         shell: bash
+        env:
+          D1_HISTORY_PATH: ${{ steps.shipping_d1_preflight.outputs.history_path }}
         run: |
           set -euo pipefail
           export D1_HISTORY_CUTOVER_PATH="$RUNNER_TEMP/babyjoy-shipping-history-cutover.json"
@@ -686,6 +690,8 @@ jobs:
         id: shipping_post_migration
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
         shell: bash
+        env:
+          D1_HISTORY_PATH: ${{ steps.shipping_d1_preflight.outputs.history_path }}
         run: |
           set -euo pipefail
           export D1_LEDGER_AFTER_PATH="$RUNNER_TEMP/babyjoy-shipping-ledger-after.txt"
