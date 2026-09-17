@@ -298,3 +298,10 @@
 /* Hero chỉ giữ CTA, neo ở đáy vùng ảnh để không che nội dung chính của banner. */
 .hero-content{justify-content:flex-end;padding-bottom:64px}.hero-ctas{display:flex;align-items:center;gap:16px}
 @media(max-width:639px){.hero-content{padding:16px 18px 26px}.hero-ctas{width:100%;gap:8px}.hero .btn{flex:1}}
+
+/* Hero giữ nguyên tỷ lệ ảnh đang được chọn để không crop, không kéo giãn và không phủ màu. */
+.hero{height:auto;overflow:visible;background:#fff}
+.hero picture{display:block;width:100%;height:auto}
+.hero picture img{width:100%;height:auto;object-fit:contain;object-position:center}
+.hero img{object-fit:contain;object-position:center}
+@media(max-width:639px){.hero{aspect-ratio:auto}.hero picture img{border-radius:0 0 32px 32px}}
