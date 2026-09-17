@@ -182,26 +182,11 @@ export function HomePage() {
       <section className="hero">
         <picture>
           <source media="(max-width: 639px)" srcSet="/images/hero-mobile.jpg" />
-          <img src="/images/hero-desktop.jpg" alt="Bé vui vẻ bên món ăn dặm" />
+          <img src="/images/hero-desktop.jpg" alt="Các sản phẩm ăn dặm cho bé" />
         </picture>
         <div className="hero-shade" />
         <div className="hero-content">
-          <Tag>Dinh dưỡng trọn vẹn</Tag>
-          <h1>
-            Món ngon cho bé,
-            <br />
-            mẹ an tâm
-          </h1>
-          <p className="hero-desktop-copy">
-            Khám phá thế giới dinh dưỡng sạch, an toàn và đa dạng. Cùng {displayName}{" "}
-            kiến tạo những bữa ăn dặm đầy niềm vui và phát triển toàn diện cho
-            bé yêu của bạn.
-          </p>
-          <p className="hero-mobile-copy">
-            Dinh dưỡng khởi đầu hoàn hảo, với nguyên liệu hữu cơ an toàn cho hệ
-            tiêu hóa non nớt.
-          </p>
-          <div>
+          <div className="hero-ctas">
             <Link className="btn primary" to="/shop">
               Xem sản phẩm <Icon>arrow_forward</Icon>
             </Link>
