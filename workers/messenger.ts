@@ -15,6 +15,7 @@ import {
 } from "./promotions";
 import { comboLineId, type ComboSelection } from "../shared/combos";
 import { hasComboSchema } from "./combos";
+import { shippingPricingWriteBlock } from "../shared/shipping";
 
 async function storeDisplayNameForMessenger(env: Env) {
   try {
@@ -414,6 +415,19 @@ export async function startMessengerCheckout(request: Request, env: Env) {
     if (existing)
       return startResponse(existing, body.submissionToken, config, env);
 
+    const shippingSchema = await hasShippingSchema(env);
+    // Không tạo session/Cart Request mới nếu chưa thể lưu phí ship authoritative.
+    const shippingPricingBlock = shippingPricingWriteBlock(
+      shippingSchema,
+      env.ENVIRONMENT,
+    );
+    if (shippingPricingBlock)
+      return error(
+        shippingPricingBlock.code,
+        shippingPricingBlock.message,
+        shippingPricingBlock.status,
+      );
+
     const loaded = await evaluateAuthoritativeCart(body.items, env);
     if (loaded.unavailable.length)
       return error(
@@ -449,7 +463,6 @@ export async function startMessengerCheckout(request: Request, env: Env) {
       loaded,
     );
     const comboSchema = await hasComboSchema(env);
-    const shippingSchema = await hasShippingSchema(env);
     const itemLineCount = pricedItems.length + loaded.evaluation.gifts.length;
     // Schema cũ chỉ được dùng trong compatibility path; không ghi phí vào nơi chưa có cột.
     const persistedFinalTotalVnd = shippingSchema

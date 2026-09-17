@@ -42,6 +42,7 @@ import {
   storefrontSessionRequiredResponse,
   type AccessSessionAuthorization,
 } from "./storefront-access";
+import { shippingPricingWriteBlock } from "../shared/shipping";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -718,6 +719,18 @@ export async function prepareCartShare(
     }
   }
 
+  // Không tạo Cart Request mới trước khi snapshot phí đã được migrate.
+  const shippingPricingBlock = shippingPricingWriteBlock(
+    shippingSchema,
+    env.ENVIRONMENT,
+  );
+  if (shippingPricingBlock)
+    return failure(
+      shippingPricingBlock.code,
+      shippingPricingBlock.message,
+      shippingPricingBlock.status,
+    );
+
   let loaded: AuthoritativeCartEvaluation;
   try {
     loaded = await evaluateAuthoritativeCart(body.items, env);
@@ -1059,6 +1072,18 @@ export async function activateCartShare(
     );
   if (existing.checkoutState !== "READY_TO_SEND" && !retryAfterExpiry)
     return failure("INVALID_ORDER_TRANSITION", "Giỏ hàng chưa sẵn sàng để gửi.", 409);
+
+  // Recovery read-only được phép ở schema cũ; mọi lần chốt/ghi lại đều bị khóa.
+  const shippingPricingBlock = shippingPricingWriteBlock(
+    shippingSchema,
+    env.ENVIRONMENT,
+  );
+  if (shippingPricingBlock)
+    return failure(
+      shippingPricingBlock.code,
+      shippingPricingBlock.message,
+      shippingPricingBlock.status,
+    );
 
   const snapshots = await loadSnapshots(existing.id, env);
   if (!sameCartItems(snapshots, body.items))

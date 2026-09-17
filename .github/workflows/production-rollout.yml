@@ -12,6 +12,7 @@ on:
           - prepare
           - enable_gate
           - repair_cron
+          - shipping_rollout
       confirm_enable_gate:
         description: "Type ENABLE when mode=enable_gate"
         required: false
@@ -19,6 +20,16 @@ on:
         type: string
       confirm_repair_cron:
         description: "Type REPAIR_CRON when mode=repair_cron"
+        required: false
+        default: ""
+        type: string
+      confirm_shipping_rollout:
+        description: "Type ROLL_OUT_SHIPPING when mode=shipping_rollout"
+        required: false
+        default: ""
+        type: string
+      expected_main_sha:
+        description: "Exact validated origin/main SHA for shipping_rollout"
         required: false
         default: ""
         type: string
@@ -43,6 +54,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_WORKER_SCRIPT_NAME: babyjoy-web-app-production
+      STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL: ${{ secrets.STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL }}
+      SHIPPING_FINANCIAL_SMOKE_CASES_JSON: ${{ secrets.SHIPPING_FINANCIAL_SMOKE_CASES_JSON }}
 
     steps:
       - name: Checkout
@@ -65,12 +78,77 @@ jobs:
             echo "Unsupported production rollout trigger: $GITHUB_EVENT_NAME / $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ] && [ "$mode" != "repair_cron" ]; then
+          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ] && [ "$mode" != "repair_cron" ] && [ "$mode" != "shipping_rollout" ]; then
             echo "Unsupported rollout mode: $mode" >&2
             exit 1
           fi
           echo "value=$mode" >> "$GITHUB_OUTPUT"
           echo "Resolved production rollout mode: $mode"
+
+      - name: Guard legacy prepare against shipping pricing rollout
+        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f migrations/0025_shipping_fee_v1.sql ]; then
+            echo "The legacy prepare mode is blocked while shipping migration 0025 exists. Use shipping_rollout." >&2
+            exit 1
+          fi
+          echo "Legacy prepare guard passed: no shipping pricing migration is present."
+
+      - name: Validate shipping rollout source and confirmation
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        env:
+          CONFIRM_SHIPPING_ROLLOUT: ${{ inputs.confirm_shipping_rollout }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_SHIPPING_ROLLOUT" != "ROLL_OUT_SHIPPING" ]; then
+            echo "Set confirm_shipping_rollout to ROLL_OUT_SHIPPING for the pricing rollout." >&2
+            exit 1
+          fi
+          if [ -z "${STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL:-}" ] || [ -z "${SHIPPING_FINANCIAL_SMOKE_CASES_JSON:-}" ]; then
+            echo "Missing production financial smoke fixture secrets; no pricing mutation is allowed without read-only smoke evidence." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_MAIN_SHA" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "expected_main_sha must be the exact 40-character validated origin/main SHA." >&2
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [ "$checked_out_sha" != "$EXPECTED_MAIN_SHA" ] || [ "$GITHUB_SHA" != "$EXPECTED_MAIN_SHA" ]; then
+            echo "Checkout/GitHub SHA does not match expected_main_sha." >&2
+            exit 1
+          fi
+          remote_main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$remote_main_sha" != "$EXPECTED_MAIN_SHA" ]; then
+            echo "origin/main moved after validation; refusing pricing rollout." >&2
+            exit 1
+          fi
+          test -s migrations/0025_shipping_fee_v1.sql
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { parseJsonc } from './scripts/cloudflare-production-cron.mjs';
+          import {
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertProductionDeploymentConfig,
+          } from './scripts/production-shipping-rollout.mjs';
+          const config = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'), 'wrangler.jsonc');
+          assertProductionDeploymentConfig(config, {
+            scriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            customDomain: PRODUCTION_CUSTOM_DOMAIN,
+            gateValue: 'true',
+          });
+          console.log(`Validated source SHA: ${process.env.EXPECTED_MAIN_SHA}`);
+          console.log(`Validated production Worker: ${PRODUCTION_WORKER_SCRIPT_NAME}`);
+          console.log(`Validated production D1: ${PRODUCTION_D1_DATABASE_ID}`);
+          console.log('Validated storefront gate in source artifact: true');
+          NODE
+          node scripts/production-financial-smoke.mjs --validate
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -210,41 +288,6 @@ jobs:
           fi
           rm -f /tmp/worker-secrets.json
 
-      - name: Force gate disabled for prepare deploy
-        if: ${{ steps.rollout_mode.outputs.value == 'prepare' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
-          const path = 'wrangler.jsonc';
-          let content = fs.readFileSync(path, 'utf8');
-          content = content.replaceAll(
-            '"STOREFRONT_ACCESS_GATE_ENABLED": "true"',
-            '"STOREFRONT_ACCESS_GATE_ENABLED": "false"',
-          );
-          fs.writeFileSync(path, content);
-          NODE
-
-      - name: Enable gate in deployment config
-        if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
-          const path = 'wrangler.jsonc';
-          let content = fs.readFileSync(path, 'utf8');
-          if (!content.includes('"STOREFRONT_ACCESS_GATE_ENABLED": "false"')) {
-            throw new Error('Could not locate STOREFRONT_ACCESS_GATE_ENABLED=false in wrangler.jsonc');
-          }
-          content = content.replaceAll(
-            '"STOREFRONT_ACCESS_GATE_ENABLED": "false"',
-            '"STOREFRONT_ACCESS_GATE_ENABLED": "true"',
-          );
-          fs.writeFileSync(path, content);
-          NODE
-
       - name: Build resolved production deployment config
         if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
         shell: bash
@@ -254,15 +297,22 @@ jobs:
           set -euo pipefail
           npm run build
           test -s build/server/wrangler.json
+          export ROLLOUT_CONFIG_PATH="build/server/wrangler.json"
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const config = JSON.parse(fs.readFileSync('build/server/wrangler.json', 'utf8'));
-          const value = config.vars?.STOREFRONT_ACCESS_GATE_ENABLED;
+          import {
+            productionGateValue,
+            setProductionGateValue,
+          } from './scripts/production-shipping-rollout.mjs';
+          const path = process.env.ROLLOUT_CONFIG_PATH;
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
           const expected = process.env.ROLLOUT_MODE === 'prepare' ? 'false' : 'true';
-          console.log(`Generated deployment gate flag: ${value}; expected: ${expected}`);
-          if (value !== expected) {
+          const next = setProductionGateValue(config, expected);
+          fs.writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+          const actual = productionGateValue(next);
+          console.log(`Generated deployment gate flag: ${actual}; expected: ${expected}`);
+          if (actual !== expected)
             throw new Error('Generated deployment config has an unexpected storefront gate flag.');
-          }
           NODE
 
       - name: Create trigger-free Worker deployment config
@@ -288,10 +338,366 @@ jobs:
         if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
         run: npx wrangler deploy --dry-run --config build/server/wrangler.production-deploy.json
 
+      - name: Verify shipping deployment artifact and gate
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertProductionDeploymentConfig,
+          } from './scripts/production-shipping-rollout.mjs';
+          const config = JSON.parse(fs.readFileSync('build/server/wrangler.production-deploy.json', 'utf8'));
+          assertProductionDeploymentConfig(config, {
+            scriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            customDomain: PRODUCTION_CUSTOM_DOMAIN,
+            gateValue: 'true',
+            requireWorkerName: true,
+          });
+          console.log('Final deployment artifact gate: true');
+          console.log(`Final deployment artifact Worker: ${PRODUCTION_WORKER_SCRIPT_NAME}`);
+          console.log(`Final deployment artifact D1: ${PRODUCTION_D1_DATABASE_ID}`);
+          NODE
+
+      - name: Read-only shipping D1 preflight
+        id: shipping_d1_preflight
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_INFO_PATH="$RUNNER_TEMP/babyjoy-shipping-d1-info-before.json"
+          export D1_LEDGER_PATH="$RUNNER_TEMP/babyjoy-shipping-ledger-before.txt"
+          export D1_SCHEMA_PATH="$RUNNER_TEMP/babyjoy-shipping-schema-before.json"
+          export D1_HISTORY_PATH="$RUNNER_TEMP/babyjoy-shipping-history-before.json"
+          npx wrangler d1 info babyjoy-db --env production --config wrangler.jsonc --json > "$D1_INFO_PATH"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name, type, dflt_value FROM pragma_table_info('cart_requests') WHERE name = 'shipping_fee_vnd';" \
+            --json > "$D1_SCHEMA_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS cart_count, COALESCE(SUM(subtotal_vnd),0) AS subtotal_sum, COALESCE(SUM(promotion_discount_vnd),0) AS discount_sum, COALESCE(SUM(final_total_vnd),0) AS final_sum FROM cart_requests;" \
+            --json > "$D1_HISTORY_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_D1_DATABASE_ID,
+            assertD1DatabaseIdentity,
+            assertHistoryAggregateUnchanged,
+            assertMigrationAllowlist,
+            assertSchemaColumn,
+            extractD1Rows,
+            SHIPPING_MIGRATION_FILE,
+          } from './scripts/production-shipping-rollout.mjs';
+          const info = JSON.parse(fs.readFileSync(process.env.D1_INFO_PATH, 'utf8'));
+          assertD1DatabaseIdentity(info, PRODUCTION_D1_DATABASE_ID, 'babyjoy-db');
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_PATH, 'utf8');
+          assertMigrationAllowlist(ledger, [SHIPPING_MIGRATION_FILE]);
+          const schema = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_SCHEMA_PATH, 'utf8')));
+          assertSchemaColumn(schema, 'shipping_fee_vnd', false);
+          const history = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          if (history.length !== 1) throw new Error('Production cart history baseline must contain one aggregate row.');
+          console.log(`Production D1 identity verified: ${PRODUCTION_D1_DATABASE_ID}`);
+          console.log(`Pending migration allowlist verified: ${SHIPPING_MIGRATION_FILE}`);
+          console.log('Pre-migration cart history aggregate captured without PII.');
+          NODE
+
+      - name: Create and verify full production D1 backup
+        id: production_backup
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_path="$RUNNER_TEMP/babyjoy-production-d1-${GITHUB_RUN_ID}.sql"
+          checksum_path="$RUNNER_TEMP/babyjoy-production-d1-${GITHUB_RUN_ID}.sha256"
+          npx wrangler d1 export babyjoy-db --remote --env production --config wrangler.jsonc \
+            --output "$backup_path" --skip-confirmation
+          test -s "$backup_path"
+          sha256sum "$backup_path" | tee "$checksum_path"
+          checksum="$(cut -d ' ' -f1 "$checksum_path")"
+          test -n "$checksum"
+          echo "backup_path=$backup_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
+          echo "backup_sha256=$checksum" >> "$GITHUB_OUTPUT"
+          echo "Production D1 backup verified: ${checksum}"
+
+      - name: Persist production backup artifact outside Git
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' && steps.production_backup.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: babyjoy-production-d1-backup-${{ github.run_id }}
+          path: |
+            ${{ steps.production_backup.outputs.backup_path }}
+            ${{ steps.production_backup.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Deploy rollback-compatible Worker before shipping migration
+        id: compatibility_deploy
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy \
+            --config build/server/wrangler.production-deploy.json \
+            --keep-vars \
+            --strict \
+            --message "shipping compatibility ${GITHUB_SHA}" \
+            --tag "shipping-compat-${GITHUB_SHA:0:12}"
+
+      - name: Verify rollback-compatible Worker before migration
+        id: compatibility_worker_verify
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/cloudflare-production-cron.mjs worker-state \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --metadata-file "$RUNNER_TEMP/babyjoy-production-metadata.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-worker-compatibility.json"
+          export COMPATIBILITY_STATE="$RUNNER_TEMP/babyjoy-worker-compatibility.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertSingleActiveWorkerVersion,
+          } from './scripts/production-shipping-rollout.mjs';
+          const state = JSON.parse(fs.readFileSync(process.env.COMPATIBILITY_STATE, 'utf8'));
+          if (state.scriptName !== PRODUCTION_WORKER_SCRIPT_NAME || state.customDomain !== PRODUCTION_CUSTOM_DOMAIN)
+            throw new Error('Compatibility Worker routing identity mismatch.');
+          const versionId = assertSingleActiveWorkerVersion(state, 'Compatibility Worker');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `compatibility_version_id=${versionId}\n`);
+          console.log(`Rollback-compatible Worker version verified: ${versionId}`);
+          NODE
+
+      - name: Smoke access gate on compatibility Worker
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          retry bash -c 'status=$(curl -sS -o "$RUNNER_TEMP/compat-products.json" -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
+          grep -q 'STOREFRONT_SESSION_REQUIRED' "$RUNNER_TEMP/compat-products.json"
+          retry bash -c 'status=$(curl -sS -L -o "$RUNNER_TEMP/compat-access-required.html" -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
+          echo "Compatibility Worker preserved the storefront access gate."
+
+      - name: Verify no financial writes during compatibility cutover
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_HISTORY_CUTOVER_PATH="$RUNNER_TEMP/babyjoy-shipping-history-cutover.json"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS cart_count, COALESCE(SUM(subtotal_vnd),0) AS subtotal_sum, COALESCE(SUM(promotion_discount_vnd),0) AS discount_sum, COALESCE(SUM(final_total_vnd),0) AS final_sum FROM cart_requests;" \
+            --json > "$D1_HISTORY_CUTOVER_PATH"
+          export D1_SCHEMA_CUTOVER_PATH="$RUNNER_TEMP/babyjoy-shipping-schema-cutover.json"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name, type, dflt_value FROM pragma_table_info('cart_requests') WHERE name = 'shipping_fee_vnd';" \
+            --json > "$D1_SCHEMA_CUTOVER_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            assertHistoryAggregateUnchanged,
+            assertSchemaColumn,
+            extractD1Rows,
+          } from './scripts/production-shipping-rollout.mjs';
+          const before = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          const cutover = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_CUTOVER_PATH, 'utf8')));
+          assertHistoryAggregateUnchanged(before, cutover);
+          const schema = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_SCHEMA_CUTOVER_PATH, 'utf8')));
+          assertSchemaColumn(schema, 'shipping_fee_vnd', false);
+          console.log('Compatibility cutover produced no financial writes before migration.');
+          NODE
+
+      - name: Persist tested shipping rollback artifact
+        id: rollback_artifact
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          COMPATIBILITY_VERSION_ID: ${{ steps.compatibility_worker_verify.outputs.compatibility_version_id }}
+        run: |
+          set -euo pipefail
+          export ROLLBACK_MANIFEST_PATH="$RUNNER_TEMP/babyjoy-shipping-rollback-manifest.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+          } from './scripts/production-shipping-rollout.mjs';
+          const versionId = process.env.COMPATIBILITY_VERSION_ID;
+          if (!/^[0-9a-f-]{36}$/.test(versionId ?? ''))
+            throw new Error('Compatibility Worker version ID is missing or malformed.');
+          const manifest = {
+            kind: 'babyjoy-shipping-rollback-compatible-worker',
+            validatedMainSha: process.env.EXPECTED_MAIN_SHA,
+            workerScriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            compatibilityVersionId: versionId,
+            testedBeforeMigration: true,
+            oldSchemaBehavior: 'read-history-only; block new pricing writes with SHIPPING_PRICING_NOT_READY',
+            newSchemaBehavior: 'read and write shipping snapshots; preserve final_total_vnd',
+            rollbackCommand: `npx wrangler rollback ${versionId} --name ${PRODUCTION_WORKER_SCRIPT_NAME} --env production --config wrangler.jsonc --yes`,
+          };
+          fs.writeFileSync(process.env.ROLLBACK_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          test -s "$ROLLBACK_MANIFEST_PATH"
+          echo "rollback_manifest_path=$ROLLBACK_MANIFEST_PATH" >> "$GITHUB_OUTPUT"
+          echo "Tested rollback artifact prepared for compatibility version ${COMPATIBILITY_VERSION_ID}."
+
+      - name: Upload tested shipping rollback artifact
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' && steps.rollback_artifact.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: babyjoy-shipping-rollback-artifact-${{ github.run_id }}
+          path: ${{ steps.rollback_artifact.outputs.rollback_manifest_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Recheck shipping migration allowlist immediately before apply
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_LEDGER_APPLY_PATH="$RUNNER_TEMP/babyjoy-shipping-ledger-apply.txt"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_APPLY_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            assertMigrationAllowlist,
+            SHIPPING_MIGRATION_FILE,
+          } from './scripts/production-shipping-rollout.mjs';
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_APPLY_PATH, 'utf8');
+          assertMigrationAllowlist(ledger, [SHIPPING_MIGRATION_FILE]);
+          console.log(`Immediate pre-apply allowlist verified: ${SHIPPING_MIGRATION_FILE}`);
+          NODE
+
+      - name: Prepare shipping-only migration config
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { parseJsonc } from './scripts/cloudflare-production-cron.mjs';
+          import {
+            assertProductionDeploymentConfig,
+            buildShippingMigrationConfig,
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            SHIPPING_MIGRATION_FILE,
+          } from './scripts/production-shipping-rollout.mjs';
+          const source = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'), 'wrangler.jsonc');
+          const config = buildShippingMigrationConfig(source);
+          assertProductionDeploymentConfig(config, {
+            scriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            customDomain: PRODUCTION_CUSTOM_DOMAIN,
+            gateValue: 'true',
+            requireWorkerName: true,
+          });
+          const migrationDir = path.resolve('build/server/shipping-migrations');
+          fs.mkdirSync(migrationDir, { recursive: true });
+          fs.copyFileSync(`migrations/${SHIPPING_MIGRATION_FILE}`, path.join(migrationDir, SHIPPING_MIGRATION_FILE));
+          fs.writeFileSync(
+            'build/server/wrangler.shipping-migration.json',
+            `${JSON.stringify(config, null, 2)}\n`,
+          );
+          console.log(`Prepared isolated migration directory containing only ${SHIPPING_MIGRATION_FILE}.`);
+          NODE
+          test -s "build/server/shipping-migrations/0025_shipping_fee_v1.sql"
+          test -s "build/server/wrangler.shipping-migration.json"
+
+      - name: Apply only allowlisted shipping migration
+        id: shipping_migration
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        run: npx wrangler d1 migrations apply babyjoy-db --remote --env production --config build/server/wrangler.shipping-migration.json
+
+      - name: Verify shipping schema and historical totals
+        id: shipping_post_migration
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_LEDGER_AFTER_PATH="$RUNNER_TEMP/babyjoy-shipping-ledger-after.txt"
+          export D1_SCHEMA_AFTER_PATH="$RUNNER_TEMP/babyjoy-shipping-schema-after.json"
+          export D1_HISTORY_AFTER_PATH="$RUNNER_TEMP/babyjoy-shipping-history-after.json"
+          export D1_FK_AFTER_PATH="$RUNNER_TEMP/babyjoy-shipping-fk-after.json"
+          export D1_FEE_DISTRIBUTION_PATH="$RUNNER_TEMP/babyjoy-shipping-fee-distribution-after.json"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name, type, dflt_value FROM pragma_table_info('cart_requests') WHERE name = 'shipping_fee_vnd';" \
+            --json > "$D1_SCHEMA_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS cart_count, COALESCE(SUM(subtotal_vnd),0) AS subtotal_sum, COALESCE(SUM(promotion_discount_vnd),0) AS discount_sum, COALESCE(SUM(final_total_vnd),0) AS final_sum FROM cart_requests;" \
+            --json > "$D1_HISTORY_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "PRAGMA foreign_key_check;" --json > "$D1_FK_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS nonzero_legacy_fee_count FROM cart_requests WHERE shipping_fee_vnd <> 0;" \
+            --json > "$D1_FEE_DISTRIBUTION_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            assertHistoryAggregateUnchanged,
+            assertRowsEmpty,
+            assertSchemaColumn,
+            extractD1Rows,
+          } from './scripts/production-shipping-rollout.mjs';
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_AFTER_PATH, 'utf8');
+          const pending = ledger.match(/\b\d{4}_[A-Za-z0-9_-]+\.sql\b/g) ?? [];
+          if (pending.length) throw new Error(`Unexpected pending migration after apply: ${JSON.stringify([...new Set(pending)])}`);
+          const schema = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_SCHEMA_AFTER_PATH, 'utf8')));
+          assertSchemaColumn(schema, 'shipping_fee_vnd', true);
+          const historyBefore = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          const historyAfter = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_AFTER_PATH, 'utf8')));
+          assertHistoryAggregateUnchanged(historyBefore, historyAfter);
+          assertRowsEmpty(extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_FK_AFTER_PATH, 'utf8'))), 'PRAGMA foreign_key_check');
+          const feeRows = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_FEE_DISTRIBUTION_PATH, 'utf8')));
+          if (feeRows.length !== 1 || Number(feeRows[0]?.nonzero_legacy_fee_count) !== 0)
+            throw new Error('Existing cart history received a non-zero shipping snapshot during migration.');
+          console.log('Migration 0025 schema, FK, history aggregate, and legacy fee snapshot verified.');
+          NODE
+
+      - name: Smoke test shipping financial pricing on compatibility Worker
+        id: financial_smoke_compatibility
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        run: node scripts/production-financial-smoke.mjs
+
       - name: Deploy production Worker
         id: worker_deploy
         if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
-        run: npx wrangler deploy --config build/server/wrangler.production-deploy.json
+        shell: bash
+        env:
+          ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
+        run: |
+          set -euo pipefail
+          if [ "$ROLLOUT_MODE" = "shipping_rollout" ]; then
+            npx wrangler deploy \
+              --config build/server/wrangler.production-deploy.json \
+              --keep-vars \
+              --strict \
+              --message "shipping feature ${GITHUB_SHA}" \
+              --tag "shipping-feature-${GITHUB_SHA:0:12}"
+          else
+            npx wrangler deploy \
+              --config build/server/wrangler.production-deploy.json \
+              --keep-vars
+          fi
 
       - name: Reconcile production Cron
         id: cron_reconcile
@@ -316,6 +722,33 @@ jobs:
             --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
             --metadata-file "$RUNNER_TEMP/babyjoy-production-metadata.json" \
             --state-output "$RUNNER_TEMP/babyjoy-worker-after.json"
+
+      - name: Verify validated shipping deployment identity
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          COMPATIBILITY_VERSION_ID: ${{ steps.compatibility_worker_verify.outputs.compatibility_version_id }}
+        run: |
+          set -euo pipefail
+          export FINAL_WORKER_STATE="$RUNNER_TEMP/babyjoy-worker-after.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertSingleActiveWorkerVersion,
+          } from './scripts/production-shipping-rollout.mjs';
+          const state = JSON.parse(fs.readFileSync(process.env.FINAL_WORKER_STATE, 'utf8'));
+          if (state.scriptName !== PRODUCTION_WORKER_SCRIPT_NAME || state.customDomain !== PRODUCTION_CUSTOM_DOMAIN)
+            throw new Error('Final Worker routing identity mismatch.');
+          const versionId = assertSingleActiveWorkerVersion(state, 'Final shipping Worker');
+          if (versionId === process.env.COMPATIBILITY_VERSION_ID)
+            throw new Error('Final shipping Worker did not replace the compatibility version.');
+          console.log(`Validated main SHA deployed: ${process.env.EXPECTED_MAIN_SHA}`);
+          console.log(`Final Worker version verified: ${versionId}`);
+          console.log(`Rollback-compatible version retained: ${process.env.COMPATIBILITY_VERSION_ID}`);
+          NODE
 
       - name: Verify Cron repair did not change Worker version
         id: repair_version_verify
@@ -371,6 +804,35 @@ jobs:
           fi
           echo "Gate-enabled smoke passed: public catalog API is gated and access-required remains reachable."
 
+      - name: Smoke test shipping rollout gate and health
+        id: smoke_shipping
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          retry bash -c 'status=$(curl -sS -o "$RUNNER_TEMP/shipping-products.json" -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
+          grep -q 'STOREFRONT_SESSION_REQUIRED' "$RUNNER_TEMP/shipping-products.json"
+          retry bash -c 'status=$(curl -sS -L -o "$RUNNER_TEMP/shipping-access-required.html" -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
+          home_status="$(curl -sS -o "$RUNNER_TEMP/shipping-home.html" -w "%{http_code}" https://metraphuong.com/)"
+          if [ "$home_status" != "303" ]; then
+            echo "Unexpected gated homepage status: $home_status" >&2
+            exit 1
+          fi
+          echo "Shipping rollout health smoke passed: gate remains enabled and access-required is reachable."
+
+      - name: Smoke test shipping financial pricing on final Worker
+        id: financial_smoke_final
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        run: node scripts/production-financial-smoke.mjs
+
       - name: Write production rollout summary
         if: ${{ always() }}
         shell: bash
@@ -382,6 +844,17 @@ jobs:
           WORKER_VERIFY_OUTCOME: ${{ steps.worker_verify.outcome }}
           SMOKE_PREPARE_OUTCOME: ${{ steps.smoke_prepare.outcome }}
           SMOKE_ENABLE_OUTCOME: ${{ steps.smoke_enable.outcome }}
+          SMOKE_SHIPPING_OUTCOME: ${{ steps.smoke_shipping.outcome }}
+          FINANCIAL_SMOKE_COMPATIBILITY_OUTCOME: ${{ steps.financial_smoke_compatibility.outcome }}
+          FINANCIAL_SMOKE_FINAL_OUTCOME: ${{ steps.financial_smoke_final.outcome }}
+          COMPATIBILITY_WORKER_OUTCOME: ${{ steps.compatibility_worker_verify.outcome }}
+          SHIPPING_D1_PREFLIGHT_OUTCOME: ${{ steps.shipping_d1_preflight.outcome }}
+          PRODUCTION_BACKUP_OUTCOME: ${{ steps.production_backup.outcome }}
+          SHIPPING_MIGRATION_OUTCOME: ${{ steps.shipping_migration.outcome }}
+          SHIPPING_POST_MIGRATION_OUTCOME: ${{ steps.shipping_post_migration.outcome }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          COMPATIBILITY_VERSION_ID: ${{ steps.compatibility_worker_verify.outputs.compatibility_version_id }}
+          BACKUP_SHA256: ${{ steps.production_backup.outputs.backup_sha256 }}
         run: |
           set -euo pipefail
           read_json_field() {
@@ -417,6 +890,7 @@ jobs:
           smoke_status="NOT RUN"
           if [ "${ROLLOUT_MODE:-}" = "prepare" ]; then smoke_status="${SMOKE_PREPARE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "enable_gate" ]; then smoke_status="${SMOKE_ENABLE_OUTCOME:-NOT RUN}"; fi
+          if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then smoke_status="${SMOKE_SHIPPING_OUTCOME:-NOT RUN}"; fi
           workers_dev_status="UNKNOWN"
           worker_after="$RUNNER_TEMP/babyjoy-worker-after.json"
           if [ -f "$worker_after" ]; then
@@ -449,6 +923,28 @@ jobs:
             echo "Cron verification step: ${CRON_VERIFY_OUTCOME:-NOT RUN}"
             echo
             echo "Worker verification step: ${WORKER_VERIFY_OUTCOME:-NOT RUN}"
+            if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then
+              echo
+              echo "Validated main SHA: ${EXPECTED_MAIN_SHA:-unavailable}"
+              echo
+              echo "Compatibility Worker step: ${COMPATIBILITY_WORKER_OUTCOME:-NOT RUN}"
+              echo
+              echo "Compatibility rollback version: ${COMPATIBILITY_VERSION_ID:-unavailable}"
+              echo
+              echo "D1 preflight: ${SHIPPING_D1_PREFLIGHT_OUTCOME:-NOT RUN}"
+              echo
+              echo "D1 backup: ${PRODUCTION_BACKUP_OUTCOME:-NOT RUN}"
+              echo
+              echo "D1 backup SHA-256: ${BACKUP_SHA256:-unavailable}"
+              echo
+              echo "Migration 0025: ${SHIPPING_MIGRATION_OUTCOME:-NOT RUN}"
+              echo
+              echo "Post-migration verification: ${SHIPPING_POST_MIGRATION_OUTCOME:-NOT RUN}"
+              echo
+              echo "Financial smoke on compatibility Worker: ${FINANCIAL_SMOKE_COMPATIBILITY_OUTCOME:-NOT RUN}"
+              echo
+              echo "Financial smoke on final Worker: ${FINANCIAL_SMOKE_FINAL_OUTCOME:-NOT RUN}"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$worker_deploy_status" = "SUCCESS" ] && [ "$cron_status" = "FAILED" ]; then
             echo >> "$GITHUB_STEP_SUMMARY"

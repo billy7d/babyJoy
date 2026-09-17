@@ -82,6 +82,7 @@ import {
   PromotionCartError,
   type PromotionCartRequestItem,
 } from "./promotions";
+import { shippingPricingWriteBlock } from "../shared/shipping";
 import { comboLineId, type ComboSelection } from "../shared/combos";
 import { consumeRateLimit, RateLimitError } from "./rate-limit";
 import {
@@ -396,6 +397,16 @@ async function evaluateCart(
   try {
     // Dọn lazy để tồn kho khả dụng không bị khóa bởi reservation đã quá hạn khi cron trễ.
     await cleanupExpiredReservations(env);
+    const shippingPricingBlock = shippingPricingWriteBlock(
+      await hasShippingSchema(env),
+      env.ENVIRONMENT,
+    );
+    if (shippingPricingBlock)
+      return error(
+        shippingPricingBlock.code,
+        shippingPricingBlock.message,
+        shippingPricingBlock.status,
+      );
     const result = await evaluateAuthoritativeCart(items, env);
     if (result.unavailable.length)
       return error(
