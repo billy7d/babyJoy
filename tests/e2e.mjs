@@ -195,7 +195,7 @@ async function assertStorefrontFilters() {
   }
 
   // Bottom sheet mobile giữ draft local cho tới Apply và đạt touch target tối thiểu.
-  for (const width of [390, 375]) {
+  for (const width of [320, 375, 390, 430, 639]) {
     const context = await browser.newContext({ viewport: { width, height: 844 }, locale: "vi-VN" });
     const page = await context.newPage();
     try {
@@ -248,6 +248,13 @@ async function assertStorefrontFilters() {
       if (await page.locator("#mobile-filter-sheet .mobile-filter-chip.selected").count() !== 1)
         throw new Error("Mở lại sheet không restore active state từ URL");
       await closeSheetWithEscape(page, initialUrl, width);
+
+      // Stress đóng/mở liên tục để bắt timer hoặc listener của phiên modal trước.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
+        await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
+        await closeSheetWithEscape(page, initialUrl, width);
+      }
 
       await page.getByRole("button", { name: "Lọc độ tuổi", exact: true }).click();
       await page.locator("#mobile-filter-sheet").waitFor({ state: "visible" });
@@ -312,10 +319,13 @@ async function assertStorefrontFilters() {
     await page.goto(`${baseUrl}/shop`, { waitUntil: "domcontentloaded" });
     await page.locator(".mobile-bottom a").filter({ hasText: "Danh mục" }).click();
     await page.waitForURL(/\/categories$/);
+    // WebKit có thể hoàn tất URL transition trước khi React commit CategoriesPage.
+    await page.getByRole("heading", { name: "Danh mục dinh dưỡng" }).waitFor({ state: "visible", timeout: 10000 });
     if (!(await page.locator("body").innerText()).includes("Danh mục dinh dưỡng"))
       throw new Error("Bottom nav Danh mục không mở CategoriesPage");
     await page.getByRole("link", { name: /Bột ăn dặm/ }).first().click();
     await page.waitForURL(/\/category\/bot-an-dam/);
+    await page.getByRole("heading", { name: /Bột ăn dặm/ }).first().waitFor({ state: "visible", timeout: 10000 });
     await page.waitForTimeout(600);
     if (!(await page.locator("body").innerText()).includes("Bột ăn dặm"))
       throw new Error("Category navigation không mở đúng listing");
@@ -437,7 +447,7 @@ try {
   await adminPage.waitForTimeout(400);
   await adminPage.locator('input[name="name"]').fill("E2E Baby Rice multi variant");
   await adminPage.locator('input[name="slug"]').fill(e2eSlug);
-  await adminPage.locator('input[name="sortOrder"]').fill("-999");
+  await adminPage.locator('input[name="sortOrder"]').fill("0");
   const adminCards = adminPage.locator(".variant-card");
   const addVariant = adminPage.getByRole("button", { name: "+ Thêm phân loại" });
   const openVariantEditor = async (index) => {

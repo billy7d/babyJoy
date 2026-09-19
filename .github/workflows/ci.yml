@@ -108,6 +108,12 @@ jobs:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
         run: npm run test:e2e
 
+      - name: Product sorting E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: chromium
+        run: npm run test:e2e:product-sorting
+
       - name: Hero E2E
         env:
           BABYJOY_BASE_URL: http://127.0.0.1:5173
@@ -166,7 +172,7 @@ jobs:
           done
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          npx playwright install --with-deps webkit
+          npx playwright install --with-deps chromium webkit
 
       - name: Create CI local secrets
         shell: bash
@@ -196,6 +202,18 @@ jobs:
           echo "Development server did not become ready"
           cat /tmp/babyjoy-dev-webkit.log
           exit 1
+
+      - name: Full Browser E2E (WebKit)
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: webkit
+        run: npm run test:e2e
+
+      - name: Product sorting WebKit E2E
+        env:
+          BABYJOY_BASE_URL: http://127.0.0.1:5173
+          BABYJOY_BROWSER: webkit
+        run: npm run test:e2e:product-sorting
 
       - name: Featured and upload WebKit E2E
         env:

@@ -39,6 +39,17 @@ class D1Adapter {
   prepare(sql: string) {
     return new StatementAdapter(this.database.prepare(sql));
   }
+  batch(statements: StatementAdapter[]) {
+    this.database.exec("BEGIN");
+    try {
+      const results = statements.map((statement) => statement.run());
+      this.database.exec("COMMIT");
+      return Promise.all(results);
+    } catch (caught) {
+      this.database.exec("ROLLBACK");
+      throw caught;
+    }
+  }
 }
 
 function createTestEnv() {
@@ -51,6 +62,7 @@ function createTestEnv() {
     "0005_remove_demo_cart_request.sql",
     "0006_product_taxonomy_v1.sql",
     "0007_storefront_access_gate_v1.sql",
+    "0026_access_link_codes_v1.sql",
   ]) database.exec(migration(name));
   const env = {
     DB: new D1Adapter(database),

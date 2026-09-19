@@ -35,7 +35,7 @@ async function createFixtureProduct() {
       slug: `e2e-mobile-cart-${suffix}`,
       status: "AVAILABLE",
       featured: false,
-      sortOrder: -997,
+      sortOrder: 0,
       categoryIds: [],
       tagIds: [],
       images: [],

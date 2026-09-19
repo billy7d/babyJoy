@@ -13,6 +13,7 @@ on:
           - enable_gate
           - repair_cron
           - shipping_rollout
+          - access_links_rollout
       confirm_enable_gate:
         description: "Type ENABLE when mode=enable_gate"
         required: false
@@ -28,8 +29,13 @@ on:
         required: false
         default: ""
         type: string
+      confirm_access_links_rollout:
+        description: "Type ROLL_OUT_ACCESS_LINKS when mode=access_links_rollout"
+        required: false
+        default: ""
+        type: string
       expected_main_sha:
-        description: "Exact validated origin/main SHA for shipping_rollout"
+        description: "Exact validated origin/main SHA for a production feature rollout"
         required: false
         default: ""
         type: string
@@ -78,7 +84,7 @@ jobs:
             echo "Unsupported production rollout trigger: $GITHUB_EVENT_NAME / $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ] && [ "$mode" != "repair_cron" ] && [ "$mode" != "shipping_rollout" ]; then
+          if [ "$mode" != "prepare" ] && [ "$mode" != "enable_gate" ] && [ "$mode" != "repair_cron" ] && [ "$mode" != "shipping_rollout" ] && [ "$mode" != "access_links_rollout" ]; then
             echo "Unsupported rollout mode: $mode" >&2
             exit 1
           fi
@@ -150,6 +156,55 @@ jobs:
           NODE
           # Production chỉ kiểm thử các fixture thật đang có; gift-only được kiểm thử bắt buộc ở D1 isolated.
           node scripts/production-financial-smoke.mjs --validate --production
+
+      - name: Validate access links rollout source and confirmation
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        env:
+          CONFIRM_ACCESS_LINKS_ROLLOUT: ${{ inputs.confirm_access_links_rollout }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_ACCESS_LINKS_ROLLOUT" != "ROLL_OUT_ACCESS_LINKS" ]; then
+            echo "Set confirm_access_links_rollout to ROLL_OUT_ACCESS_LINKS for the access-link rollout." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_MAIN_SHA" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "expected_main_sha must be the exact 40-character validated origin/main SHA." >&2
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [ "$checked_out_sha" != "$EXPECTED_MAIN_SHA" ] || [ "$GITHUB_SHA" != "$EXPECTED_MAIN_SHA" ]; then
+            echo "Checkout/GitHub SHA does not match expected_main_sha." >&2
+            exit 1
+          fi
+          remote_main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$remote_main_sha" != "$EXPECTED_MAIN_SHA" ]; then
+            echo "origin/main moved after validation; refusing access-link rollout." >&2
+            exit 1
+          fi
+          test -s migrations/0026_access_link_codes_v1.sql
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { parseJsonc } from './scripts/cloudflare-production-cron.mjs';
+          import {
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertProductionDeploymentConfig,
+          } from './scripts/production-shipping-rollout.mjs';
+          const config = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'), 'wrangler.jsonc');
+          assertProductionDeploymentConfig(config, {
+            scriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            customDomain: PRODUCTION_CUSTOM_DOMAIN,
+            gateValue: 'true',
+          });
+          console.log(`Validated access-link source SHA: ${process.env.EXPECTED_MAIN_SHA}`);
+          console.log(`Validated production Worker: ${PRODUCTION_WORKER_SCRIPT_NAME}`);
+          console.log(`Validated production D1: ${PRODUCTION_D1_DATABASE_ID}`);
+          console.log('Validated storefront gate in source artifact: true');
+          NODE
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -482,6 +537,298 @@ jobs:
           echo "backup_sha256=$checksum" >> "$GITHUB_OUTPUT"
           echo "Production D1 backup verified: ${checksum}"
 
+      - name: Read-only access links D1 preflight
+        id: access_links_d1_preflight
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_INFO_PATH="$RUNNER_TEMP/babyjoy-access-links-d1-info-before.json"
+          export D1_LEDGER_PATH="$RUNNER_TEMP/babyjoy-access-links-ledger-before.txt"
+          export D1_HISTORY_PATH="$RUNNER_TEMP/babyjoy-access-links-history-before.json"
+          export D1_CODES_SCHEMA_PATH="$RUNNER_TEMP/babyjoy-access-links-schema-before.json"
+          export D1_MIGRATIONS_PATH="$RUNNER_TEMP/babyjoy-access-links-migrations-before.json"
+          npx wrangler d1 info babyjoy-db --env production --config wrangler.jsonc --json > "$D1_INFO_PATH"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS access_link_count FROM access_links;" --json > "$D1_HISTORY_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name FROM pragma_table_info('access_link_codes') ORDER BY cid;" --json > "$D1_CODES_SCHEMA_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name FROM d1_migrations WHERE name IN ('0025_shipping_fee_v1.sql', '0026_access_link_codes_v1.sql') ORDER BY name;" --json > "$D1_MIGRATIONS_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            ACCESS_LINKS_MIGRATION_FILE,
+            PRODUCTION_D1_DATABASE_ID,
+            assertD1DatabaseIdentity,
+            assertMigrationAllowlist,
+            assertRowsEmpty,
+            extractD1Rows,
+          } from './scripts/production-shipping-rollout.mjs';
+          const info = JSON.parse(fs.readFileSync(process.env.D1_INFO_PATH, 'utf8'));
+          assertD1DatabaseIdentity(info, PRODUCTION_D1_DATABASE_ID, 'babyjoy-db');
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_PATH, 'utf8');
+          assertMigrationAllowlist(ledger, [ACCESS_LINKS_MIGRATION_FILE]);
+          const codeSchema = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_CODES_SCHEMA_PATH, 'utf8')));
+          if (codeSchema.length !== 0) throw new Error('access_link_codes already exists; 0026 is not a safe pending migration.');
+          const applied = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_MIGRATIONS_PATH, 'utf8')));
+          if (applied.length !== 1 || applied[0]?.name !== '0025_shipping_fee_v1.sql')
+            throw new Error(`Migration 0025 must be applied and 0026 must be pending; received ${JSON.stringify(applied)}.`);
+          const history = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          if (history.length !== 1 || !Number.isSafeInteger(Number(history[0]?.access_link_count)))
+            throw new Error('Access-link baseline aggregate is invalid.');
+          console.log(`Production D1 identity verified: ${PRODUCTION_D1_DATABASE_ID}`);
+          console.log(`Pending migration allowlist verified: ${ACCESS_LINKS_MIGRATION_FILE}`);
+          console.log(`Migration 0025 applied; access-link rows preserved: ${history[0].access_link_count}`);
+          NODE
+          echo "history_path=$D1_HISTORY_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create and verify access links production D1 backup
+        id: access_links_production_backup
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_path="$RUNNER_TEMP/babyjoy-production-d1-access-links-${GITHUB_RUN_ID}.sql"
+          checksum_path="$RUNNER_TEMP/babyjoy-production-d1-access-links-${GITHUB_RUN_ID}.sha256"
+          npx wrangler d1 export babyjoy-db --remote --env production --config wrangler.jsonc \
+            --output "$backup_path" --skip-confirmation
+          test -s "$backup_path"
+          sha256sum "$backup_path" | tee "$checksum_path"
+          checksum="$(cut -d ' ' -f1 "$checksum_path")"
+          test -n "$checksum"
+          echo "backup_path=$backup_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
+          echo "backup_sha256=$checksum" >> "$GITHUB_OUTPUT"
+          echo "Production D1 access-links backup verified: ${checksum}"
+
+      - name: Persist access links production backup artifact outside Git
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' && steps.access_links_production_backup.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: babyjoy-production-d1-access-links-backup-${{ github.run_id }}
+          path: |
+            ${{ steps.access_links_production_backup.outputs.backup_path }}
+            ${{ steps.access_links_production_backup.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Deploy access-link rollback-compatible Worker before migration
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy \
+            --config build/server/wrangler.production-deploy.json \
+            --keep-vars \
+            --strict \
+            --message "access links compatibility ${GITHUB_SHA}" \
+            --tag "access-links-compat-${GITHUB_SHA:0:12}"
+
+      - name: Verify access-link rollback-compatible Worker before migration
+        id: access_links_compatibility_worker_verify
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/cloudflare-production-cron.mjs worker-state \
+            --script-name "$PRODUCTION_WORKER_SCRIPT_NAME" \
+            --metadata-file "$RUNNER_TEMP/babyjoy-production-metadata.json" \
+            --state-output "$RUNNER_TEMP/babyjoy-access-links-worker-compatibility.json"
+          export COMPATIBILITY_STATE="$RUNNER_TEMP/babyjoy-access-links-worker-compatibility.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertSingleActiveWorkerVersion,
+          } from './scripts/production-shipping-rollout.mjs';
+          const state = JSON.parse(fs.readFileSync(process.env.COMPATIBILITY_STATE, 'utf8'));
+          if (state.scriptName !== PRODUCTION_WORKER_SCRIPT_NAME || state.customDomain !== PRODUCTION_CUSTOM_DOMAIN)
+            throw new Error('Access-link compatibility Worker routing identity mismatch.');
+          const versionId = assertSingleActiveWorkerVersion(state, 'Access-link compatibility Worker');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `compatibility_version_id=${versionId}\n`);
+          console.log(`Access-link rollback-compatible Worker version verified: ${versionId}`);
+          NODE
+
+      - name: Smoke access gate on access-link compatibility Worker
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          retry bash -c 'status=$(curl -sS -o "$RUNNER_TEMP/access-links-compat-products.json" -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
+          grep -q 'STOREFRONT_SESSION_REQUIRED' "$RUNNER_TEMP/access-links-compat-products.json"
+          retry bash -c 'status=$(curl -sS -L -o "$RUNNER_TEMP/access-links-compat-required.html" -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
+          echo "Access gate remained enabled during access-link compatibility cutover."
+
+      - name: Verify no access-link writes during compatibility cutover
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        env:
+          D1_HISTORY_PATH: ${{ steps.access_links_d1_preflight.outputs.history_path }}
+        run: |
+          set -euo pipefail
+          export D1_HISTORY_CUTOVER_PATH="$RUNNER_TEMP/babyjoy-access-links-history-cutover.json"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS access_link_count FROM access_links;" --json > "$D1_HISTORY_CUTOVER_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { extractD1Rows } from './scripts/production-shipping-rollout.mjs';
+          const before = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          const cutover = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_CUTOVER_PATH, 'utf8')));
+          if (before.length !== 1 || cutover.length !== 1 || Number(before[0].access_link_count) !== Number(cutover[0].access_link_count))
+            throw new Error('Access-link count changed during compatibility cutover.');
+          console.log('Compatibility cutover produced no access-link writes before migration.');
+          NODE
+
+      - name: Persist tested access-link rollback artifact
+        id: access_links_rollback_artifact
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          COMPATIBILITY_VERSION_ID: ${{ steps.access_links_compatibility_worker_verify.outputs.compatibility_version_id }}
+        run: |
+          set -euo pipefail
+          export ROLLBACK_MANIFEST_PATH="$RUNNER_TEMP/babyjoy-access-links-rollback-manifest.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { PRODUCTION_D1_DATABASE_ID, PRODUCTION_WORKER_SCRIPT_NAME } from './scripts/production-shipping-rollout.mjs';
+          const versionId = process.env.COMPATIBILITY_VERSION_ID;
+          if (!/^[0-9a-f-]{36}$/.test(versionId ?? '')) throw new Error('Access-link compatibility Worker version ID is missing or malformed.');
+          const manifest = {
+            kind: 'babyjoy-access-links-rollback-compatible-worker',
+            validatedMainSha: process.env.EXPECTED_MAIN_SHA,
+            workerScriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            compatibilityVersionId: versionId,
+            testedBeforeMigration: true,
+            schemaBeforeMigration: 'legacy access_links/access_link_groups; no access_link_codes table',
+            schemaAfterMigration: 'access_link_codes additive table with foreign key to access_links',
+            rollbackPolicy: 'rollback Worker only; do not drop or reverse migration 0026',
+            rollbackCommand: `npx wrangler rollback ${versionId} --name ${PRODUCTION_WORKER_SCRIPT_NAME} --env production --config wrangler.jsonc --yes`,
+          };
+          fs.writeFileSync(process.env.ROLLBACK_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          test -s "$ROLLBACK_MANIFEST_PATH"
+          echo "rollback_manifest_path=$ROLLBACK_MANIFEST_PATH" >> "$GITHUB_OUTPUT"
+          echo "Tested access-link rollback artifact prepared for compatibility version ${COMPATIBILITY_VERSION_ID}."
+
+      - name: Upload tested access-link rollback artifact
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' && steps.access_links_rollback_artifact.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: babyjoy-access-links-rollback-artifact-${{ github.run_id }}
+          path: ${{ steps.access_links_rollback_artifact.outputs.rollback_manifest_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Recheck access-link migration allowlist immediately before apply
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_LEDGER_APPLY_PATH="$RUNNER_TEMP/babyjoy-access-links-ledger-apply.txt"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_APPLY_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { ACCESS_LINKS_MIGRATION_FILE, assertMigrationAllowlist } from './scripts/production-shipping-rollout.mjs';
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_APPLY_PATH, 'utf8');
+          assertMigrationAllowlist(ledger, [ACCESS_LINKS_MIGRATION_FILE]);
+          console.log(`Immediate pre-apply allowlist verified: ${ACCESS_LINKS_MIGRATION_FILE}`);
+          NODE
+
+      - name: Prepare access-links-only migration config
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { parseJsonc } from './scripts/cloudflare-production-cron.mjs';
+          import {
+            ACCESS_LINKS_MIGRATION_FILE,
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_D1_DATABASE_ID,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertProductionDeploymentConfig,
+            buildAccessLinksMigrationConfig,
+          } from './scripts/production-shipping-rollout.mjs';
+          const source = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'), 'wrangler.jsonc');
+          const config = buildAccessLinksMigrationConfig(source);
+          assertProductionDeploymentConfig(config, {
+            scriptName: PRODUCTION_WORKER_SCRIPT_NAME,
+            databaseId: PRODUCTION_D1_DATABASE_ID,
+            customDomain: PRODUCTION_CUSTOM_DOMAIN,
+            gateValue: 'true',
+            requireWorkerName: true,
+          });
+          const migrationDir = path.resolve('build/server/access-links-migrations');
+          fs.mkdirSync(migrationDir, { recursive: true });
+          fs.copyFileSync(`migrations/${ACCESS_LINKS_MIGRATION_FILE}`, path.join(migrationDir, ACCESS_LINKS_MIGRATION_FILE));
+          fs.writeFileSync('build/server/wrangler.access-links-migration.json', `${JSON.stringify(config, null, 2)}\n`);
+          console.log(`Prepared isolated migration directory containing only ${ACCESS_LINKS_MIGRATION_FILE}.`);
+          NODE
+          test -s "build/server/access-links-migrations/0026_access_link_codes_v1.sql"
+          test -s "build/server/wrangler.access-links-migration.json"
+
+      - name: Apply only allowlisted access-link migration
+        id: access_links_migration
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        run: npx wrangler d1 migrations apply babyjoy-db --remote --env production --config build/server/wrangler.access-links-migration.json
+
+      - name: Verify access-link schema, ledger, and foreign keys
+        id: access_links_post_migration
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        env:
+          D1_HISTORY_PATH: ${{ steps.access_links_d1_preflight.outputs.history_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export D1_LEDGER_AFTER_PATH="$RUNNER_TEMP/babyjoy-access-links-ledger-after.txt"
+          export D1_SCHEMA_AFTER_PATH="$RUNNER_TEMP/babyjoy-access-links-schema-after.json"
+          export D1_HISTORY_AFTER_PATH="$RUNNER_TEMP/babyjoy-access-links-history-after.json"
+          export D1_MIGRATIONS_AFTER_PATH="$RUNNER_TEMP/babyjoy-access-links-migrations-after.json"
+          export D1_FK_AFTER_PATH="$RUNNER_TEMP/babyjoy-access-links-fk-after.json"
+          npx wrangler d1 migrations list babyjoy-db --remote --env production --config wrangler.jsonc > "$D1_LEDGER_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name FROM pragma_table_info('access_link_codes') ORDER BY cid;" --json > "$D1_SCHEMA_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT COUNT(*) AS access_link_count FROM access_links;" --json > "$D1_HISTORY_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "SELECT name FROM d1_migrations WHERE name = '0026_access_link_codes_v1.sql';" --json > "$D1_MIGRATIONS_AFTER_PATH"
+          npx wrangler d1 execute babyjoy-db --remote --env production --config wrangler.jsonc \
+            --command "PRAGMA foreign_key_check;" --json > "$D1_FK_AFTER_PATH"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { ACCESS_LINKS_MIGRATION_FILE, assertRowsEmpty, extractD1Rows } from './scripts/production-shipping-rollout.mjs';
+          const ledger = fs.readFileSync(process.env.D1_LEDGER_AFTER_PATH, 'utf8');
+          const pending = ledger.match(/\b\d{4}_[A-Za-z0-9_-]+\.sql\b/g) ?? [];
+          if (pending.length) throw new Error(`Unexpected pending migration after apply: ${JSON.stringify([...new Set(pending)])}`);
+          const schema = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_SCHEMA_AFTER_PATH, 'utf8'))).map((row) => row.name);
+          for (const required of ['code_hash', 'access_link_id', 'link_version', 'nonce', 'created_at', 'revoked_at'])
+            if (!schema.includes(required)) throw new Error(`access_link_codes is missing ${required}.`);
+          const before = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_PATH, 'utf8')));
+          const after = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_HISTORY_AFTER_PATH, 'utf8')));
+          if (before.length !== 1 || after.length !== 1 || Number(before[0].access_link_count) !== Number(after[0].access_link_count))
+            throw new Error('Access-link count changed during migration.');
+          const applied = extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_MIGRATIONS_AFTER_PATH, 'utf8')));
+          if (applied.length !== 1 || applied[0]?.name !== ACCESS_LINKS_MIGRATION_FILE)
+            throw new Error('Migration 0026 is not recorded as applied.');
+          assertRowsEmpty(extractD1Rows(JSON.parse(fs.readFileSync(process.env.D1_FK_AFTER_PATH, 'utf8'))), 'PRAGMA foreign_key_check');
+          console.log('Migration 0026 schema, ledger, access-link aggregate, and foreign key check verified.');
+          NODE
+
       - name: Persist production backup artifact outside Git
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' && steps.production_backup.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -747,13 +1094,13 @@ jobs:
           ROLLOUT_MODE: ${{ steps.rollout_mode.outputs.value }}
         run: |
           set -euo pipefail
-          if [ "$ROLLOUT_MODE" = "shipping_rollout" ]; then
+          if [ "$ROLLOUT_MODE" = "shipping_rollout" ] || [ "$ROLLOUT_MODE" = "access_links_rollout" ]; then
             npx wrangler deploy \
               --config build/server/wrangler.production-deploy.json \
               --keep-vars \
               --strict \
-              --message "shipping feature ${GITHUB_SHA}" \
-              --tag "shipping-feature-${GITHUB_SHA:0:12}"
+              --message "feature rollout ${ROLLOUT_MODE} ${GITHUB_SHA}" \
+              --tag "feature-${ROLLOUT_MODE}-${GITHUB_SHA:0:12}"
           else
             npx wrangler deploy \
               --config build/server/wrangler.production-deploy.json \
@@ -808,6 +1155,33 @@ jobs:
             throw new Error('Final shipping Worker did not replace the compatibility version.');
           console.log(`Validated main SHA deployed: ${process.env.EXPECTED_MAIN_SHA}`);
           console.log(`Final Worker version verified: ${versionId}`);
+          console.log(`Rollback-compatible version retained: ${process.env.COMPATIBILITY_VERSION_ID}`);
+          NODE
+
+      - name: Verify validated access-link deployment identity
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          COMPATIBILITY_VERSION_ID: ${{ steps.access_links_compatibility_worker_verify.outputs.compatibility_version_id }}
+        run: |
+          set -euo pipefail
+          export FINAL_WORKER_STATE="$RUNNER_TEMP/babyjoy-worker-after.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            PRODUCTION_CUSTOM_DOMAIN,
+            PRODUCTION_WORKER_SCRIPT_NAME,
+            assertSingleActiveWorkerVersion,
+          } from './scripts/production-shipping-rollout.mjs';
+          const state = JSON.parse(fs.readFileSync(process.env.FINAL_WORKER_STATE, 'utf8'));
+          if (state.scriptName !== PRODUCTION_WORKER_SCRIPT_NAME || state.customDomain !== PRODUCTION_CUSTOM_DOMAIN)
+            throw new Error('Final access-link Worker routing identity mismatch.');
+          const versionId = assertSingleActiveWorkerVersion(state, 'Final access-link Worker');
+          if (versionId === process.env.COMPATIBILITY_VERSION_ID)
+            throw new Error('Final access-link Worker did not replace the compatibility version.');
+          console.log(`Validated main SHA deployed: ${process.env.EXPECTED_MAIN_SHA}`);
+          console.log(`Final access-link Worker version verified: ${versionId}`);
           console.log(`Rollback-compatible version retained: ${process.env.COMPATIBILITY_VERSION_ID}`);
           NODE
 
@@ -889,6 +1263,31 @@ jobs:
           fi
           echo "Shipping rollout health smoke passed: gate remains enabled and access-required is reachable."
 
+      - name: Smoke test access-link rollout gate and metadata
+        id: smoke_access_links
+        if: ${{ steps.rollout_mode.outputs.value == 'access_links_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          retry bash -c 'status=$(curl -sS -o "$RUNNER_TEMP/access-links-products.json" -w "%{http_code}" https://metraphuong.com/api/products); test "$status" = "401"'
+          grep -q 'STOREFRONT_SESSION_REQUIRED' "$RUNNER_TEMP/access-links-products.json"
+          retry bash -c 'status=$(curl -sS -L -o "$RUNNER_TEMP/access-links-required.html" -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
+          grep -Fq '<title>Đồ ăn dặm UK 🍼Trà Phương🍼</title>' "$RUNNER_TEMP/access-links-required.html"
+          home_status="$(curl -sS -o "$RUNNER_TEMP/access-links-home.html" -w "%{http_code}" https://metraphuong.com/)"
+          if [ "$home_status" != "303" ]; then
+            echo "Unexpected gated homepage status: $home_status" >&2
+            exit 1
+          fi
+          echo "Access-link rollout health smoke passed: gate remains enabled and public metadata is exact."
+
       - name: Smoke test shipping financial pricing on final Worker
         id: financial_smoke_final
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
@@ -914,6 +1313,14 @@ jobs:
           PRODUCTION_BACKUP_OUTCOME: ${{ steps.production_backup.outcome }}
           SHIPPING_MIGRATION_OUTCOME: ${{ steps.shipping_migration.outcome }}
           SHIPPING_POST_MIGRATION_OUTCOME: ${{ steps.shipping_post_migration.outcome }}
+          ACCESS_LINKS_D1_PREFLIGHT_OUTCOME: ${{ steps.access_links_d1_preflight.outcome }}
+          ACCESS_LINKS_BACKUP_OUTCOME: ${{ steps.access_links_production_backup.outcome }}
+          ACCESS_LINKS_MIGRATION_OUTCOME: ${{ steps.access_links_migration.outcome }}
+          ACCESS_LINKS_POST_MIGRATION_OUTCOME: ${{ steps.access_links_post_migration.outcome }}
+          ACCESS_LINKS_COMPATIBILITY_OUTCOME: ${{ steps.access_links_compatibility_worker_verify.outcome }}
+          ACCESS_LINKS_COMPATIBILITY_VERSION_ID: ${{ steps.access_links_compatibility_worker_verify.outputs.compatibility_version_id }}
+          ACCESS_LINKS_BACKUP_SHA256: ${{ steps.access_links_production_backup.outputs.backup_sha256 }}
+          ACCESS_LINKS_SMOKE_OUTCOME: ${{ steps.smoke_access_links.outcome }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
           COMPATIBILITY_VERSION_ID: ${{ steps.compatibility_worker_verify.outputs.compatibility_version_id }}
           BACKUP_SHA256: ${{ steps.production_backup.outputs.backup_sha256 }}
@@ -953,6 +1360,7 @@ jobs:
           if [ "${ROLLOUT_MODE:-}" = "prepare" ]; then smoke_status="${SMOKE_PREPARE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "enable_gate" ]; then smoke_status="${SMOKE_ENABLE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then smoke_status="${SMOKE_SHIPPING_OUTCOME:-NOT RUN}"; fi
+          if [ "${ROLLOUT_MODE:-}" = "access_links_rollout" ]; then smoke_status="${ACCESS_LINKS_SMOKE_OUTCOME:-NOT RUN}"; fi
           workers_dev_status="UNKNOWN"
           worker_after="$RUNNER_TEMP/babyjoy-worker-after.json"
           if [ -f "$worker_after" ]; then
@@ -1010,6 +1418,24 @@ jobs:
               echo "Full isolated financial smoke (noPromo/realized/giftOnly/freeShipping): ${FINANCIAL_SMOKE_ISOLATED_OUTCOME:-NOT RUN}"
               echo
               echo "Production giftOnly: NOT AVAILABLE; covered by mandatory isolated smoke."
+            fi
+            if [ "${ROLLOUT_MODE:-}" = "access_links_rollout" ]; then
+              echo
+              echo "Validated main SHA: ${EXPECTED_MAIN_SHA:-unavailable}"
+              echo
+              echo "Access-link compatibility Worker step: ${ACCESS_LINKS_COMPATIBILITY_OUTCOME:-NOT RUN}"
+              echo
+              echo "Access-link compatibility rollback version: ${ACCESS_LINKS_COMPATIBILITY_VERSION_ID:-unavailable}"
+              echo
+              echo "D1 preflight: ${ACCESS_LINKS_D1_PREFLIGHT_OUTCOME:-NOT RUN}"
+              echo
+              echo "D1 backup: ${ACCESS_LINKS_BACKUP_OUTCOME:-NOT RUN}"
+              echo
+              echo "D1 backup SHA-256: ${ACCESS_LINKS_BACKUP_SHA256:-unavailable}"
+              echo
+              echo "Migration 0026: ${ACCESS_LINKS_MIGRATION_OUTCOME:-NOT RUN}"
+              echo
+              echo "Post-migration verification: ${ACCESS_LINKS_POST_MIGRATION_OUTCOME:-NOT RUN}"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$worker_deploy_status" = "SUCCESS" ] && [ "$cron_status" = "FAILED" ]; then

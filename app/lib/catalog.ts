@@ -75,6 +75,7 @@ export type Product = {
   basePriceVnd?: number | null;
   comboConfig?: ComboConfig | null;
   status?: Availability;
+  sortOrder?: number;
   tags: string[];
   tagSlugs?: string[];
   featured?: boolean;

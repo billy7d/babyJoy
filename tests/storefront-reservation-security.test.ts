@@ -33,6 +33,7 @@ const migrationNames = [
   "0015_content_pages_cms_v1.sql",
   "0016_product_variant_media_v1.sql",
   "0017_storefront_reservation_security_v1.sql",
+  "0026_access_link_codes_v1.sql",
 ];
 
 class SqliteStatementAdapter {
@@ -511,7 +512,7 @@ describe("storefront reservation security", () => {
     expect(rows).toHaveLength(2);
     expect(JSON.stringify(rows)).not.toContain("server-session-opaque-id");
 
-    const legacy = createDatabase(migrationNames.length - 1);
+    const legacy = createDatabase(migrationNames.length - 2);
     legacy.exec(`
       INSERT INTO cart_requests (
         id, public_code, submission_token, item_line_count, total_quantity,
