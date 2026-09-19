@@ -18,6 +18,7 @@ import {
   setProductionGateValue,
   assertProductionDeploymentConfig,
 } from "../scripts/production-shipping-rollout.mjs";
+import { summarizeStorefrontSessionContinuity } from "../scripts/storefront-session-continuity-summary.mjs";
 
 const workflow = readFileSync(
   new URL("../.github/workflows/production-rollout.yml", import.meta.url),
@@ -33,6 +34,121 @@ function step(name: string) {
 }
 
 describe("production rollout workflow safeguards", () => {
+  it("reports NOT_RUN when a Worker-deploy mode skips continuity preflight", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({ rolloutMode: "prepare" }),
+    ).toMatchObject({
+      status: "NOT_RUN",
+      preflightStatus: "NOT_RUN",
+    });
+  });
+
+  it("blocks the rollout summary when continuity preflight fails", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({
+        rolloutMode: "shipping_rollout",
+        validateOutcome: "failure",
+      }),
+    ).toMatchObject({
+      status: "BLOCKED",
+      preflightStatus: "BLOCKED",
+    });
+  });
+
+  it("reports NOT_APPLICABLE only after a successful gate-off preflight", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({
+        rolloutMode: "enable_gate",
+        validateOutcome: "success",
+        applicable: "false",
+      }),
+    ).toMatchObject({
+      status: "NOT_APPLICABLE",
+      preflightStatus: "PASS",
+    });
+  });
+
+  it.each([
+    ["", "empty"],
+    [undefined, "undefined"],
+    ["invalid", "invalid"],
+  ])(
+    "blocks an unknown applicable value (%s) after successful preflight: %s",
+    (applicable) => {
+      expect(
+        summarizeStorefrontSessionContinuity({
+          rolloutMode: "shipping_rollout",
+          validateOutcome: "success",
+          applicable,
+        }),
+      ).toMatchObject({
+        status: "BLOCKED",
+        preflightStatus: "PASS",
+      });
+    },
+  );
+
+  it("keeps a skipped preflight as NOT_RUN before interpreting applicable", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({
+        rolloutMode: "shipping_rollout",
+        applicable: "invalid",
+      }),
+    ).toMatchObject({
+      status: "NOT_RUN",
+      preflightStatus: "NOT_RUN",
+    });
+  });
+
+  it("reports NOT_APPLICABLE for a mode without a Worker deploy", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({ rolloutMode: "repair_cron" }),
+    ).toMatchObject({
+      status: "NOT_APPLICABLE",
+      preflightStatus: "NOT_APPLICABLE",
+    });
+  });
+
+  it("reports PASS only after every applicable continuity check succeeds", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({
+        rolloutMode: "shipping_rollout",
+        validateOutcome: "success",
+        applicable: "true",
+        beforeOutcome: "success",
+        compatibilityOutcome: "success",
+        finalOutcome: "success",
+      }),
+    ).toMatchObject({
+      status: "PASS",
+      preflightStatus: "PASS",
+      beforeStatus: "PASS",
+      compatibilityStatus: "PASS",
+      finalStatus: "PASS",
+    });
+  });
+
+  it.each([
+    ["beforeOutcome", { beforeOutcome: "failure" }, "BLOCKED"],
+    ["compatibilityOutcome", { compatibilityOutcome: "failure" }, "FAIL"],
+    ["finalOutcome", { finalOutcome: "failure" }, "FAIL"],
+  ])(
+    "does not report PASS when %s fails",
+    (_failedStep, outcome, expectedStatus) => {
+      expect(
+        summarizeStorefrontSessionContinuity({
+          rolloutMode: "shipping_rollout",
+          validateOutcome: "success",
+          applicable: "true",
+          beforeOutcome: "success",
+          compatibilityOutcome: "success",
+          finalOutcome: "success",
+          ...outcome,
+        }),
+      ).toMatchObject({ status: expectedStatus });
+    },
+  );
+
   it("exposes the three rollout modes and explicit confirmations", () => {
     expect(workflow).toContain("- prepare");
     expect(workflow).toContain("- enable_gate");
@@ -186,9 +302,59 @@ describe("production rollout workflow safeguards", () => {
   it("writes a secret-free deployment summary", () => {
     expect(workflow).toContain("$GITHUB_STEP_SUMMARY");
     expect(workflow).toContain("Production Rollout Summary");
+    expect(workflow).toContain("Storefront Session Continuity");
+    expect(workflow).toContain("Status: $continuity_status");
     expect(workflow).toContain("Worker deployment succeeded, but Cron reconciliation failed");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_API_TOKEN\"");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_ACCOUNT_ID\"");
+  });
+
+  it("đặt continuity smoke đúng trước và sau từng Worker deploy cần kiểm chứng", () => {
+    expect(workflow).toContain(
+      "STOREFRONT_SESSION_CONTINUITY_ACCESS_URL: ${{ secrets.STOREFRONT_SESSION_CONTINUITY_ACCESS_URL }}",
+    );
+    expect(workflow).toContain("storefront-session-continuity.mjs validate");
+    expect(workflow).toContain("storefront-session-continuity.mjs validate --required");
+    expect(workflow).toContain("storefront-session-continuity.mjs before");
+    expect(workflow).toContain("storefront-session-continuity.mjs after");
+    expect(workflow).toContain("storefront-session-continuity.mjs cleanup");
+    expect(workflow).toContain("storefront-session-continuity-summary.mjs");
+    expect(workflow).toContain("continuity_summary_path");
+
+    const validate = workflow.indexOf("- name: Validate storefront session continuity preflight");
+    const before = workflow.indexOf("- name: Create storefront continuity session before deploy");
+    const compatibilityDeploy = workflow.indexOf("- name: Deploy rollback-compatible Worker before shipping migration");
+    const compatibilityAfter = workflow.indexOf("- name: Verify old storefront session after compatibility deploy");
+    const migration = workflow.indexOf("- name: Apply only allowlisted shipping migration");
+    const finalDeploy = workflow.indexOf("- name: Deploy production Worker");
+    const finalAfter = workflow.indexOf("- name: Verify old storefront session after final deploy");
+    const summary = workflow.indexOf("- name: Write production rollout summary");
+    const cleanup = workflow.indexOf("- name: Cleanup storefront session continuity fixture");
+    expect(validate).toBeGreaterThan(-1);
+    expect(before).toBeGreaterThan(validate);
+    expect(compatibilityDeploy).toBeGreaterThan(before);
+    expect(compatibilityAfter).toBeGreaterThan(compatibilityDeploy);
+    expect(compatibilityAfter).toBeLessThan(migration);
+    expect(finalAfter).toBeGreaterThan(finalDeploy);
+    expect(finalAfter).toBeLessThan(summary);
+    expect(cleanup).toBeGreaterThan(summary);
+    expect(step("Cleanup storefront session continuity fixture")).toContain("always()");
+    expect(step("Verify old storefront session after compatibility deploy")).toContain(
+      "steps.session_continuity_validate.outputs.applicable == 'true'",
+    );
+    expect(step("Verify old storefront session after final deploy")).toContain(
+      "steps.session_continuity_validate.outputs.applicable == 'true'",
+    );
+  });
+
+  it("không in access URL hoặc cookie vào log continuity", () => {
+    const script = readFileSync(
+      new URL("../scripts/storefront-session-continuity.mjs", import.meta.url),
+      "utf8",
+    );
+    expect(script).not.toMatch(/console\.log\([^\n]*(cookie|accessUrl|accessUrl)/i);
+    expect(workflow).not.toContain("STOREFRONT_SESSION_CONTINUITY_ACCESS_URL\"");
+    expect(workflow).not.toContain("Cookie:");
   });
 
   it("keeps the shipping sequence guarded and ordered", () => {
