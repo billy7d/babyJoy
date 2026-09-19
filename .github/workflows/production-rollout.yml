@@ -1012,36 +1012,23 @@ jobs:
           if [ "${ROLLOUT_MODE:-}" = "prepare" ]; then smoke_status="${SMOKE_PREPARE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "enable_gate" ]; then smoke_status="${SMOKE_ENABLE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then smoke_status="${SMOKE_SHIPPING_OUTCOME:-NOT RUN}"; fi
-          continuity_status="NOT_APPLICABLE"
-          continuity_applicable="${SESSION_CONTINUITY_APPLICABLE:-}"
-          if [ "${ROLLOUT_MODE:-}" = "enable_gate" ] || [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then
-            if [ "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}" = "failure" ]; then
-              continuity_status="BLOCKED"
-            elif [ "$continuity_applicable" != "true" ]; then
-              continuity_status="NOT_APPLICABLE"
-            elif [ "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}" != "success" ]; then
-              continuity_status="BLOCKED"
-            elif [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ] && [ "${SESSION_CONTINUITY_COMPATIBILITY_OUTCOME:-}" != "success" ]; then
-              continuity_status="FAIL"
-            elif [ "${SESSION_CONTINUITY_FINAL_OUTCOME:-}" != "success" ]; then
-              continuity_status="FAIL"
-            else
-              continuity_status="PASS"
-            fi
-          fi
-          continuity_step_status() {
-            case "${1:-}" in
-              success) echo "PASS" ;;
-              failure) echo "FAIL" ;;
-              *) echo "NOT_RUN" ;;
-            esac
-          }
-          continuity_preflight_status="$(continuity_step_status "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}")"
-          continuity_before_status="$(continuity_step_status "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}")"
-          continuity_compatibility_status="$(continuity_step_status "${SESSION_CONTINUITY_COMPATIBILITY_OUTCOME:-}")"
-          continuity_final_status="$(continuity_step_status "${SESSION_CONTINUITY_FINAL_OUTCOME:-}")"
-          if [ "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}" = "failure" ]; then continuity_preflight_status="BLOCKED"; fi
-          if [ "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}" = "failure" ]; then continuity_before_status="BLOCKED"; fi
+          continuity_summary_path="$RUNNER_TEMP/babyjoy-session-continuity-summary.json"
+          node --input-type=module > "$continuity_summary_path" <<'NODE'
+          import { summarizeStorefrontSessionContinuity } from './scripts/storefront-session-continuity-summary.mjs';
+          process.stdout.write(JSON.stringify(summarizeStorefrontSessionContinuity({
+            rolloutMode: process.env.ROLLOUT_MODE,
+            validateOutcome: process.env.SESSION_CONTINUITY_VALIDATE_OUTCOME,
+            applicable: process.env.SESSION_CONTINUITY_APPLICABLE,
+            beforeOutcome: process.env.SESSION_CONTINUITY_BEFORE_OUTCOME,
+            compatibilityOutcome: process.env.SESSION_CONTINUITY_COMPATIBILITY_OUTCOME,
+            finalOutcome: process.env.SESSION_CONTINUITY_FINAL_OUTCOME,
+          })));
+          NODE
+          continuity_status="$(read_json_field "$continuity_summary_path" status)"
+          continuity_preflight_status="$(read_json_field "$continuity_summary_path" preflightStatus)"
+          continuity_before_status="$(read_json_field "$continuity_summary_path" beforeStatus)"
+          continuity_compatibility_status="$(read_json_field "$continuity_summary_path" compatibilityStatus)"
+          continuity_final_status="$(read_json_field "$continuity_summary_path" finalStatus)"
           workers_dev_status="UNKNOWN"
           worker_after="$RUNNER_TEMP/babyjoy-worker-after.json"
           if [ -f "$worker_after" ]; then
