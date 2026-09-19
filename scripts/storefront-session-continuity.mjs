@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,10 @@ function getFetch(fetchImpl) {
 
 export function defaultCookieFile() {
   return path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), COOKIE_FILE_NAME);
+}
+
+export function cookieDigestFile(cookieFile = defaultCookieFile()) {
+  return `${cookieFile}.sha256`;
 }
 
 /** Chỉ nhận đúng access link thử nghiệm trên domain production, không log giá trị bí mật. */
@@ -68,6 +73,40 @@ function validateCookieHeader(value) {
   return normalized;
 }
 
+function cookieFixtureDigest(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function writeCookieDigest(cookieFile, cookieFixture) {
+  const digestFile = cookieDigestFile(cookieFile);
+  await fs.writeFile(digestFile, `${cookieFixtureDigest(cookieFixture)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await fs.chmod(digestFile, 0o600);
+}
+
+async function assertCookieFixtureUnchanged(cookieFile, cookieFixture) {
+  let expectedDigest;
+  try {
+    expectedDigest = (await fs.readFile(cookieDigestFile(cookieFile), "utf8"))
+      .trim()
+      .toLowerCase();
+  } catch {
+    throw new Error(
+      "Storefront continuity cookie fixture digest is missing before after-deploy verification.",
+    );
+  }
+  if (!/^[a-f0-9]{64}$/.test(expectedDigest))
+    throw new Error(
+      "Storefront continuity cookie fixture digest is invalid before after-deploy verification.",
+    );
+  if (cookieFixtureDigest(cookieFixture) !== expectedDigest)
+    throw new Error(
+      "Storefront continuity cookie fixture changed before after-deploy verification.",
+    );
+}
+
 async function request(fetchImpl, url, init, label) {
   try {
     return await getFetch(fetchImpl)(url, init);
@@ -100,6 +139,20 @@ function assertExpectedStatus(response, expected, label) {
   if (response.status !== expected)
     throw new Error(
       `Storefront continuity ${label} returned HTTP ${response.status}.`,
+    );
+}
+
+function assertNoSetCookie(response, label) {
+  const values =
+    typeof response.headers.getSetCookie === "function"
+      ? response.headers.getSetCookie()
+      : response.headers.get("set-cookie");
+  const rotated = Array.isArray(values)
+    ? values.length > 0
+    : typeof values === "string" && values.trim().length > 0;
+  if (rotated)
+    throw new Error(
+      `Storefront continuity ${label} attempted to rotate the session cookie.`,
     );
 }
 
@@ -173,6 +226,7 @@ async function assertAuthorizedStorefront({
   baseUrl = BASE_URL,
   cookie,
   fetchImpl,
+  rejectSetCookie = false,
 } = {}) {
   const cookieHeader = validateCookieHeader(cookie);
   const sessionResponse = await request(
@@ -185,6 +239,7 @@ async function assertAuthorizedStorefront({
     "session",
   );
   assertExpectedStatus(sessionResponse, 200, "session");
+  if (rejectSetCookie) assertNoSetCookie(sessionResponse, "session");
   const session = await readJson(sessionResponse, "session");
   if (
     !isRecord(session) ||
@@ -205,6 +260,7 @@ async function assertAuthorizedStorefront({
     "products",
   );
   assertExpectedStatus(productsResponse, 200, "products");
+  if (rejectSetCookie) assertNoSetCookie(productsResponse, "products");
   const products = await readJson(productsResponse, "products");
   if (
     !isRecord(products) ||
@@ -226,6 +282,7 @@ async function assertAuthorizedStorefront({
     "homepage",
   );
   assertExpectedStatus(homeResponse, 200, "homepage");
+  if (rejectSetCookie) assertNoSetCookie(homeResponse, "homepage");
   const home = await readText(homeResponse, "homepage");
   if (!home.trim() || !/<html[\s>]/i.test(home))
     throw new Error("Storefront continuity homepage response was not HTML.");
@@ -249,12 +306,14 @@ export async function runBefore({
   assertExpectedStatus(response, 303, "access link");
   const cookie = cookiePairs(response).join("; ");
   validateCookieHeader(cookie);
-  await fs.writeFile(cookieFile, `${cookie}\n`, {
+  const cookieFixture = `${cookie}\n`;
+  await fs.writeFile(cookieFile, cookieFixture, {
     encoding: "utf8",
     mode: 0o600,
   });
   await fs.chmod(cookieFile, 0o600);
   await assertAuthorizedStorefront({ baseUrl, cookie, fetchImpl });
+  await writeCookieDigest(cookieFile, cookieFixture);
   return { cookieFile };
 }
 
@@ -272,12 +331,21 @@ export async function runAfter({
       "Storefront continuity cookie fixture is missing before after-deploy verification.",
     );
   }
-  await assertAuthorizedStorefront({ baseUrl, cookie, fetchImpl });
+  await assertCookieFixtureUnchanged(cookieFile, cookie);
+  await assertAuthorizedStorefront({
+    baseUrl,
+    cookie,
+    fetchImpl,
+    rejectSetCookie: true,
+  });
   return { cookieFile };
 }
 
 export async function cleanupCookieFile(cookieFile = defaultCookieFile()) {
-  await fs.rm(cookieFile, { force: true });
+  await Promise.all([
+    fs.rm(cookieFile, { force: true }),
+    fs.rm(cookieDigestFile(cookieFile), { force: true }),
+  ]);
 }
 
 async function writeGitHubOutput(values) {

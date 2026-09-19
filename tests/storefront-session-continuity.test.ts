@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  cookieDigestFile,
+  cleanupCookieFile,
   runAfter,
   runBefore,
   validateContinuity,
@@ -63,6 +66,16 @@ async function makeCookieFile() {
   return path.join(temporaryDirectory, "continuity.cookie");
 }
 
+async function writeCookieFixture(cookieFile: string, cookie = COOKIE) {
+  const fixture = `${cookie}\n`;
+  await writeFile(cookieFile, fixture, "utf8");
+  await writeFile(
+    cookieDigestFile(cookieFile),
+    `${createHash("sha256").update(fixture, "utf8").digest("hex")}\n`,
+    "utf8",
+  );
+}
+
 afterEach(async () => {
   if (temporaryDirectory)
     await rm(temporaryDirectory, { recursive: true, force: true });
@@ -109,10 +122,11 @@ describe("storefront session continuity smoke", () => {
 
   it.each([
     [401, "expired or revoked"],
+    [403, "forbidden"],
     [503, "missing secret"],
   ])("đánh rớt after khi session cũ trả HTTP %s (%s)", async (status) => {
     const cookieFile = await makeCookieFile();
-    await writeFile(cookieFile, `${COOKIE}\n`, "utf8");
+    await writeCookieFixture(cookieFile);
     const calls: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {
       calls.push(new URL(String(input)).pathname);
@@ -135,7 +149,7 @@ describe("storefront session continuity smoke", () => {
 
   it("không PASS giả khi gate tắt và API session vẫn trả 200", async () => {
     const cookieFile = await makeCookieFile();
-    await writeFile(cookieFile, `${COOKIE}\n`, "utf8");
+    await writeCookieFixture(cookieFile);
     const fetchImpl = async () =>
       jsonResponse({ authenticated: true, gateEnabled: false });
     await expect(runAfter({ cookieFile, fetchImpl })).rejects.toThrow(
@@ -145,7 +159,7 @@ describe("storefront session continuity smoke", () => {
 
   it("đánh rớt payload products lỗi dù HTTP là 200", async () => {
     const cookieFile = await makeCookieFile();
-    await writeFile(cookieFile, `${COOKIE}\n`, "utf8");
+    await writeCookieFixture(cookieFile);
     const { fetchImpl } = standardFetch();
     const invalidFetch = async (
       input: RequestInfo | URL,
@@ -161,6 +175,53 @@ describe("storefront session continuity smoke", () => {
     await expect(
       runAfter({ cookieFile, fetchImpl: invalidFetch }),
     ).rejects.toThrow("valid catalog payload");
+  });
+
+  it("đánh rớt after khi fixture cookie bị thay đổi", async () => {
+    const cookieFile = await makeCookieFile();
+    await writeCookieFixture(cookieFile);
+    await writeFile(cookieFile, "__Host-mp_access_session=changed\n", "utf8");
+    const { fetchImpl } = standardFetch();
+    await expect(runAfter({ cookieFile, fetchImpl })).rejects.toThrow(
+      "cookie fixture changed",
+    );
+  });
+
+  it("đánh rớt after khi response cố xoay cookie session", async () => {
+    const cookieFile = await makeCookieFile();
+    await writeCookieFixture(cookieFile);
+    const { fetchImpl: standard } = standardFetch();
+    const rotatingFetch = async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === "/api/storefront/session") {
+        const response = jsonResponse({
+          authenticated: true,
+          gateEnabled: true,
+        });
+        response.headers.append(
+          "set-cookie",
+          "__Host-mp_access_session=rotated; Path=/; HttpOnly",
+        );
+        return response;
+      }
+      return standard(input, init);
+    };
+    await expect(
+      runAfter({ cookieFile, fetchImpl: rotatingFetch }),
+    ).rejects.toThrow("attempted to rotate the session cookie");
+  });
+
+  it("dọn cả fixture cookie và digest khi cleanup chạy", async () => {
+    const cookieFile = await makeCookieFile();
+    await writeCookieFixture(cookieFile);
+    await cleanupCookieFile(cookieFile);
+    await expect(readFile(cookieFile, "utf8")).rejects.toThrow();
+    await expect(
+      readFile(cookieDigestFile(cookieFile), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("ghi nhận NOT_APPLICABLE khi gate đang tắt trước lần enable đầu tiên", async () => {
