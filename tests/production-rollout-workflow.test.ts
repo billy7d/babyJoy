@@ -68,6 +68,38 @@ describe("production rollout workflow safeguards", () => {
     });
   });
 
+  it.each([
+    ["", "empty"],
+    [undefined, "undefined"],
+    ["invalid", "invalid"],
+  ])(
+    "blocks an unknown applicable value (%s) after successful preflight: %s",
+    (applicable) => {
+      expect(
+        summarizeStorefrontSessionContinuity({
+          rolloutMode: "shipping_rollout",
+          validateOutcome: "success",
+          applicable,
+        }),
+      ).toMatchObject({
+        status: "BLOCKED",
+        preflightStatus: "PASS",
+      });
+    },
+  );
+
+  it("keeps a skipped preflight as NOT_RUN before interpreting applicable", () => {
+    expect(
+      summarizeStorefrontSessionContinuity({
+        rolloutMode: "shipping_rollout",
+        applicable: "invalid",
+      }),
+    ).toMatchObject({
+      status: "NOT_RUN",
+      preflightStatus: "NOT_RUN",
+    });
+  });
+
   it("reports NOT_APPLICABLE for a mode without a Worker deploy", () => {
     expect(
       summarizeStorefrontSessionContinuity({ rolloutMode: "repair_cron" }),
@@ -95,6 +127,27 @@ describe("production rollout workflow safeguards", () => {
       finalStatus: "PASS",
     });
   });
+
+  it.each([
+    ["beforeOutcome", { beforeOutcome: "failure" }, "BLOCKED"],
+    ["compatibilityOutcome", { compatibilityOutcome: "failure" }, "FAIL"],
+    ["finalOutcome", { finalOutcome: "failure" }, "FAIL"],
+  ])(
+    "does not report PASS when %s fails",
+    (_failedStep, outcome, expectedStatus) => {
+      expect(
+        summarizeStorefrontSessionContinuity({
+          rolloutMode: "shipping_rollout",
+          validateOutcome: "success",
+          applicable: "true",
+          beforeOutcome: "success",
+          compatibilityOutcome: "success",
+          finalOutcome: "success",
+          ...outcome,
+        }),
+      ).toMatchObject({ status: expectedStatus });
+    },
+  );
 
   it("exposes the three rollout modes and explicit confirmations", () => {
     expect(workflow).toContain("- prepare");

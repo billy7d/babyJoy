@@ -40,8 +40,12 @@ export function summarizeStorefrontSessionContinuity({
 
   if (validateOutcome !== "success") return summary;
 
-  if (applicable !== "true") {
+  if (applicable === "false") {
     return { ...summary, status: "NOT_APPLICABLE", preflightStatus: "PASS" };
+  }
+
+  if (applicable !== "true") {
+    return { ...summary, status: "BLOCKED", preflightStatus: "PASS" };
   }
 
   const withPreflight = { ...summary, preflightStatus: "PASS" };
