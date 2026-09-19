@@ -56,6 +56,7 @@ jobs:
       PRODUCTION_WORKER_SCRIPT_NAME: babyjoy-web-app-production
       STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL: ${{ secrets.STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL }}
       SHIPPING_FINANCIAL_SMOKE_CASES_JSON: ${{ secrets.SHIPPING_FINANCIAL_SMOKE_CASES_JSON }}
+      STOREFRONT_SESSION_CONTINUITY_ACCESS_URL: ${{ secrets.STOREFRONT_SESSION_CONTINUITY_ACCESS_URL }}
 
     steps:
       - name: Checkout
@@ -393,6 +394,25 @@ jobs:
         if: ${{ steps.rollout_mode.outputs.value != 'repair_cron' }}
         run: npx wrangler deploy --dry-run --config build/server/wrangler.production-deploy.json
 
+      - name: Validate storefront session continuity preflight
+        id: session_continuity_validate
+        if: ${{ steps.rollout_mode.outputs.value == 'enable_gate' || steps.rollout_mode.outputs.value == 'shipping_rollout' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.rollout_mode.outputs.value }}" = "shipping_rollout" ]; then
+            node scripts/storefront-session-continuity.mjs validate --required
+          else
+            # Khi bật gate lần đầu, gate đang tắt là NOT_APPLICABLE và không cần mở fixture.
+            node scripts/storefront-session-continuity.mjs validate
+          fi
+
+      - name: Create storefront continuity session before deploy
+        id: session_continuity_before
+        if: ${{ (steps.rollout_mode.outputs.value == 'enable_gate' || steps.rollout_mode.outputs.value == 'shipping_rollout') && steps.session_continuity_validate.outputs.applicable == 'true' }}
+        shell: bash
+        run: node scripts/storefront-session-continuity.mjs before
+
       - name: Verify shipping deployment artifact and gate
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
         shell: bash
@@ -549,6 +569,23 @@ jobs:
           grep -q 'STOREFRONT_SESSION_REQUIRED' "$RUNNER_TEMP/compat-products.json"
           retry bash -c 'status=$(curl -sS -L -o "$RUNNER_TEMP/compat-access-required.html" -w "%{http_code}" https://metraphuong.com/access-required); test "$status" = "200"'
           echo "Compatibility Worker preserved the storefront access gate."
+
+      - name: Verify old storefront session after compatibility deploy
+        id: session_continuity_compatibility_after
+        if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' && steps.session_continuity_validate.outputs.applicable == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          # Chỉ gửi lại cookie cũ; retry không mở access link và không tạo session mới.
+          retry node scripts/storefront-session-continuity.mjs after
 
       - name: Verify no financial writes during compatibility cutover
         if: ${{ steps.rollout_mode.outputs.value == 'shipping_rollout' }}
@@ -811,6 +848,23 @@ jobs:
           console.log(`Rollback-compatible version retained: ${process.env.COMPATIBILITY_VERSION_ID}`);
           NODE
 
+      - name: Verify old storefront session after final deploy
+        id: session_continuity_final_after
+        if: ${{ (steps.rollout_mode.outputs.value == 'enable_gate' || steps.rollout_mode.outputs.value == 'shipping_rollout') && steps.session_continuity_validate.outputs.applicable == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts=0
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 12 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          # Chỉ gửi lại cookie cũ; retry không mở access link và không tạo session mới.
+          retry node scripts/storefront-session-continuity.mjs after
+
       - name: Verify Cron repair did not change Worker version
         id: repair_version_verify
         if: ${{ steps.rollout_mode.outputs.value == 'repair_cron' }}
@@ -914,6 +968,11 @@ jobs:
           PRODUCTION_BACKUP_OUTCOME: ${{ steps.production_backup.outcome }}
           SHIPPING_MIGRATION_OUTCOME: ${{ steps.shipping_migration.outcome }}
           SHIPPING_POST_MIGRATION_OUTCOME: ${{ steps.shipping_post_migration.outcome }}
+          SESSION_CONTINUITY_VALIDATE_OUTCOME: ${{ steps.session_continuity_validate.outcome }}
+          SESSION_CONTINUITY_BEFORE_OUTCOME: ${{ steps.session_continuity_before.outcome }}
+          SESSION_CONTINUITY_COMPATIBILITY_OUTCOME: ${{ steps.session_continuity_compatibility_after.outcome }}
+          SESSION_CONTINUITY_FINAL_OUTCOME: ${{ steps.session_continuity_final_after.outcome }}
+          SESSION_CONTINUITY_APPLICABLE: ${{ steps.session_continuity_validate.outputs.applicable }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
           COMPATIBILITY_VERSION_ID: ${{ steps.compatibility_worker_verify.outputs.compatibility_version_id }}
           BACKUP_SHA256: ${{ steps.production_backup.outputs.backup_sha256 }}
@@ -953,6 +1012,36 @@ jobs:
           if [ "${ROLLOUT_MODE:-}" = "prepare" ]; then smoke_status="${SMOKE_PREPARE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "enable_gate" ]; then smoke_status="${SMOKE_ENABLE_OUTCOME:-NOT RUN}"; fi
           if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then smoke_status="${SMOKE_SHIPPING_OUTCOME:-NOT RUN}"; fi
+          continuity_status="NOT_APPLICABLE"
+          continuity_applicable="${SESSION_CONTINUITY_APPLICABLE:-}"
+          if [ "${ROLLOUT_MODE:-}" = "enable_gate" ] || [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then
+            if [ "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}" = "failure" ]; then
+              continuity_status="BLOCKED"
+            elif [ "$continuity_applicable" != "true" ]; then
+              continuity_status="NOT_APPLICABLE"
+            elif [ "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}" != "success" ]; then
+              continuity_status="BLOCKED"
+            elif [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ] && [ "${SESSION_CONTINUITY_COMPATIBILITY_OUTCOME:-}" != "success" ]; then
+              continuity_status="FAIL"
+            elif [ "${SESSION_CONTINUITY_FINAL_OUTCOME:-}" != "success" ]; then
+              continuity_status="FAIL"
+            else
+              continuity_status="PASS"
+            fi
+          fi
+          continuity_step_status() {
+            case "${1:-}" in
+              success) echo "PASS" ;;
+              failure) echo "FAIL" ;;
+              *) echo "NOT_RUN" ;;
+            esac
+          }
+          continuity_preflight_status="$(continuity_step_status "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}")"
+          continuity_before_status="$(continuity_step_status "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}")"
+          continuity_compatibility_status="$(continuity_step_status "${SESSION_CONTINUITY_COMPATIBILITY_OUTCOME:-}")"
+          continuity_final_status="$(continuity_step_status "${SESSION_CONTINUITY_FINAL_OUTCOME:-}")"
+          if [ "${SESSION_CONTINUITY_VALIDATE_OUTCOME:-}" = "failure" ]; then continuity_preflight_status="BLOCKED"; fi
+          if [ "${SESSION_CONTINUITY_BEFORE_OUTCOME:-}" = "failure" ]; then continuity_before_status="BLOCKED"; fi
           workers_dev_status="UNKNOWN"
           worker_after="$RUNNER_TEMP/babyjoy-worker-after.json"
           if [ -f "$worker_after" ]; then
@@ -981,6 +1070,24 @@ jobs:
             echo "Custom domain: ${custom_domain:-unknown}"
             echo
             echo "Smoke tests: $smoke_status"
+            echo
+            echo "### Storefront Session Continuity"
+            echo
+            echo "Status: $continuity_status"
+            echo
+            echo "Deployment SHA: ${GITHUB_SHA:-unavailable}"
+            echo
+            echo "Checked at UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "Preflight: $continuity_preflight_status"
+            echo
+            echo "Before deploy: $continuity_before_status"
+            if [ "${ROLLOUT_MODE:-}" = "shipping_rollout" ]; then
+              echo
+              echo "After compatibility deploy: $continuity_compatibility_status"
+            fi
+            echo
+            echo "After final deploy: $continuity_final_status"
             echo
             echo "Cron verification step: ${CRON_VERIFY_OUTCOME:-NOT RUN}"
             echo
@@ -1016,3 +1123,8 @@ jobs:
             echo >> "$GITHUB_STEP_SUMMARY"
             echo "⚠ Worker deployment succeeded, but Cron reconciliation failed. Production requires operator attention." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Cleanup storefront session continuity fixture
+        if: ${{ always() }}
+        shell: bash
+        run: node scripts/storefront-session-continuity.mjs cleanup

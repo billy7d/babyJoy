@@ -186,9 +186,57 @@ describe("production rollout workflow safeguards", () => {
   it("writes a secret-free deployment summary", () => {
     expect(workflow).toContain("$GITHUB_STEP_SUMMARY");
     expect(workflow).toContain("Production Rollout Summary");
+    expect(workflow).toContain("Storefront Session Continuity");
+    expect(workflow).toContain("Status: $continuity_status");
     expect(workflow).toContain("Worker deployment succeeded, but Cron reconciliation failed");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_API_TOKEN\"");
     expect(workflow).not.toContain("echo \"$CLOUDFLARE_ACCOUNT_ID\"");
+  });
+
+  it("đặt continuity smoke đúng trước và sau từng Worker deploy cần kiểm chứng", () => {
+    expect(workflow).toContain(
+      "STOREFRONT_SESSION_CONTINUITY_ACCESS_URL: ${{ secrets.STOREFRONT_SESSION_CONTINUITY_ACCESS_URL }}",
+    );
+    expect(workflow).toContain("storefront-session-continuity.mjs validate");
+    expect(workflow).toContain("storefront-session-continuity.mjs validate --required");
+    expect(workflow).toContain("storefront-session-continuity.mjs before");
+    expect(workflow).toContain("storefront-session-continuity.mjs after");
+    expect(workflow).toContain("storefront-session-continuity.mjs cleanup");
+
+    const validate = workflow.indexOf("- name: Validate storefront session continuity preflight");
+    const before = workflow.indexOf("- name: Create storefront continuity session before deploy");
+    const compatibilityDeploy = workflow.indexOf("- name: Deploy rollback-compatible Worker before shipping migration");
+    const compatibilityAfter = workflow.indexOf("- name: Verify old storefront session after compatibility deploy");
+    const migration = workflow.indexOf("- name: Apply only allowlisted shipping migration");
+    const finalDeploy = workflow.indexOf("- name: Deploy production Worker");
+    const finalAfter = workflow.indexOf("- name: Verify old storefront session after final deploy");
+    const summary = workflow.indexOf("- name: Write production rollout summary");
+    const cleanup = workflow.indexOf("- name: Cleanup storefront session continuity fixture");
+    expect(validate).toBeGreaterThan(-1);
+    expect(before).toBeGreaterThan(validate);
+    expect(compatibilityDeploy).toBeGreaterThan(before);
+    expect(compatibilityAfter).toBeGreaterThan(compatibilityDeploy);
+    expect(compatibilityAfter).toBeLessThan(migration);
+    expect(finalAfter).toBeGreaterThan(finalDeploy);
+    expect(finalAfter).toBeLessThan(summary);
+    expect(cleanup).toBeGreaterThan(summary);
+    expect(step("Cleanup storefront session continuity fixture")).toContain("always()");
+    expect(step("Verify old storefront session after compatibility deploy")).toContain(
+      "steps.session_continuity_validate.outputs.applicable == 'true'",
+    );
+    expect(step("Verify old storefront session after final deploy")).toContain(
+      "steps.session_continuity_validate.outputs.applicable == 'true'",
+    );
+  });
+
+  it("không in access URL hoặc cookie vào log continuity", () => {
+    const script = readFileSync(
+      new URL("../scripts/storefront-session-continuity.mjs", import.meta.url),
+      "utf8",
+    );
+    expect(script).not.toMatch(/console\.log\([^\n]*(cookie|accessUrl|accessUrl)/i);
+    expect(workflow).not.toContain("STOREFRONT_SESSION_CONTINUITY_ACCESS_URL\"");
+    expect(workflow).not.toContain("Cookie:");
   });
 
   it("keeps the shipping sequence guarded and ordered", () => {
