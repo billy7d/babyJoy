@@ -5,9 +5,11 @@ import {
   PRODUCTION_CUSTOM_DOMAIN,
   PRODUCTION_D1_DATABASE_ID,
   PRODUCTION_WORKER_SCRIPT_NAME,
+  ACCESS_LINKS_MIGRATION_FILE,
   SHIPPING_MIGRATION_FILE,
   assertAuthoritativeCartSnapshot,
   buildShippingMigrationConfig,
+  buildAccessLinksMigrationConfig,
   assertD1DatabaseIdentity,
   assertHistoryAggregateUnchanged,
   assertMigrationAllowlist,
@@ -44,6 +46,10 @@ describe("production rollout workflow safeguards", () => {
     expect(workflow).toContain("confirm_shipping_rollout:");
     expect(workflow).toContain("expected_main_sha:");
     expect(workflow).toContain("ROLL_OUT_SHIPPING");
+    expect(workflow).toContain("- access_links_rollout");
+    expect(workflow).toContain("confirm_access_links_rollout:");
+    expect(workflow).toContain("ROLL_OUT_ACCESS_LINKS");
+    expect(workflow).toContain("0026_access_link_codes_v1.sql");
     expect(workflow).toContain("STOREFRONT_FINANCIAL_SMOKE_ACCESS_URL");
     expect(workflow).toContain("SHIPPING_FINANCIAL_SMOKE_CASES_JSON");
     expect(workflow).toContain("production-financial-smoke.mjs --validate");
@@ -313,6 +319,57 @@ describe("production rollout workflow safeguards", () => {
       }),
     ]);
     expect(() => buildShippingMigrationConfig(source, "../unsafe")).toThrow();
+  });
+
+  it("giới hạn config access-link vào đúng D1 production và file 0026", () => {
+    const source = parseJsonc(
+      readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+      "wrangler.jsonc",
+    ) as Record<string, any>;
+    const migrationConfig = buildAccessLinksMigrationConfig(source);
+    expect(migrationConfig.main).toBe("./index.js");
+    expect(migrationConfig.name).toBe(PRODUCTION_WORKER_SCRIPT_NAME);
+    expect(migrationConfig.env.production.d1_databases).toEqual([
+      expect.objectContaining({
+        database_name: "babyjoy-db",
+        database_id: PRODUCTION_D1_DATABASE_ID,
+        migrations_dir: "access-links-migrations",
+      }),
+    ]);
+    expect(ACCESS_LINKS_MIGRATION_FILE).toBe("0026_access_link_codes_v1.sql");
+    expect(() => buildAccessLinksMigrationConfig(source, "../unsafe")).toThrow();
+  });
+
+  it("giữ rollout access-link theo thứ tự preflight, backup, tương thích, migration và smoke", () => {
+    const preflight = workflow.indexOf("- name: Read-only access links D1 preflight");
+    const backup = workflow.indexOf("- name: Create and verify access links production D1 backup");
+    const compatibility = workflow.indexOf("- name: Deploy access-link rollback-compatible Worker before migration");
+    const migration = workflow.indexOf("- name: Apply only allowlisted access-link migration");
+    const postMigration = workflow.indexOf("- name: Verify access-link schema, ledger, and foreign keys");
+    const deploy = workflow.indexOf("- name: Deploy production Worker");
+    const smoke = workflow.indexOf("- name: Smoke test access-link rollout gate and metadata");
+    expect(preflight).toBeGreaterThan(-1);
+    expect(backup).toBeGreaterThan(preflight);
+    expect(compatibility).toBeGreaterThan(backup);
+    expect(migration).toBeGreaterThan(compatibility);
+    expect(postMigration).toBeGreaterThan(migration);
+    expect(deploy).toBeGreaterThan(postMigration);
+    expect(smoke).toBeGreaterThan(deploy);
+    expect(step("Recheck access-link migration allowlist immediately before apply")).toContain(
+      "assertMigrationAllowlist",
+    );
+    expect(step("Apply only allowlisted access-link migration")).toContain(
+      "build/server/wrangler.access-links-migration.json",
+    );
+    expect(step("Persist tested access-link rollback artifact")).toContain(
+      "do not drop or reverse migration 0026",
+    );
+    expect(step("Create and verify access links production D1 backup")).toContain(
+      "d1 export babyjoy-db --remote --env production --config wrangler.jsonc",
+    );
+    expect(step("Smoke test access-link rollout gate and metadata")).toContain(
+      "STOREFRONT_SESSION_REQUIRED",
+    );
   });
 
   it("rejects a wrong production D1, migration, schema, or Worker state", () => {
