@@ -172,7 +172,7 @@ jobs:
           done
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          npx playwright install --with-deps webkit
+          npx playwright install --with-deps chromium webkit
 
       - name: Create CI local secrets
         shell: bash
