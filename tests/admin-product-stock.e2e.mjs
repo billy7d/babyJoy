@@ -5,7 +5,7 @@ const baseUrl = process.env.BABYJOY_BASE_URL ?? "http://127.0.0.1:5173";
 const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
 const trackedName = `E2E Admin Stock Tracked ${suffix}`;
 const untrackedName = `E2E Admin Stock Untracked ${suffix}`;
-const fixtureSortOrder = -2147483647;
+const fixtureSortOrder = 0;
 const api = await request.newContext({
   extraHTTPHeaders: { accept: "application/json" },
 });

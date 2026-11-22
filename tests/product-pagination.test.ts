@@ -88,6 +88,7 @@ function insertProduct(
     minAgeMonths?: number;
     bestSeller?: boolean;
     bestSellerRank?: number | null;
+    sortOrder?: number;
     priceVnd?: number;
     sku?: string;
   } = {},
@@ -111,7 +112,7 @@ function insertProduct(
       options.brandId ? null : "Legacy brand",
       options.brandId ?? null,
       status,
-      index,
+      options.sortOrder ?? index,
       options.minAgeMonths ?? 6,
       options.bestSeller ? 1 : 0,
       options.bestSellerRank ?? null,
@@ -211,6 +212,56 @@ describe("Shared pagination primitives", () => {
 });
 
 describe("Authoritative public product pagination", () => {
+  it("sắp xếp sort_order trước pagination và đưa giá trị 0 xuống cuối ổn định", async () => {
+    const { database, env } = createEnv();
+    insertProduct(database, 1, { name: "Gamma", sortOrder: 3, priceVnd: 300000 });
+    insertProduct(database, 2, { name: "Alpha", sortOrder: 1, priceVnd: 100000 });
+    insertProduct(database, 3, { name: "Beta", sortOrder: 2, priceVnd: 200000 });
+    insertProduct(database, 4, { name: "Zero", sortOrder: 0, priceVnd: 400000 });
+    insertProduct(database, 5, { name: "Tie B", sortOrder: 2, priceVnd: 500000 });
+    insertProduct(database, 6, { name: "Tie A", sortOrder: 2, priceVnd: 600000 });
+
+    const publicFirstPage = await jsonBody(
+      await api(env, "/api/products?limit=3&page=1"),
+    );
+    expect(publicFirstPage.data.map((product) => [product.name, product.sortOrder])).toEqual([
+      ["Alpha", 1],
+      ["Beta", 2],
+      ["Tie A", 2],
+    ]);
+    const publicSecondPage = await jsonBody(
+      await api(env, "/api/products?limit=3&page=2"),
+    );
+    expect(publicSecondPage.data.map((product) => [product.name, product.sortOrder])).toEqual([
+      ["Tie B", 2],
+      ["Gamma", 3],
+      ["Zero", 0],
+    ]);
+
+    const admin = await jsonBody(
+      await api(env, "/api/admin/products?limit=6&page=1"),
+    );
+    expect(admin.data.map((product) => product.name)).toEqual([
+      "Alpha",
+      "Beta",
+      "Tie A",
+      "Tie B",
+      "Gamma",
+      "Zero",
+    ]);
+    const priceSorted = await jsonBody(
+      await api(env, "/api/products?limit=6&sort=price_desc"),
+    );
+    expect(priceSorted.data.map((product) => product.name)).toEqual([
+      "Tie A",
+      "Tie B",
+      "Zero",
+      "Gamma",
+      "Beta",
+      "Alpha",
+    ]);
+  });
+
   it("count, page size, boundary và page clamp đều lấy từ D1", async () => {
     const { database, env } = createEnv();
     for (let index = 1; index <= 49; index += 1) insertProduct(database, index);

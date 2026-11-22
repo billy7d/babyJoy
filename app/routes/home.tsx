@@ -4,8 +4,11 @@ import { CatalogProvider } from "../lib/catalog-context";
 import { DEFAULT_STORE_SETTINGS } from "../../shared/store-settings";
 
 export function meta() {
+  const brand = DEFAULT_STORE_SETTINGS.displayName;
   return [
-    { title: `${DEFAULT_STORE_SETTINGS.displayName} - Dinh dưỡng trọn vẹn cho bé yêu` },
+    { title: brand },
+    { property: "og:title", content: brand },
+    { name: "twitter:title", content: brand },
     { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." },
   ];
 }

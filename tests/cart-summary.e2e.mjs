@@ -111,7 +111,7 @@ const productBody = await jsonRequest("POST", "/api/admin/products", {
   slug: `e2e-cart-summary-${suffix}`,
   status: "AVAILABLE",
   featured: false,
-  sortOrder: -998,
+  sortOrder: 0,
   categoryIds: [],
   tagIds: [],
   images: [],

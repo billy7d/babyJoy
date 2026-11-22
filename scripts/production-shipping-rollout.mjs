@@ -1,8 +1,10 @@
 export const SHIPPING_MIGRATION_FILE = "0025_shipping_fee_v1.sql";
+export const ACCESS_LINKS_MIGRATION_FILE = "0026_access_link_codes_v1.sql";
 export const PRODUCTION_D1_DATABASE_ID = "6d19fcf2-6385-493b-a377-a31d5e42de03";
 export const PRODUCTION_WORKER_SCRIPT_NAME = "babyjoy-web-app-production";
 export const PRODUCTION_CUSTOM_DOMAIN = "metraphuong.com";
 export const SHIPPING_ROLLOUT_CONFIRMATION = "ROLL_OUT_SHIPPING";
+export const ACCESS_LINKS_ROLLOUT_CONFIRMATION = "ROLL_OUT_ACCESS_LINKS";
 export const STANDARD_SHIPPING_FEE_VND = 15_000;
 
 function isRecord(value) {
@@ -218,6 +220,14 @@ export function buildShippingMigrationConfig(config, migrationDir = "shipping-mi
     migrations_dir: migrationDir,
   }));
   return next;
+}
+
+/** Tạo config migration riêng cho access-link; không dùng config này để deploy Worker. */
+export function buildAccessLinksMigrationConfig(
+  config,
+  migrationDir = "access-links-migrations",
+) {
+  return buildShippingMigrationConfig(config, migrationDir);
 }
 
 export function assertProductionDeploymentConfig(

@@ -402,7 +402,7 @@ try {
     slug: "e2e-inventory-reservation-" + suffix,
     status: "AVAILABLE",
     featured: false,
-    sortOrder: -999,
+    sortOrder: 0,
     categoryIds: [],
     tagIds: [],
     images: [],

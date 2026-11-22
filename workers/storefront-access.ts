@@ -1,4 +1,5 @@
 const ACCESS_CREDENTIAL_PREFIX = "storefront-access:v1";
+const SHORT_ACCESS_CODE_PREFIX = "storefront-access-short:v1";
 const ADMIN_ANALYTICS_PREFIX = "storefront-admin-analytics:v1";
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
 
@@ -7,6 +8,7 @@ export const MIN_STOREFRONT_SESSION_TTL_SECONDS = 60 * 60;
 export const MAX_STOREFRONT_SESSION_TTL_SECONDS = 365 * 24 * 60 * 60;
 export const VISITOR_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60;
 export const ADMIN_ANALYTICS_COOKIE_MAX_AGE_SECONDS = 60 * 60;
+export const SHORT_ACCESS_CODE_LENGTH = 16;
 
 export type AccessLinkStatus = "ACTIVE" | "REVOKED";
 
@@ -84,6 +86,15 @@ type AccessLinkGroupRow = {
   createdAt: string;
 };
 
+type AccessLinkCodeRow = {
+  codeHash: string;
+  accessLinkId: string;
+  linkVersion: number;
+  nonce: string;
+  createdAt: string;
+  revokedAt: string | null;
+};
+
 export type AccessLinkStats = {
   validLinkOpens: number;
   uniqueVisitors: number;
@@ -159,6 +170,28 @@ async function hmac(secret: string, value: string) {
     new TextEncoder().encode(value),
   );
   return new Uint8Array(signature);
+}
+
+async function deriveShortAccessCode(
+  secret: string,
+  linkId: string,
+  version: number,
+  nonce: string,
+) {
+  // Mã được tái tạo từ secret + version + nonce nhưng không lưu plaintext trong D1.
+  const digest = await hmac(
+    secret,
+    `${SHORT_ACCESS_CODE_PREFIX}:${linkId}:${version}:${nonce}`,
+  );
+  return bytesToBase64Url(digest.slice(0, 12));
+}
+
+function generateAccessLinkNonce() {
+  return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+}
+
+export function isShortAccessCode(value: string) {
+  return new RegExp(`^[A-Za-z0-9_-]{${SHORT_ACCESS_CODE_LENGTH}}$`).test(value);
 }
 
 export function getStorefrontAccessSecret(env: Env) {
@@ -636,6 +669,131 @@ async function loadAccessLink(
     .first<AccessLinkRow>();
 }
 
+async function hasAccessLinkCodesSchema(env: Env) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT name FROM pragma_table_info('access_link_codes') WHERE name = 'code_hash'",
+    ).first<{ name: string }>();
+    return Boolean(row?.name);
+  } catch {
+    // Worker mới vẫn đọc được DB cũ trong giai đoạn migration được triển khai nối tiếp.
+    return false;
+  }
+}
+
+async function loadAccessLinkCode(
+  env: Env,
+  accessLinkId: string,
+  linkVersion: number,
+) {
+  return env.DB.prepare(
+    "SELECT code_hash AS codeHash, access_link_id AS accessLinkId, " +
+      "link_version AS linkVersion, nonce, created_at AS createdAt, " +
+      "revoked_at AS revokedAt FROM access_link_codes " +
+      "WHERE access_link_id = ? AND link_version = ?",
+  )
+    .bind(accessLinkId, linkVersion)
+    .first<AccessLinkCodeRow>();
+}
+
+function isUniqueConstraintError(caught: unknown) {
+  return caught instanceof Error && /unique|constraint/i.test(caught.message);
+}
+
+async function buildAccessLinkCode(
+  secret: string,
+  accessLinkId: string,
+  linkVersion: number,
+  createdAt: string,
+) {
+  const nonce = generateAccessLinkNonce();
+  const code = await deriveShortAccessCode(
+    secret,
+    accessLinkId,
+    linkVersion,
+    nonce,
+  );
+  return {
+    code,
+    codeHash: await hashValue(code),
+    nonce,
+    createdAt,
+  };
+}
+
+async function ensureAccessLinkCode(
+  env: Env,
+  link: AccessLinkRow,
+  secret: string,
+  now = new Date(),
+) {
+  if (!(await hasAccessLinkCodesSchema(env))) return null;
+  const existing = await loadAccessLinkCode(env, link.id, link.version);
+  if (existing)
+    return deriveShortAccessCode(secret, link.id, link.version, existing.nonce);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = await buildAccessLinkCode(
+      secret,
+      link.id,
+      link.version,
+      now.toISOString(),
+    );
+    try {
+      await env.DB.prepare(
+        "INSERT INTO access_link_codes " +
+          "(code_hash, access_link_id, link_version, nonce, created_at) " +
+          "VALUES (?, ?, ?, ?, ?)",
+      )
+        .bind(
+          candidate.codeHash,
+          link.id,
+          link.version,
+          candidate.nonce,
+          candidate.createdAt,
+        )
+        .run();
+      return candidate.code;
+    } catch (caught) {
+      const raced = await loadAccessLinkCode(env, link.id, link.version);
+      if (raced) return deriveShortAccessCode(secret, link.id, link.version, raced.nonce);
+      if (!isUniqueConstraintError(caught) || attempt === 4) throw caught;
+    }
+  }
+  throw new Error("ACCESS_LINK_CODE_GENERATION_FAILED");
+}
+
+async function loadAccessLinkByShortCode(
+  env: Env,
+  secret: string,
+  code: string,
+) {
+  if (!(await hasAccessLinkCodesSchema(env))) return null;
+  const codeHash = await hashValue(code);
+  const row = await env.DB.prepare(
+    "SELECT l.id, l.name, l.notes, l.status, l.version, " +
+      "l.session_ttl_seconds AS sessionTtlSeconds, " +
+      "l.created_by_email AS createdByEmail, l.updated_by_email AS updatedByEmail, " +
+      "l.created_at AS createdAt, l.updated_at AS updatedAt, " +
+      "l.revoked_at AS revokedAt, l.deleted_at AS deletedAt, l.last_used_at AS lastUsedAt, " +
+      "c.link_version AS codeLinkVersion, c.nonce " +
+      "FROM access_link_codes c JOIN access_links l ON l.id = c.access_link_id " +
+      "WHERE c.code_hash = ? AND c.revoked_at IS NULL " +
+      "AND l.deleted_at IS NULL LIMIT 1",
+  )
+    .bind(codeHash)
+    .first<AccessLinkRow & { codeLinkVersion: number; nonce: string }>();
+  if (!row || row.codeLinkVersion !== row.version) return null;
+  const expected = await deriveShortAccessCode(
+    secret,
+    row.id,
+    row.codeLinkVersion,
+    row.nonce,
+  );
+  if (!constantTimeEqual(new TextEncoder().encode(code), new TextEncoder().encode(expected))) return null;
+  return row;
+}
+
 async function loadSessionByHash(env: Env, tokenHash: string) {
   return env.DB.prepare(
     "SELECT id, token_hash AS tokenHash, access_link_id AS accessLinkId, " +
@@ -735,6 +893,7 @@ export async function toAccessLinkDto(
     link.id,
     link.version,
   );
+  const shortCode = await ensureAccessLinkCode(env, link, secret, now);
   return {
     id: link.id,
     name: link.name,
@@ -748,7 +907,10 @@ export async function toAccessLinkDto(
     version: link.version,
     sessionTtlSeconds: link.sessionTtlSeconds ?? defaultTtl,
     usesDefaultTtl: link.sessionTtlSeconds === null,
-    accessUrl: new URL("/access/" + credential, request.url).toString(),
+    accessUrl: new URL(
+      "/access/" + (shortCode ?? credential),
+      request.url,
+    ).toString(),
     createdByEmail: link.createdByEmail,
     updatedByEmail: link.updatedByEmail,
     createdAt: link.createdAt,
@@ -855,7 +1017,8 @@ export async function createAccessLink(
   env: Env,
   verifiedEmail?: string,
 ) {
-  if (!getStorefrontAccessSecret(env))
+  const secret = getStorefrontAccessSecret(env);
+  if (!secret)
     return adminApiError(
       "STOREFRONT_ACCESS_SECRET_MISSING",
       "Storefront access secret chưa được cấu hình.",
@@ -866,13 +1029,13 @@ export async function createAccessLink(
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const email = adminEmail(verifiedEmail);
-    await env.DB.prepare(
-      "INSERT INTO access_links (" +
-        "id, name, notes, status, version, session_ttl_seconds, " +
-        "created_by_email, updated_by_email, created_at, updated_at" +
-        ") VALUES (?, ?, ?, 'ACTIVE', 1, ?, ?, ?, ?, ?)",
-    )
-      .bind(
+    const statements = [
+      env.DB.prepare(
+        "INSERT INTO access_links (" +
+          "id, name, notes, status, version, session_ttl_seconds, " +
+          "created_by_email, updated_by_email, created_at, updated_at" +
+          ") VALUES (?, ?, ?, 'ACTIVE', 1, ?, ?, ?, ?, ?)",
+      ).bind(
         id,
         input.name,
         input.notes,
@@ -881,16 +1044,37 @@ export async function createAccessLink(
         email,
         now,
         now,
-      )
-      .run();
-    for (const group of input.groups) {
-      await env.DB.prepare(
-        "INSERT INTO access_link_groups " +
-          "(id, access_link_id, group_name, group_url, created_at) " +
-          "VALUES (?, ?, ?, ?, ?)",
-      )
-        .bind(crypto.randomUUID(), id, group.name, group.url, now)
-        .run();
+      ),
+      ...input.groups.map((group) =>
+        env.DB.prepare(
+          "INSERT INTO access_link_groups " +
+            "(id, access_link_id, group_name, group_url, created_at) " +
+            "VALUES (?, ?, ?, ?, ?)",
+        ).bind(crypto.randomUUID(), id, group.name, group.url, now),
+      ),
+    ];
+    if (await hasAccessLinkCodesSchema(env)) {
+      let created = false;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const candidate = await buildAccessLinkCode(secret, id, 1, now);
+        try {
+          await env.DB.batch([
+            ...statements,
+            env.DB.prepare(
+              "INSERT INTO access_link_codes " +
+                "(code_hash, access_link_id, link_version, nonce, created_at) " +
+                "VALUES (?, ?, ?, ?, ?)",
+            ).bind(candidate.codeHash, id, 1, candidate.nonce, candidate.createdAt),
+          ]);
+          created = true;
+          break;
+        } catch (caught) {
+          if (!isUniqueConstraintError(caught) || attempt === 4) throw caught;
+        }
+      }
+      if (!created) throw new Error("ACCESS_LINK_CODE_GENERATION_FAILED");
+    } else {
+      await env.DB.batch(statements);
     }
     const link = await loadAccessLink(env, id);
     if (!link)
@@ -980,6 +1164,16 @@ async function revokeSessions(
     .run();
 }
 
+async function revokeAccessLinkCodes(env: Env, accessLinkId: string, now: string) {
+  if (!(await hasAccessLinkCodesSchema(env))) return;
+  await env.DB.prepare(
+    "UPDATE access_link_codes SET revoked_at = COALESCE(revoked_at, ?) " +
+      "WHERE access_link_id = ? AND revoked_at IS NULL",
+  )
+    .bind(now, accessLinkId)
+    .run();
+}
+
 export async function resetAccessLinkSessions(
   request: Request,
   env: Env,
@@ -1027,14 +1221,56 @@ export async function rotateAccessLink(
       404,
     );
   const now = new Date().toISOString();
-  await revokeSessions(env, id, now, "ROTATE");
-  await env.DB.prepare(
-    "UPDATE access_links SET status = 'ACTIVE', version = version + 1, " +
-      "revoked_at = NULL, updated_by_email = ?, updated_at = ? " +
-      "WHERE id = ? AND deleted_at IS NULL",
-  )
-    .bind(adminEmail(verifiedEmail), now, id)
-    .run();
+  const nextVersion = link.version + 1;
+  const secret = getStorefrontAccessSecret(env);
+  if (!secret)
+    return adminApiError(
+      "STOREFRONT_ACCESS_SECRET_MISSING",
+      "Storefront access secret chưa được cấu hình.",
+      503,
+    );
+  if (await hasAccessLinkCodesSchema(env)) {
+    let rotated = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = await buildAccessLinkCode(secret, id, nextVersion, now);
+      try {
+        await env.DB.batch([
+          env.DB.prepare(
+            "UPDATE access_sessions SET revoked_at = ?, revoke_reason = ? " +
+              "WHERE access_link_id = ? AND revoked_at IS NULL",
+          ).bind(now, "ROTATE", id),
+          env.DB.prepare(
+            "UPDATE access_links SET status = 'ACTIVE', version = ?, " +
+              "revoked_at = NULL, updated_by_email = ?, updated_at = ? " +
+              "WHERE id = ? AND version = ? AND deleted_at IS NULL",
+          ).bind(nextVersion, adminEmail(verifiedEmail), now, id, link.version),
+          env.DB.prepare(
+            "UPDATE access_link_codes SET revoked_at = COALESCE(revoked_at, ?) " +
+              "WHERE access_link_id = ? AND revoked_at IS NULL",
+          ).bind(now, id),
+          env.DB.prepare(
+            "INSERT INTO access_link_codes " +
+              "(code_hash, access_link_id, link_version, nonce, created_at) " +
+              "VALUES (?, ?, ?, ?, ?)",
+          ).bind(candidate.codeHash, id, nextVersion, candidate.nonce, candidate.createdAt),
+        ]);
+        rotated = true;
+        break;
+      } catch (caught) {
+        if (!isUniqueConstraintError(caught) || attempt === 4) throw caught;
+      }
+    }
+    if (!rotated) throw new Error("ACCESS_LINK_CODE_GENERATION_FAILED");
+  } else {
+    await revokeSessions(env, id, now, "ROTATE");
+    await env.DB.prepare(
+      "UPDATE access_links SET status = 'ACTIVE', version = version + 1, " +
+        "revoked_at = NULL, updated_by_email = ?, updated_at = ? " +
+        "WHERE id = ? AND deleted_at IS NULL",
+    )
+      .bind(adminEmail(verifiedEmail), now, id)
+      .run();
+  }
   const fresh = await loadAccessLink(env, id);
   if (!fresh)
     return adminApiError(
@@ -1063,6 +1299,7 @@ export async function revokeAccessLink(
     );
   const now = new Date().toISOString();
   await revokeSessions(env, id, now, "REVOKE_LINK");
+  await revokeAccessLinkCodes(env, id, now);
   await env.DB.prepare(
     "UPDATE access_links SET status = 'REVOKED', revoked_at = ?, " +
       "updated_by_email = ?, updated_at = ? " +
@@ -1098,6 +1335,7 @@ export async function deleteAccessLink(
     );
   const now = new Date().toISOString();
   await revokeSessions(env, id, now, "DELETE_LINK");
+  await revokeAccessLinkCodes(env, id, now);
   await env.DB.prepare(
     "UPDATE access_links SET status = 'REVOKED', " +
       "revoked_at = COALESCE(revoked_at, ?), deleted_at = ?, " +
@@ -1130,11 +1368,8 @@ export async function testAccessLink(request: Request, env: Env, id: string) {
       "Storefront access secret chưa được cấu hình.",
       503,
     );
-  const credential = await generateAccessCredential(
-    secret,
-    link.id,
-    link.version,
-  );
+  const code = await ensureAccessLinkCode(env, link, secret);
+  const credential = code ?? (await generateAccessCredential(secret, link.id, link.version));
   return jsonResponse({
     success: true,
     data: {
@@ -1393,21 +1628,28 @@ export async function handleAccessRequest(
     "/access/".length,
   );
   const credential = parseAccessCredential(credentialValue);
-  if (!credential)
+  let link: AccessLinkRow | null = null;
+  if (credential) {
+    link = await loadAccessLink(env, credential.linkId);
+    if (
+      !link ||
+      link.status !== "ACTIVE" ||
+      link.deletedAt ||
+      !(await verifyAccessCredential(
+        secret,
+        link.id,
+        link.version,
+        credential.signature,
+      ))
+    )
+      return invalidAccessCredentialResponse(request, env, now);
+  } else if (isShortAccessCode(credentialValue)) {
+    link = await loadAccessLinkByShortCode(env, secret, credentialValue);
+    if (!link || link.status !== "ACTIVE" || link.deletedAt)
+      return invalidAccessCredentialResponse(request, env, now);
+  } else {
     return invalidAccessCredentialResponse(request, env, now);
-  const link = await loadAccessLink(env, credential.linkId);
-  if (
-    !link ||
-    link.status !== "ACTIVE" ||
-    link.deletedAt ||
-    !(await verifyAccessCredential(
-      secret,
-      link.id,
-      link.version,
-      credential.signature,
-    ))
-  )
-    return invalidAccessCredentialResponse(request, env, now);
+  }
   return handleValidAccessLink(request, env, link, secret, now);
 }
 

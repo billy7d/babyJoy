@@ -504,6 +504,7 @@ export function ProductEditorPage() {
   const [uploadingVariantId, setUploadingVariantId] = useState<string | null>(null);
   const [featured, setFeatured] = useState(false);
   const [visible, setVisible] = useState(true);
+  const [sortOrder, setSortOrder] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -528,6 +529,7 @@ export function ProductEditorPage() {
         setEditingVariantClientId(draft.clientId);
         setDescriptionContent(legacyDescriptionToDocument(""));
         setDescriptionAssets([]);
+        setSortOrder(0);
       }
       const requests: Promise<Response>[] = [
         fetch("/api/admin/tag-groups"),
@@ -583,6 +585,7 @@ export function ProductEditorPage() {
         setDescriptionAssets(product.descriptionAssets ?? []);
         setFeatured(Boolean(product.featured));
         setVisible(product.status !== "HIDDEN");
+        setSortOrder(product.sortOrder ?? 0);
       } else if (id) {
         setMessage("Không tải được dữ liệu sản phẩm.");
       }
@@ -886,7 +889,7 @@ export function ProductEditorPage() {
       descriptionUploadSessionId,
       status: visible ? "AVAILABLE" : "HIDDEN",
       featured,
-      sortOrder: Number(form.get("sortOrder")),
+      sortOrder,
       categoryIds: form.getAll("categoryIds"),
       images: images.map(({ id: imageId, r2Key, altText }, sortOrder) => ({
         id: imageId,
@@ -936,6 +939,7 @@ export function ProductEditorPage() {
                   legacyDescriptionToDocument(body.data.description),
               );
               setDescriptionAssets(body.data.descriptionAssets ?? []);
+              setSortOrder(body.data.sortOrder ?? 0);
             }
           }
         }
@@ -1367,7 +1371,17 @@ export function ProductEditorPage() {
               />
               <label>
                 Thứ tự hiển thị (Tùy chọn)
-                <input name="sortOrder" type="number" defaultValue={0} />
+                <input
+                  name="sortOrder"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={sortOrder}
+                  onChange={(event) => setSortOrder(Number(event.target.value))}
+                />
+                <small className="field-help">
+                  Số nhỏ hơn sẽ hiển thị trước. Nhập 0 nếu không thiết lập thứ tự ưu tiên.
+                </small>
               </label>
             </EditorCard>
           </aside>

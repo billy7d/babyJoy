@@ -19,6 +19,7 @@ import {
   isContentPageSlug,
 } from "../../shared/content-pages";
 import { DEFAULT_STORE_SETTINGS } from "../../shared/store-settings";
+import { STORE_BRAND } from "../../shared/branding";
 
 const DEFAULT_DISPLAY_NAME = DEFAULT_STORE_SETTINGS.displayName;
 
@@ -39,7 +40,12 @@ export function meta({ location }: Route.MetaArgs) {
       { title: `${contentPageLabel(contentPageSlug)} | ${DEFAULT_DISPLAY_NAME}` },
       { name: "description", content: contentPageLabel(contentPageSlug) },
     ];
-  return [{ title: `${DEFAULT_DISPLAY_NAME} - Dinh dưỡng trọn vẹn cho bé yêu` }, { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." }];
+  return [
+    { title: STORE_BRAND },
+    { property: "og:title", content: STORE_BRAND },
+    { name: "twitter:title", content: STORE_BRAND },
+    { name: "description", content: "Đồ ăn dặm hữu cơ, an toàn và đa dạng cho bé." },
+  ];
 }
 
 function RoutedContent() {

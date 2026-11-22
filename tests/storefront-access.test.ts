@@ -12,6 +12,7 @@ import {
   handleAccessRequest,
   hashSessionToken,
   authorizeStorefrontSession,
+  isShortAccessCode,
   isAccessEndpointPath,
   isAdminHtmlPath,
   isStorefrontProtectedApiPath,
@@ -21,6 +22,7 @@ import {
   revokeAccessLink,
   saveStorefrontSettings,
   storefrontSessionRequiredResponse,
+  testAccessLink,
   redactPathForLog,
   validateAccessLinkInput,
   validateSessionTtl,
@@ -68,6 +70,10 @@ class D1Adapter {
   prepare(sql: string) {
     return new StatementAdapter(this.database.prepare(sql));
   }
+
+  batch(statements: StatementAdapter[]) {
+    return Promise.all(statements.map((statement) => statement.run()));
+  }
 }
 
 function createTestEnv() {
@@ -80,6 +86,7 @@ function createTestEnv() {
     "0005_remove_demo_cart_request.sql",
     "0006_product_taxonomy_v1.sql",
     "0007_storefront_access_gate_v1.sql",
+    "0026_access_link_codes_v1.sql",
   ])
     database.exec(migration(name));
   const env = {
@@ -229,6 +236,41 @@ describe("storefront access credentials", () => {
         sessionTtlSeconds: null,
       }),
     ).toThrow("INVALID_FACEBOOK_GROUP_URL");
+  });
+
+  it("sinh short code 16 ký tự, chỉ lưu hash và vẫn tương thích credential cũ", async () => {
+    const { database, env } = createTestEnv();
+    const link = await createLink(env);
+    const shortCode = new URL(link.accessUrl).pathname.split("/").at(-1) ?? "";
+    const legacyCredential = await generateAccessCredential(
+      env.STOREFRONT_ACCESS_SECRET,
+      link.id,
+      link.version,
+    );
+    expect(isShortAccessCode(shortCode)).toBe(true);
+    expect(shortCode).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(link.accessUrl).not.toContain(legacyCredential);
+    expect(
+      database
+        .prepare("SELECT code_hash AS codeHash, nonce FROM access_link_codes")
+        .get(),
+    ).toEqual({
+      codeHash: expect.not.stringMatching(shortCode),
+      nonce: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
+    });
+
+    const testResponse = await testAccessLink(
+      new Request("https://metraphuong.com/api/admin/access-links/" + link.id + "/test"),
+      env,
+      link.id,
+    );
+    const testBody = (await testResponse.json()) as { data: { accessUrl: string } };
+    expect(testBody.data.accessUrl).toBe(link.accessUrl);
+    expect((await handleAccessRequest(accessRequest(link.accessUrl), env)).status).toBe(303);
+    expect(
+      (await handleAccessRequest(accessRequest("/access/" + legacyCredential), env)).status,
+    ).toBe(303);
+    database.close();
   });
 
   it("giữ đúng hợp đồng route gate và lỗi API không redirect HTML", async () => {
@@ -388,6 +430,9 @@ describe("storefront access sessions and analytics", () => {
     const { database, env } = createTestEnv();
     const t0 = new Date("2026-08-30T08:00:00Z");
     const linkA = await createLink(env);
+    const legacyLinkAUrl =
+      "/access/" +
+      (await generateAccessCredential(env.STOREFRONT_ACCESS_SECRET, linkA.id, linkA.version));
     const linkB = await createLink(env, {
       name: "Group BabyJoy Hồ Chí Minh",
       groups: [{ name: "BabyJoy Hồ Chí Minh" }],
@@ -425,7 +470,13 @@ describe("storefront access sessions and analytics", () => {
     expect(rotated.data.version).toBe(linkA.version + 1);
     expect(rotated.data.accessUrl).not.toBe(linkA.accessUrl);
     expect((await handleAccessRequest(accessRequest(linkA.accessUrl, jar), env, t0)).headers.get("location")).toBe("/access-required");
+    expect((await handleAccessRequest(accessRequest(legacyLinkAUrl, jar), env, t0)).headers.get("location")).toBe("/access-required");
     expect((await handleAccessRequest(accessRequest(rotated.data.accessUrl, jar), env, t0)).status).toBe(303);
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM access_link_codes WHERE access_link_id = ? AND revoked_at IS NULL")
+        .get(linkA.id),
+    ).toEqual({ count: 1 });
 
     const revokeResponse = await revokeAccessLink(
       new Request("https://metraphuong.com/api/admin/access-links/" + rotated.data.id + "/revoke"),

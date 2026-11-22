@@ -1366,7 +1366,7 @@ function buildProductListQuery({
                      ${activeVariantPredicate("bsv")}
                  ) THEN 0 ELSE 1 END, p.sort_order ASC, p.name ASC, p.id ASC`
               : "p.is_best_seller DESC, COALESCE(p.best_seller_rank, 2147483647) ASC, p.sort_order ASC, p.name ASC, p.id ASC"
-            : "p.sort_order ASC, p.name ASC, p.id ASC";
+            : "CASE WHEN p.sort_order = 0 THEN 1 ELSE 0 END, p.sort_order ASC, p.name ASC, p.id ASC";
   return { whereSql: where.join(" AND "), values, orderSql };
 }
 
@@ -2108,6 +2108,7 @@ function validateAdminProduct(input: unknown) {
   const slugInput = typeof body.slug === "string" ? body.slug.trim() : "";
   const slug = normalizeSlug(slugInput || name);
   const productType = body.productType === undefined ? "STANDARD" : body.productType;
+  const sortOrder = body.sortOrder === undefined ? 0 : Number(body.sortOrder);
   const rawBasePrice = body.basePriceVnd;
   const basePriceVnd =
     rawBasePrice === null || rawBasePrice === undefined || (typeof rawBasePrice === "string" && !rawBasePrice.trim())
@@ -2121,6 +2122,8 @@ function validateAdminProduct(input: unknown) {
     !statuses.includes(body.status ?? "AVAILABLE") ||
     !["STANDARD", "COMBO"].includes(productType) ||
     !Array.isArray(body.variants) ||
+    !Number.isSafeInteger(sortOrder) ||
+    sortOrder < 0 ||
     (productType === "COMBO" && (!Number.isSafeInteger(basePriceVnd) || (basePriceVnd as number) < 0))
   )
     invalid();
@@ -2361,7 +2364,7 @@ function validateAdminProduct(input: unknown) {
     slug,
     status: body.status ?? "AVAILABLE",
     featured: body.featured ? 1 : 0,
-    sortOrder: Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : 0,
+    sortOrder,
     variants,
     deletedVariantIds,
     brandId,

@@ -51,6 +51,7 @@ export type ApiProduct = {
   descriptionContent?: ProductDescriptionDocument | null;
   descriptionAssets?: ProductDescriptionAsset[];
   status?: string;
+  sortOrder?: number;
   featured?: number | boolean;
   categorySlug?: string | null;
   categoryIds?: string[];
@@ -363,6 +364,12 @@ export function mapApiProduct(row: ApiProduct): Product {
     basePriceVnd: row.basePriceVnd ?? null,
     comboConfig: row.comboConfig ?? null,
     status: row.status === "HIDDEN" ? "HIDDEN" : row.status === "OUT_OF_STOCK" ? "OUT_OF_STOCK" : "AVAILABLE",
+    sortOrder:
+      typeof row.sortOrder === "number" &&
+      Number.isSafeInteger(row.sortOrder) &&
+      row.sortOrder >= 0
+        ? row.sortOrder
+        : 0,
     // Mảng rỗng từ API nghĩa là taxonomy đã bị xóa, không được khôi phục fallback cũ.
     tags: Array.isArray(row.tagNames) ? row.tagNames : (fallback?.tags ?? []),
     tagSlugs: Array.isArray(row.tagSlugs) ? row.tagSlugs : (fallback?.tagSlugs ?? []),

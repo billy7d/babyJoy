@@ -90,7 +90,7 @@ try {
       description: "Không được xuất hiện trên public catalog.",
       status: "HIDDEN",
       featured: false,
-      sortOrder: -999,
+      sortOrder: 0,
       categoryIds: [categoryId],
       tagIds: [],
       variants: [

@@ -1000,13 +1000,25 @@ function MobileFilterSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeSequenceRef = useRef(0);
   const wasOpenRef = useRef(false);
+  const openRef = useRef(open);
+  const mountedRef = useRef(mounted);
+  const requestCloseRef = useRef(onRequestClose);
+  openRef.current = open;
+  mountedRef.current = mounted;
+  requestCloseRef.current = onRequestClose;
 
   useEffect(() => {
     const wasOpen = wasOpenRef.current;
     wasOpenRef.current = open;
-    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
     if (open) {
+      // Vô hiệu hóa callback đóng cũ trước khi mở lại panel.
+      closeSequenceRef.current += 1;
       if (!wasOpen) {
         setMounted(true);
         setClosing(false);
@@ -1018,15 +1030,20 @@ function MobileFilterSheet({
     }
     if (!wasOpen || !mounted) return;
     setClosing(true);
-    closeTimerRef.current = setTimeout(() => {
+    const closeSequence = ++closeSequenceRef.current;
+    const closeTimer = setTimeout(() => {
+      if (closeSequenceRef.current !== closeSequence) return;
+      closeTimerRef.current = null;
       setMounted(false);
       setClosing(false);
       returnFocusRef.current?.focus();
     }, 300);
+    closeTimerRef.current = closeTimer;
     return () => {
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      clearTimeout(closeTimer);
+      if (closeTimerRef.current === closeTimer) closeTimerRef.current = null;
     };
-  }, [mounted, open, returnFocusRef]);
+  }, [open, returnFocusRef]);
 
   useEffect(() => {
     if (!mounted || !open) return;
@@ -1044,11 +1061,12 @@ function MobileFilterSheet({
   }, [mounted]);
 
   useEffect(() => {
-    if (!mounted) return;
+    // Listener ổn định tránh khoảng trống WebKit sau khi panel được mount lại.
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!openRef.current || !mountedRef.current) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        onRequestClose();
+        requestCloseRef.current();
         return;
       }
       if (event.key !== "Tab" || !panelRef.current) return;
@@ -1070,7 +1088,7 @@ function MobileFilterSheet({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [mounted, onRequestClose]);
+  }, []);
 
   if (!mounted) return null;
 
